@@ -21,6 +21,7 @@ from clipforge import __version__
 #: Later phases register here; the dispatcher itself never changes.
 COMMANDS: dict[str, tuple[str, str]] = {
     "config": ("clipforge.config", "show the merged configuration and its version hash"),
+    "db": ("clipforge.db.commands", "init, inspect, or relink the database"),
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),
 }
 
