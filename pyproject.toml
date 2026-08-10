@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipforge"
+version = "0.1.0"
+description = "Stream -> clip -> video pipeline. Phase 1 (spec §15)."
+readme = "README.md"
+# The build machine and the streaming PC are different boxes. Do not pin to
+# whatever interpreter happens to be installed here.
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "soundfile>=0.12",
+    "PyYAML>=6.0",
+    "fastapi>=0.110",
+    # Plain uvicorn, not uvicorn[standard]: the extras pull uvloop (no Windows
+    # support) and httptools (lags on new interpreter releases).
+    "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+clipforge = "clipforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["clipforge*"]
+
+[tool.setuptools.package-data]
+clipforge = [
+    "config/*.yaml",
+    "config/profiles/*.yaml",
+    "db/*.sql",
+    "db/migrations/*.sql",
+    "review/static/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,1 @@
+﻿"""Stage registry and runner. Idempotency and resumability (C7, §5.1, A10)."""

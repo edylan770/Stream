@@ -1,0 +1,1 @@
+﻿"""Theme, assembly, cross-stream ideation (spec §10). Phase 5 — not built."""

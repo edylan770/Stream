@@ -1,0 +1,1 @@
+﻿"""Clustering, n-grams, scheduled ideation (spec §11). Phase 6 — not built."""

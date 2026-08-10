@@ -1,0 +1,1 @@
+﻿"""Stream registration, ffprobe, proxy generation (spec §5.1 stages 1-3)."""

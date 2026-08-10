@@ -1,0 +1,1 @@
+﻿"""Digest generation (spec §9). Phase 5 — not built."""

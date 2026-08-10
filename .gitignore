@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Machine-local config: data_root, ffmpeg paths, review port.
+# The build machine and the streaming PC must never fight over these.
+clipforge/config/local.yaml
+
+# Data root default. Masters, proxies, WAVs, previews, exports, and the DB.
+data/
+*.db
+*.db-wal
+*.db-shm
