@@ -1,0 +1,21 @@
+# Copy to local.yaml (gitignored) and edit. Machine-specific values only.
+#
+# This repo is developed on one machine and run on another. Anything that names
+# a drive, a port, or an install location belongs here — never in
+# clipforge.yaml, which is the shared tuning surface and IS committed.
+#
+# Only include keys you are actually overriding; everything else falls through
+# to the packaged defaults. Check the result with `clipforge config show`.
+
+paths:
+  # On the streaming PC this should point at the large drive. Masters run
+  # 40-55 GB each and proxies ~4 GB (§13.1).
+  data_root: D:/clipforge-data
+
+  # Only needed if ffmpeg is not on PATH. Either the binary or the directory
+  # containing it is accepted.
+  # ffmpeg: C:/ffmpeg/bin/ffmpeg.exe
+  # ffprobe: C:/ffmpeg/bin/ffprobe.exe
+
+# review:
+#   port: 8765

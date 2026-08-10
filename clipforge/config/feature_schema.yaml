@@ -1,0 +1,60 @@
+# Feature vector schema (Appendix A9).
+#
+# A9: "Feature vectors are logged in full, always, even for signals not
+# currently weighted. They cannot be reconstructed retroactively and they are
+# the input to all future tuning."
+#
+# Taken literally that is impossible to satisfy without a declared list of what
+# "full" means, because Phase 1 computes 3 of these and Phase 3 computes ~25.
+# A vector that simply omits what it lacks is not comparable across phases, and
+# comparability is the entire point of A9.
+#
+# So: this file enumerates every signal in §5.4.1, §5.4.2, and §5.4.3. The
+# writer emits ALL of these keys on every candidate, with `null` for anything
+# not yet computed. `candidates.feature_schema_version` records which revision
+# of this file produced the vector.
+#
+# Adding a signal = append it here and bump `version`. Never renumber or reuse a
+# key: five months of vectors depend on the names being stable.
+
+version: 1
+
+# §5.4.1 — value recorded is the rolling z-score at t_peak.
+continuous:
+  mic_rms:          {phase: 1, track: mic,       note: "delta vs rolling baseline, not absolute"}
+  speech_rate:      {phase: 2, track: transcript, note: "words/sec, 3 s sliding window"}
+  swear_density:    {phase: 2, track: transcript, note: "§5.6 profanity count per 10 s"}
+  mic_f0:           {phase: 3, track: mic,       note: "pitch spike beats volume spike"}
+  mic_f0_variance:  {phase: 3, track: derived,   note: "prosodic range = comedic delivery"}
+  sudden_silence:   {phase: 3, track: mic,       note: "inverse of intuition; strong signal"}
+  game_rms:         {phase: 3, track: game,      note: "context only, never a highlight signal alone"}
+  party_rms:        {phase: 3, track: party}
+  party_f0:         {phase: 3, track: party}
+  overlap_speech:   {phase: 3, track: "mic+party", note: "VAD both tracks, boolean AND"}
+  input_rate:       {phase: 3, track: input}
+  mouse_velocity:   {phase: 3, track: input,     note: "flick detection input"}
+  input_stillness:  {phase: 3, track: derived,   note: "gated inverse of input_rate"}
+
+# §5.4.2 — value recorded is the decayed event kernel at t_peak (peak 1.0).
+events:
+  marker_maybe:      {phase: 1, note: "F1. Retro offset applied (§4.3)"}
+  marker_definite:   {phase: 1, note: "F2. Highest weight in the system"}
+  phrase_excitement: {phase: 2, note: "§5.6 passive triggers"}
+  phrase_repeat:     {phase: 2, note: "same phrase >=3x in 90 s; bit formation"}
+  laugh_operator:    {phase: 3}
+  laugh_party:       {phase: 3, note: "external validation; weighted above own laugh"}
+  scene_change:      {phase: 3, note: "§16 rejects as a scorer; chapter tie-breaker only"}
+  afk:               {phase: 3, note: "negative, gated (§6.4)"}
+  kill:              {phase: 7}
+  multikill:         {phase: 7, note: ">=3 kills in 8 s"}
+  clutch:            {phase: 7, note: "strongest single gameplay signal"}
+  mvp_screen:        {phase: 7, note: "Marvel Rivals has MVP/SVP, not POTG"}
+  ult_used:          {phase: 7, note: "§16: correlation component only, not independent"}
+  headshot:          {phase: 7, note: "§16: flick signature component only, not independent"}
+  menu_screen:       {phase: 7, note: "negative, gated (§6.4)"}
+
+# §5.4.3 — computed at score time from the above.
+composite:
+  reaction_onset:     {phase: 3, note: "sudden_silence -> overlap_speech + party_rms spike"}
+  flick_signature:    {phase: 7, note: "mouse velocity p95 + headshot + kill within 500 ms"}
+  multikill_with_ult: {phase: 7, note: "ult_used within 3 s preceding a multikill"}

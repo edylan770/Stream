@@ -1,0 +1,28 @@
+# Phase 1 weight profile (spec §6.5).
+#
+# Two signals exist right now: markers and mic RMS. The weights below are the
+# §6.5 `entertainment` values for exactly those signals, unchanged — so when the
+# full profile arrives in Phase 3 the scale does not shift underneath the
+# ratings already collected.
+#
+# UNITS. Everything entering the weighted sum is in "z-like" units where 1.0 is
+# roughly one standard deviation of notability:
+#   - continuous signals are rolling z-scores (§6.2 step 3)
+#   - event signals are kernels normalized to peak at 1.0
+# The spec never states this convention, and without it these weights are
+# uninterpretable — a unit-AREA event kernel would peak near 0.004, making
+# marker_definite's 3.0 contribute less than noise.
+#
+# Tune against `signal_firing_rate_by_rating` from tool_metrics (§14, §17):
+# compare firing rates on rating-2 versus rating-0 candidates and move weight
+# toward whichever signal discriminates.
+
+name: naive
+description: >
+  Markers plus mic RMS. Phase 1 only. Not a detector you should trust — on
+  single-track footage mic RMS also hears the game.
+
+weights:
+  marker_definite: 3.0
+  marker_maybe: 1.5
+  mic_rms: 1.0

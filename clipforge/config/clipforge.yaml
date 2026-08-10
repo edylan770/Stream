@@ -1,0 +1,178 @@
+# ClipForge configuration — packaged defaults.
+#
+# §17 is emphatic: every tunable value lives in a config file, never hardcoded.
+# All fourteen rows of that table appear below. Values are educated guesses, not
+# validated numbers (C5) — they exist to be tuned against real footage.
+#
+# LAYERING (lowest priority first):
+#   1. this file
+#   2. clipforge/config/local.yaml   (gitignored — machine-specific paths)
+#   3. --config FILE  or  $CLIPFORGE_CONFIG
+#   4. command-line flags
+#
+# PATHS: a relative path resolves against the *project root* (the directory
+# holding pyproject.toml), not the current working directory, so commands behave
+# the same from anywhere in the tree. `clipforge config show` prints the
+# resolved absolute paths.
+
+config_schema: 1
+
+paths:
+  data_root: ./data
+  # null -> $CLIPFORGE_FFMPEG, then PATH. Set these in local.yaml on a machine
+  # where ffmpeg is not installed globally.
+  ffmpeg: null
+  ffprobe: null
+  # null -> <data_root>/clipforge.db
+  db: null
+
+ingest:
+  stream_id_slug_max_len: 40
+
+  # §5.2. The proxy exists for scrubbing speed, not storage (§13.1).
+  proxy:
+    height: 720
+    video_bitrate: 2M
+    preset: veryfast
+    audio_bitrate: 128k
+    # A2: fixed GOP. Without sc_threshold=0, x264 inserts keyframes on scene
+    # changes and seek granularity becomes unpredictable. gop=30 is 0.5 s at
+    # 60 fps, 1 s at 30 fps.
+    gop: 30
+    keyint_min: 30
+    sc_threshold: 0
+    # NOT IN THE SPEC. §5.2 claims the proxy shares the master's timebase, which
+    # is false for a VFR master, and its command has no -fps_mode. Forcing CFR
+    # is what actually makes that claim true and keeps review timestamps and
+    # export timestamps interchangeable.
+    force_cfr: true
+
+  # §5.3. 16 kHz mono is correct for WhisperX and every audio feature. Do not
+  # raise it.
+  audio:
+    sample_rate_hz: 16000
+    channels: 1
+    codec: pcm_s16le
+    # role -> ffmpeg audio stream index (§4.2's track layout).
+    # null = infer from probe. A single-track file maps to `mic` and warns:
+    # mic RMS is then contaminated by game audio, which §4.2 calls
+    # unrecoverable after the fact.
+    track_roles:
+      mic: null
+      game: null
+      party: null
+
+extract:
+  # §5.4: all continuous signals are computed at 10 Hz and stored at 10 Hz.
+  signal_hz: 10.0
+  rms:
+    frame_s: 0.2
+    hop_s: 0.1
+    db_floor: -80.0
+
+score:
+  # Default weight profile. Overridable per stream (streams.profile_used).
+  profile: naive
+
+  # DEVIATION from §6.2 step 2, which downsamples to 1 Hz. A 4-hour stream is
+  # 144k samples at 10 Hz and rolling stats are cumulative-sum cheap, while 1 Hz
+  # quantizes window edges to a whole second against §7.3's 0.5 s nudges.
+  score_grid_hz: 10.0
+
+  # §17. The 5-minute centred window that makes signals comparable *within* a
+  # session — mic gain drifts, games differ, energy changes over three hours.
+  rolling_baseline_window_s: 300
+
+  # NOT IN §17 — added because §6.2 step 3 divides by a rolling sigma and says
+  # nothing about sigma approaching zero. A near-silent five minutes has
+  # sigma ~ 0, so dither becomes z = 50 and the top candidate of every stream is
+  # a quiet moment. Units: dB, matching mic_rms. Tune against: whether quiet
+  # stretches produce spurious candidates.
+  zscore_std_floor: 0.5
+
+  # §6.2 step 6.
+  smoothing_sigma_s: 2.0
+
+  peak:
+    # §17 says "tune to 80-150 candidates/3 h" — a target, not a number. So the
+    # default is to solve for it by bisection rather than guess. Set
+    # `prominence` to a float to pin it and disable calibration.
+    prominence: null
+    auto_calibrate: true
+    target_candidates_per_hour: [27, 50]   # 80-150 per 3 h, §6.7
+    max_iterations: 24
+
+  window:
+    # §17 / §6.3.
+    min_window_s: 8
+    max_window_s: 60
+    # §6.3's expansion loop reads only the exit threshold, which leaves
+    # hysteresis_enter with no defined role despite §17 listing it as tunable.
+    # Here it is the PEAK-MERGE threshold: a later peak opens a new window only
+    # if the composite dipped below enter * v_peak since the previous one.
+    # Otherwise the two peaks belong to one moment.
+    hysteresis_enter: 0.6
+    hysteresis_exit: 0.35
+    # How to satisfy min/max when hysteresis disagrees: grow or shrink around
+    # t_peak, keeping the peak inside. (§6.3 says "clamp" without saying how.)
+    clamp_mode: expand_around_peak
+    # §6.3. No-op until Phase 2 supplies word timestamps.
+    snap_to_word_boundaries: true
+
+  spacing:
+    # §17 / §6.6.
+    window_s: 30
+    factor: 0.5
+    # §6.6 as written penalizes a third candidate twice (0.5 * 0.5) and freezes
+    # iteration order against pre-penalty scores. `accepted_only` = single-pass
+    # non-max suppression where only un-suppressed peaks suppress others.
+    # `spec_literal` reproduces §6.6 exactly, for comparison.
+    mode: accepted_only
+
+  markers:
+    # §17 / §4.3. Retained as the plateau's centre of mass so the §17 tuning
+    # procedure still applies to it.
+    retro_offset_s: 20.0
+    # §4.3 says realization plus reaction is 5-15 s — a RANGE. A symmetric bump
+    # at t-20 is a point estimate that misses by ~14 s when the true delay was
+    # 6 s. The kernel instead plateaus across the whole plausible span and falls
+    # off over `shoulder_s`. Serves C2 (recall over precision).
+    pre_s: 25.0
+    post_s: 5.0
+    shoulder_s: 3.0
+
+  combined:
+    # §17. Unused in Phase 1: one profile exists, so score_combined mirrors
+    # score_entertainment and score_gameplay is 0.
+    alpha: 0.5
+
+review:
+  host: 127.0.0.1
+  port: 8765
+  # §7.1's hard target, in milliseconds per candidate. Reported by
+  # `clipforge metrics`, not enforced.
+  target_ms_per_candidate: 4000
+
+export:
+  fcpxml_version: '1.10'
+  # master | proxy. The master is the quality source; the proxy is the fallback
+  # when it is on a disconnected drive.
+  source: master
+  handles_s: 0.0
+
+# ---------------------------------------------------------------------------
+# DEFERRED — parameters for phases that are not built.
+#
+# Present so that §17 is fully represented in config from day one and nobody
+# hardcodes them later, but visibly not yet wired to anything. Moving one out of
+# this block is part of building the phase that consumes it.
+# ---------------------------------------------------------------------------
+deferred:
+  negatives:          # §6.4, Phase 3/7
+    menu_grace_period_s: 8
+    afk_threshold_s: 60
+  laughter:           # §5.5, Phase 3
+    band_hz: [4.0, 7.0]
+  trends:             # §11, Phase 6
+    hdbscan_min_cluster_size: 5
+    ngram_recency_halflife_days: 30

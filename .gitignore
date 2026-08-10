@@ -16,3 +16,11 @@ data/
 *.db
 *.db-wal
 *.db-shm
+
+# Video, anywhere. Test footage does not always land under data/, and nothing
+# in this project ever wants a 300 MB blob in git history.
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.flv

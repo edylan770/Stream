@@ -70,14 +70,45 @@ def _check_import(module: str, purpose: str) -> Check:
     return Check(label=module, ok=True, detail=f"{version}  ({purpose})")
 
 
+def _check_data_root(root) -> Check:
+    """The data root must exist or be creatable, and be writable.
+
+    On the streaming PC this points at a large external drive. Finding out it is
+    unplugged at the start of a run beats finding out four minutes into a proxy
+    encode.
+    """
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".clipforge-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return Check(label="data_root", ok=False, detail=f"{root} — not writable: {exc}")
+    return Check(label="data_root", ok=True, detail=str(root))
+
+
 def run_checks(
-    ffmpeg_path: str | None = None, ffprobe_path: str | None = None
+    ffmpeg_path: str | None = None,
+    ffprobe_path: str | None = None,
+    cfg=None,
 ) -> list[Check]:
-    """Run every preflight check and return the results in display order."""
+    """Run every preflight check and return the results in display order.
+
+    Explicit arguments win over config, so `doctor --ffmpeg <path>` can be used
+    to find a working value before committing it to local.yaml.
+    """
     checks = [_check_python()]
+
+    if cfg is not None:
+        ffmpeg_path = ffmpeg_path or cfg.ffmpeg_override
+        ffprobe_path = ffprobe_path or cfg.ffprobe_override
+
     checks.append(_check_binary("ffmpeg", ffmpeg_path))
     checks.append(_check_binary("ffprobe", ffprobe_path))
     checks.extend(_check_import(mod, why) for mod, why in REQUIRED_IMPORTS.items())
+
+    if cfg is not None:
+        checks.append(_check_data_root(cfg.data_root))
     return checks
 
 
@@ -107,9 +138,25 @@ def report(checks: list[Check]) -> int:
 
 
 def add_arguments(parser) -> None:
+    from clipforge import config
+
+    config.add_config_arguments(parser)
     parser.add_argument("--ffmpeg", help="explicit path to the ffmpeg binary or its directory")
     parser.add_argument("--ffprobe", help="explicit path to the ffprobe binary or its directory")
 
 
 def main(args) -> int:
-    return report(run_checks(args.ffmpeg, args.ffprobe))
+    from clipforge import config
+
+    # A broken config is itself a preflight failure, and the most likely one on
+    # a freshly cloned machine. Report it as such rather than tracebacking.
+    try:
+        cfg = config.from_args(args)
+    except config.ConfigError as exc:
+        checks = run_checks(args.ffmpeg, args.ffprobe)
+        checks.append(Check(label="config", ok=False, detail=str(exc)))
+        return report(checks)
+
+    checks = run_checks(args.ffmpeg, args.ffprobe, cfg)
+    checks.insert(1, Check(label="config", ok=True, detail=f"version {cfg.version}"))
+    return report(checks)

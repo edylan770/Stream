@@ -20,6 +20,7 @@ from clipforge import __version__
 #: command name -> (module path, one-line help)
 #: Later phases register here; the dispatcher itself never changes.
 COMMANDS: dict[str, tuple[str, str]] = {
+    "config": ("clipforge.config", "show the merged configuration and its version hash"),
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),
 }
 
