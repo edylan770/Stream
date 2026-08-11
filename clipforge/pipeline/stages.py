@@ -149,6 +149,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="parse marker JSONL -> events",
         phase=1,
         requires=("register_stream",),
+        module="clipforge.extract.markers",
     ),
     StageSpec(
         name="scene_events",

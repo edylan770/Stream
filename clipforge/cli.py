@@ -27,6 +27,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "run": ("clipforge.pipeline.cmd_run", "run the extraction pipeline for a stream"),
     "signals": ("clipforge.extract.cmd_signals", "inspect extracted signal series"),
     "status": ("clipforge.pipeline.cmd_status", "show pipeline state for a stream"),
+    "synth-markers": (
+        "clipforge.extract.cmd_synth_markers",
+        "fabricate marker presses for testing (Phase 0's daemon is not built)",
+    ),
 }
 
 
