@@ -25,6 +25,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),
     "register": ("clipforge.ingest.register", "register a recording as a stream"),
     "run": ("clipforge.pipeline.cmd_run", "run the extraction pipeline for a stream"),
+    "score": ("clipforge.score.cmd_score", "re-score a stream without touching extraction"),
     "signals": ("clipforge.extract.cmd_signals", "inspect extracted signal series"),
     "status": ("clipforge.pipeline.cmd_status", "show pipeline state for a stream"),
     "synth-markers": (

@@ -229,6 +229,11 @@ score:
     auto_calibrate: true
     target_candidates_per_hour: [27, 50]   # 80-150 per 3 h, §6.7
     max_iterations: 24
+    # §6.7's rate is per hour, so a 60 s test fixture targets 0.45 candidates
+    # and a 10-minute one targets 4.5. Floor the target so short streams still
+    # produce something reviewable; when no prominence reaches the range at all,
+    # the closest achievable is used and the shortfall goes to tool_metrics.
+    min_candidates: 3
 
   window:
     # §17 / §6.3.
@@ -268,6 +273,30 @@ score:
     pre_s: 25.0
     post_s: 5.0
     shoulder_s: 3.0
+    # How overlapping marker kernels combine. `max` because the kernel means
+    # "this moment is marked" and the plateau already carries the timing
+    # uncertainty: two presses eight seconds apart describe ONE moment, and
+    # summing them would give marker_definite a contribution of 6.0 and let a
+    # flurry of presses dominate the whole stream's ranking.
+    combine: max
+
+  # Kernels for event kinds that are not markers (Phase 3+: kills, laughs,
+  # phrases). Summing IS right for those -- three kills in eight seconds
+  # genuinely is stronger evidence than one -- which is why markers are the
+  # exception rather than the rule.
+  events:
+    default_sigma_s: 3.0
+    combine: sum
+
+  # A local maximum in negative territory is a local maximum of QUIETNESS.
+  # §6.3's exit = 0.35 * v_peak also assumes a positive peak: for v_peak = -2
+  # the exit threshold is -0.7, above the peak, so window expansion terminates
+  # immediately and produces nothing.
+  min_peak_value: 0.0
+
+  # Fraction of overlap (intersection over union) required to carry an operator
+  # rating onto the matching candidate in a new generation.
+  rating_inherit_min_overlap: 0.5
 
   combined:
     # §17. Unused in Phase 1: one profile exists, so score_combined mirrors

@@ -174,6 +174,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="candidates (cheap, rerunnable)",
         phase=1,
         requires=("audio_features", "marker_events"),
+        module="clipforge.score.runner",
     ),
     StageSpec(
         name="previews",
