@@ -22,6 +22,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from clipforge import db, ffmpeg
+from clipforge.ingest import encoders
 from clipforge.ingest import probe as probe_stage
 from clipforge.pipeline import progress
 from clipforge.pipeline.atomic import atomic_output
@@ -75,10 +76,13 @@ def build_command(
     source_height: int,
     rate: Fraction,
     audio_index: int,
+    encoder: encoders.EncoderChoice | None = None,
 ) -> list[str]:
     """§5.2, with the deviations documented in config."""
-    proxy_cfg = f"ingest.proxy.{{}}".format
     height = target_height(source_height, cfg.get("ingest.proxy.height"))
+    if encoder is None:
+        preset, codec_args = encoders.settings_for(cfg, encoders.FALLBACK)
+        encoder = encoders.EncoderChoice(encoders.FALLBACK, preset, codec_args, "fallback")
 
     argv = [
         ffmpeg_bin, "-hide_banner", "-nostdin", "-y",
@@ -86,8 +90,8 @@ def build_command(
         # seek at all — but if one is ever added it goes before -i.
         "-i", str(master),
         "-map", "0:v:0", "-map", f"0:a:{audio_index}",
-        "-c:v", str(cfg.get("ingest.proxy.video_codec")),
-        "-preset", str(cfg.get("ingest.proxy.preset")),
+        "-c:v", encoder.name,
+        "-preset", encoder.preset,
         "-b:v", str(cfg.get("ingest.proxy.video_bitrate")),
     ]
 
@@ -96,10 +100,13 @@ def build_command(
 
     argv += [
         "-pix_fmt", str(cfg.get("ingest.proxy.pix_fmt")),
-        # A2: fixed GOP is what makes seeking instant.
+        # A2: fixed GOP is what makes seeking instant. `-g`/`-keyint_min` are
+        # generic; disabling scene-cut detection is encoder-specific and comes
+        # from the per-codec args (x264 wants -sc_threshold 0, NVENC wants
+        # -no-scenecut 1).
         "-g", str(cfg.get("ingest.proxy.gop")),
         "-keyint_min", str(cfg.get("ingest.proxy.keyint_min")),
-        "-sc_threshold", str(cfg.get("ingest.proxy.sc_threshold")),
+        *encoder.args,
     ]
 
     if cfg.get("ingest.proxy.force_cfr"):
@@ -248,6 +255,16 @@ def assert_sound(check: ProxyCheck, *, master_duration: float, gop: int, is_vfr:
 
 
 def params(ctx: StageContext) -> dict:
+    """What a change to should force a re-encode.
+
+    Note this hashes the *configured* `video_codec`, which may be the literal
+    string `auto` — not the encoder `auto` resolves to on this machine. That is
+    deliberate: recording the resolved value would invalidate every proxy the
+    moment the library moves from the build machine to the streaming PC, and
+    trigger a full back-catalogue re-encode. A proxy is a scrubbing aid, not a
+    deliverable; a mix of NVENC and x264 proxies is fine, a hundred-stream
+    rebuild is not. The resolved encoder goes to `tool_metrics` instead.
+    """
     row = ctx.stream
     return {
         **master_identity(ctx),
@@ -299,16 +316,19 @@ def run(ctx: StageContext) -> None:
 
     height = target_height(source_h, ctx.cfg.get("ingest.proxy.height"))
     audio_index = audio_map_index(track_map)
+    encoder = encoders.select(ctx.cfg, ffmpeg_bin)
     ctx.log(
         f"    {source_w}x{source_h} -> scaled to {height}p, audio from a:{audio_index}, "
         f"{'CFR ' if ctx.cfg.get('ingest.proxy.force_cfr') else ''}"
         f"{rate.numerator}/{rate.denominator}"
     )
+    ctx.log(f"    encoder {encoders.describe(encoder)}")
 
     with atomic_output(ctx.paths.proxy) as tmp:
         argv = build_command(
             ffmpeg_bin, master, tmp, cfg=ctx.cfg,
             source_height=source_h, rate=rate, audio_index=audio_index,
+            encoder=encoder,
         )
         ffmpeg.run(argv, on_stderr_line=progress.reporter(ctx, master_duration))
 
@@ -333,6 +353,11 @@ def run(ctx: StageContext) -> None:
         )
     ctx.metric("proxy_size_mb", round(size_mb, 2))
     ctx.metric("proxy_duration_delta_s", round(check.duration_s - master_duration, 4))
+    # Which encoder actually produced this, since `auto` resolves per machine
+    # and params_hash deliberately does not record the resolution (see params).
+    ctx.metric("proxy_encoder", 1.0, json.dumps({"codec": encoder.name,
+                                                 "preset": encoder.preset,
+                                                 "source": encoder.source}))
 
     keyframes = (
         f", keyframes every {check.median_keyframe_interval:.0f} frames"

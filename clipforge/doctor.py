@@ -87,6 +87,27 @@ def _check_data_root(root) -> Check:
     return Check(label="data_root", ok=True, detail=str(root))
 
 
+def _check_encoder(cfg, ffmpeg_path: str | None) -> Check:
+    """Which video encoder the proxy stage would use, and how it decided.
+
+    Worth surfacing before a run rather than after: on CPU a 4-hour stream is
+    roughly two hours of encoding against §1.3's 20-40 minute budget for all
+    unattended processing, and the difference is not visible anywhere else.
+    """
+    from clipforge.ingest import encoders
+
+    try:
+        binary = ffmpeg.require("ffmpeg", ffmpeg_path or cfg.ffmpeg_override)
+        choice = encoders.select(cfg, binary)
+    except Exception as exc:
+        return Check(label="proxy encoder", ok=False, detail=str(exc), required=False)
+
+    detail = encoders.describe(choice)
+    if not choice.is_hardware:
+        detail += " — expect ~2x realtime; a GPU encoder would cut a 4-hour stream to minutes"
+    return Check(label="proxy encoder", ok=True, detail=detail, required=False)
+
+
 def run_checks(
     ffmpeg_path: str | None = None,
     ffprobe_path: str | None = None,
@@ -109,6 +130,8 @@ def run_checks(
 
     if cfg is not None:
         checks.append(_check_data_root(cfg.data_root))
+        if checks[1].ok:  # ffmpeg present
+            checks.append(_check_encoder(cfg, ffmpeg_path))
     return checks
 
 

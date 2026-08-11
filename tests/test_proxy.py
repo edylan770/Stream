@@ -130,18 +130,18 @@ def test_command_uses_faststart(command):
 
 
 def test_command_respects_extra_output_args():
-    """The escape hatch for hardware encoders, which need rate-control flags
-    libx264 does not understand."""
-    cfg = config.load(overrides=[
-        "ingest.proxy.video_codec=h264_nvenc",
-        'ingest.proxy.extra_output_args=["-rc", "vbr"]',
-    ])
+    """A last-resort escape hatch, independent of the per-encoder args block."""
+    from clipforge.ingest import encoders
+
+    cfg = config.load(overrides=['ingest.proxy.extra_output_args=["-maxrate", "3M"]'])
     argv = proxy.build_command(
         "ffmpeg", "m.mkv", "p.mp4", cfg=cfg, source_height=1080,
         rate=Fraction(60, 1), audio_index=0,
+        encoder=encoders.EncoderChoice("h264_nvenc", "p4", ["-rc", "vbr"], "configured"),
     )
     assert argv[argv.index("-c:v") + 1] == "h264_nvenc"
     assert "-rc" in argv and "vbr" in argv
+    assert argv[argv.index("-maxrate") + 1] == "3M"
 
 
 def test_command_does_not_violate_a1():
