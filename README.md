@@ -5,6 +5,10 @@ Stream → clip → video pipeline. Built to the specification in
 
 **Status: Phase 1 (spec §15) in progress.** Nothing from Phase 2+ is implemented.
 
+See [`HANDOFF.md`](HANDOFF.md) for what is built, what is next, and every place the
+implementation deliberately departs from the spec — several of those fix silent-failure
+bugs and should not be reverted without reading why.
+
 ## What Phase 1 does
 
 Register a recording, probe it, build a scrubbing proxy, split audio, extract mic

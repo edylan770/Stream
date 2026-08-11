@@ -33,13 +33,25 @@ const fmt = (s) => {
 
 /* ------------------------------------------------------------- bootstrap */
 
-async function boot() {
-  const fromUrl = new URLSearchParams(location.search).get("stream");
+/* `force` skips the auto-open shortcuts.
+ *
+ * Without it, "back" was unusable: openStream puts ?stream=<id> in the URL so a
+ * reload resumes where you were, and boot() honoured that param — so leaving a
+ * stream immediately re-entered it. The same applied when only one stream was
+ * reviewable, which auto-opens. Going back has to mean the picker, always. */
+async function boot(force = false) {
   const res = await fetch("/api/streams");
   const { streams } = await res.json();
 
+  if (force) {
+    history.replaceState(null, "", location.pathname);
+    return showPicker(streams);
+  }
+
+  const fromUrl = new URLSearchParams(location.search).get("stream");
+  if (fromUrl && streams.some((s) => s.id === fromUrl)) return openStream(fromUrl);
+
   const reviewable = streams.filter((s) => s.candidates > 0 && s.has_proxy);
-  if (fromUrl) return openStream(fromUrl);
   if (reviewable.length === 1) return openStream(reviewable[0].id);
   showPicker(streams);
 }
@@ -415,8 +427,8 @@ document.addEventListener("keydown", (event) => {
 });
 
 $("filter-toggle").onclick = () => { state.markersOnly = !state.markersOnly; applyFilter(); };
-$("back").onclick = () => boot();
-$("summary-back").onclick = () => boot();
+$("back").onclick = () => { stopPlayback(); boot(true); };
+$("summary-back").onclick = () => boot(true);
 
 setInterval(() => {
   if ($("review").hidden || !state.sessionStart) return;
