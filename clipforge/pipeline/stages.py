@@ -104,6 +104,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="generate proxy",
         phase=1,
         requires=("probe",),
+        module="clipforge.ingest.proxy",
     ),
     StageSpec(
         name="audio_split",

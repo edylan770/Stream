@@ -101,10 +101,24 @@ def run_main(args) -> int:
             print(f"dry run: {planned} stage(s) would run")
             return 0
 
-        blocked = [d for d in decisions if d.action == runner.BLOCKED]
-        if blocked and not any(d.will_run for d in decisions):
-            print(f"nothing to do. {blocked[0].stage}: {blocked[0].reason}")
+        # A stage blocked because a *later phase* has not been built yet is the
+        # normal state of a Phase 1 pipeline, not an error. The only blockage
+        # the operator can act on is an unregistered stream, which stops
+        # everything. Anything else that is blocked is waiting on code that
+        # does not exist, and reporting a non-zero exit for that would make the
+        # exit code useless for scripting.
+        root_blocked = next(
+            (d for d in decisions
+             if d.action == runner.BLOCKED and not stages.get(d.stage).requires),
+            None,
+        )
+        if root_blocked is not None:
+            print(f"cannot proceed. {root_blocked.stage}: {root_blocked.reason}")
             return 1
+
+        if not any(d.will_run for d in decisions):
+            print("everything up to date")
+            return 0
 
         results = engine.execute(decisions)
         print()

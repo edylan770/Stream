@@ -46,9 +46,31 @@ ingest:
     video_bitrate: 2M
     preset: veryfast
     audio_bitrate: 128k
+
+    # §5.2 specifies libx264, i.e. CPU encoding. MEASURED on the build machine:
+    # 682 s of 720p60 took 333 s, roughly 2x realtime, which extrapolates to
+    # about two hours for a 4-hour stream -- well past §1.3's 20-40 minute
+    # unattended-processing budget.
+    #
+    # The operator owns a GPU (§2.2 relies on it for WhisperX), and a hardware
+    # encoder turns that into minutes. Quality matters less here than anywhere
+    # else in the system: a proxy exists to be scrubbed, not watched (§13.1).
+    #
+    # Switch on the target machine once it can be measured there:
+    #   video_codec: h264_nvenc
+    #   preset: p4
+    #   extra_output_args: ["-rc", "vbr", "-tune", "ull"]
+    # NVENC ignores x264's preset names, so `preset` changes meaning with it.
+    video_codec: libx264
+    extra_output_args: []
     # A2: fixed GOP. Without sc_threshold=0, x264 inserts keyframes on scene
     # changes and seek granularity becomes unpredictable. gop=30 is 0.5 s at
     # 60 fps, 1 s at 30 fps.
+    #
+    # Verified against ffmpeg 9: libx264 still exposes a private sc_threshold
+    # (default -1) that maps to x264's scenecut, so §5.2's flag does what it
+    # says. It was a plausible casualty of deprecation, which would have voided
+    # A2 silently -- hence the keyframe check after every encode.
     gop: 30
     keyint_min: 30
     sc_threshold: 0
@@ -57,6 +79,25 @@ ingest:
     # is what actually makes that claim true and keeps review timestamps and
     # export timestamps interchangeable.
     force_cfr: true
+    # NOT IN §5.2 either. A 10-bit or 4:2:2 master -- some capture cards, and
+    # OBS with certain encoder settings -- produces a proxy no browser can
+    # decode, so the review UI shows a black player and no error at all.
+    pix_fmt: yuv420p
+
+    # Checked immediately after encoding, inside the stage, so a proxy that
+    # does not match its master never becomes a completed artifact.
+    verify:
+      # Hard failure: every timestamp in the system assumes proxy and master
+      # are interchangeable (§5.2, §13.1).
+      max_duration_delta_s: 0.5
+      # Hard for CFR masters, advisory for VFR ones -- forcing CFR legitimately
+      # changes the frame count there.
+      max_frame_delta: 2
+      # A2's fixed GOP is the whole reason Phase 1 live-seeks the proxy instead
+      # of pre-rendering previews (§7.2). Sample this many seconds of keyframes
+      # and require the spacing to hold; 0 disables the check.
+      keyframe_sample_s: 60.0
+      max_keyframe_interval_ratio: 1.5
 
   # §5.3. 16 kHz mono is correct for WhisperX and every audio feature. Do not
   # raise it.
