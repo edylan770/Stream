@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipForge — review</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<!-- Stream picker. Shown when no stream is selected, or when there is more
+     than one and the operator wants to switch. -->
+<section id="picker" class="picker" hidden>
+  <h1>ClipForge</h1>
+  <p class="muted">Pick a stream to review.</p>
+  <ul id="stream-list" class="stream-list"></ul>
+  <p id="picker-empty" class="empty" hidden>
+    No streams with candidates yet. Register a recording and run the pipeline:
+    <code>clipforge register --master &lt;file&gt;</code> then
+    <code>clipforge run &lt;id&gt;</code>.
+  </p>
+</section>
+
+<!-- The review screen. -->
+<main id="review" hidden>
+
+  <header class="bar">
+    <div class="bar-left">
+      <button id="back" class="link" title="Back to stream list">&larr;</button>
+      <strong id="stream-name"></strong>
+      <span id="stream-meta" class="muted"></span>
+    </div>
+    <div class="bar-right">
+      <span id="filter-state" class="pill" hidden>markers only</span>
+      <span id="progress" class="muted"></span>
+      <span id="clock" class="muted mono" title="Session length — §7.1 targets 8 min per 120"></span>
+    </div>
+  </header>
+
+  <div id="warnings" class="warnings" hidden></div>
+
+  <div class="layout">
+
+    <!-- Ranked candidate list. -->
+    <aside class="list" id="list-pane">
+      <div class="list-head">
+        <span>Candidates</span>
+        <button id="filter-toggle" class="chip" title="Show only marker-anchored (m)">m</button>
+      </div>
+      <ol id="candidates" class="candidates"></ol>
+    </aside>
+
+    <!-- The candidate under review. -->
+    <section class="stage">
+      <div class="video-wrap">
+        <video id="video" preload="auto" playsinline></video>
+        <div id="playing" class="playing" hidden>playing window…</div>
+      </div>
+
+      <div class="detail">
+        <div class="detail-head">
+          <div>
+            <div id="window" class="window mono"></div>
+            <div id="position" class="muted"></div>
+          </div>
+          <div class="score-block">
+            <div id="score" class="score mono"></div>
+            <div class="muted">score</div>
+          </div>
+        </div>
+
+        <!-- Drawn from signal_series, already in the database: no ffmpeg, no
+             preview assets (those are Phase 3, §7.2). -->
+        <figure class="spark">
+          <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"
+               role="img" aria-label="signal level across the window"></svg>
+          <figcaption id="spark-caption" class="muted"></figcaption>
+        </figure>
+
+        <div id="signals" class="signals" hidden></div>
+
+        <div id="verdict" class="verdict"></div>
+      </div>
+    </section>
+  </div>
+
+  <footer class="keys">
+    <span><kbd>j</kbd><kbd>k</kbd> move</span>
+    <span><kbd>1</kbd> skip</span>
+    <span><kbd>2</kbd> maybe</span>
+    <span><kbd>3</kbd> clip it</span>
+    <span><kbd>space</kbd> play window</span>
+    <span><kbd>?</kbd> signals</span>
+    <span><kbd>m</kbd> markers only</span>
+    <span><kbd>q</kbd> finish</span>
+  </footer>
+</main>
+
+<!-- Shown after `q`. Reports against §7.1's target. -->
+<section id="summary" class="picker" hidden>
+  <h1>Session finished</h1>
+  <div id="summary-body"></div>
+  <p><button id="summary-back" class="chip">Back to streams</button></p>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

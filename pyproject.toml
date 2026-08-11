@@ -22,7 +22,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# httpx backs starlette's TestClient, which is how the review API is tested
+# without binding a port.
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 clipforge = "clipforge.cli:main"
