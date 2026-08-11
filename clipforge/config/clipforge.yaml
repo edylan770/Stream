@@ -172,10 +172,26 @@ ingest:
 
 extract:
   # §5.4: all continuous signals are computed at 10 Hz and stored at 10 Hz.
+  #
+  # This is the ONLY place the hop is defined. There was briefly a separate
+  # extract.rms.hop_s alongside it, which is one fact stated twice: set one
+  # without the other and the series' declared sample rate stops matching its
+  # actual spacing, silently shifting every timestamp derived from it. §5.4
+  # says "10 Hz (100 ms hop)" -- the same fact, not two.
   signal_hz: 10.0
+
   rms:
+    # Analysis window per sample. Longer is smoother and less responsive; at
+    # 2x the hop each sample overlaps its neighbours by half.
+    # §5.4.1 implies librosa's default 2048 samples (128 ms at 16 kHz).
     frame_s: 0.2
-    hop_s: 0.1
+
+    # Digital silence is 20*log10(0) = -inf, which poisons every downstream
+    # mean, z-score and plot. Floor it instead.
+    #
+    # COUPLED TO score.zscore_std_floor: a stretch at this floor is perfectly
+    # constant, so its rolling standard deviation is zero and §6.2's z-score
+    # divides by it. Tune one, look at the other.
     db_floor: -80.0
 
 score:
@@ -196,6 +212,10 @@ score:
   # sigma ~ 0, so dither becomes z = 50 and the top candidate of every stream is
   # a quiet moment. Units: dB, matching mic_rms. Tune against: whether quiet
   # stretches produce spurious candidates.
+  #
+  # COUPLED TO extract.rms.db_floor: a stretch pinned at that floor is exactly
+  # constant, so its sigma is exactly zero. This is the value that keeps the
+  # division finite.
   zscore_std_floor: 0.5
 
   # §6.2 step 6.

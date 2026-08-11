@@ -118,6 +118,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="RMS, F0, silence, laughter (per track)",
         phase=1,
         requires=("audio_split",),
+        module="clipforge.extract.features",
     ),
     StageSpec(
         name="whisperx",

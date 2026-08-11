@@ -296,8 +296,14 @@ def test_deleting_the_proxy_reruns_only_the_proxy(split):
     assert ran == ["proxy"]
 
 
-def test_deleting_a_wav_reruns_only_the_split(split):
-    """The mirror case: re-extracting audio must not re-encode the proxy."""
+def test_deleting_a_wav_leaves_the_proxy_alone(split):
+    """The mirror case: re-extracting audio must not re-encode the proxy.
+
+    Stages downstream of audio_split legitimately re-run with it — that is the
+    cascade working — so the invariant is about the *sibling*, not about the
+    count. Written this way it does not need editing every time a stage is
+    added below audio_split.
+    """
     cfg, conn, engine, _ = split
     (cfg.data_root / "streams/fx/audio/mic.wav").unlink()
 
@@ -307,7 +313,9 @@ def test_deleting_a_wav_reruns_only_the_split(split):
     assert decisions["audio_split"].action == "run"
 
     ran = [r.stage for r in engine.execute(engine.plan())]
-    assert ran == ["audio_split"]
+    assert ran[0] == "audio_split"
+    assert "proxy" not in ran
+    assert set(ran) <= {"audio_split"} | stages.descendants("audio_split")
 
 
 def test_reprobing_reruns_both_children(split):
