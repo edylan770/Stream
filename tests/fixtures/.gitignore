@@ -1,0 +1,3 @@
+# Fixtures are generated, never committed. `make_fixture.py` is the artifact
+# that lives in git; the media it produces does not.
+_generated/

@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,25 @@ ENV_FFPROBE = "CLIPFORGE_FFPROBE"
 
 class FFmpegNotFound(RuntimeError):
     """Raised when a required binary cannot be located."""
+
+
+class FFmpegError(RuntimeError):
+    """A binary ran and failed. Carries enough context to diagnose it."""
+
+    def __init__(self, argv: list[str], returncode: int, stderr: str):
+        self.argv = argv
+        self.returncode = returncode
+        self.stderr = stderr
+        tail = "\n".join(stderr.strip().splitlines()[-12:])
+        super().__init__(
+            f"{Path(argv[0]).name} exited {returncode}\n"
+            f"  command: {' '.join(argv[1:])}\n"
+            f"  stderr tail:\n{tail}"
+        )
+
+
+class SeekPlacementError(RuntimeError):
+    """A1 violation: `-ss` used as an output option."""
 
 
 @dataclass(frozen=True)
@@ -118,3 +138,77 @@ def require(name: str, override: str | os.PathLike[str] | None = None) -> str:
         )
     assert info.path is not None
     return info.path
+
+
+def validate_seek_placement(argv: Sequence[str]) -> None:
+    """Enforce A1 mechanically instead of by comment.
+
+    `-ss` is an *input* option when it precedes the `-i` it applies to, and an
+    *output* option otherwise. Input seeking jumps via the container index in
+    milliseconds; output seeking decodes from frame zero and, on a 50 GB master,
+    takes minutes. Appendix A1 calls this the most common performance mistake in
+    the domain, so every command this module runs is checked rather than
+    trusted.
+
+    Multi-input commands are handled correctly: in
+    `-ss 10 -i a.mkv -ss 20 -i b.mkv` both seeks precede an input and both are
+    fast. The failure is a `-ss` with no `-i` after it.
+    """
+    tokens = list(argv)
+    for index, token in enumerate(tokens):
+        if token != "-ss":
+            continue
+        if "-i" not in tokens[index + 1 :]:
+            raise SeekPlacementError(
+                "A1 violation: -ss appears with no -i after it, which makes it an "
+                "output option (decode from frame zero). Move it before the input "
+                f"it applies to. Command: {' '.join(tokens[1:])}"
+            )
+
+
+def run(
+    argv: Sequence[str],
+    *,
+    timeout: float | None = None,
+    check: bool = True,
+    on_stderr_line: Callable[[str], None] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run ffmpeg/ffprobe with A1 enforced and stderr captured.
+
+    Arguments are always a list — never a shell string. Paths on the target
+    machine are unknown and will contain spaces.
+    """
+    validate_seek_placement(argv)
+    argv = [str(a) for a in argv]
+
+    if on_stderr_line is None:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, check=False,
+            encoding="utf-8", errors="replace",
+        )
+        if check and proc.returncode != 0:
+            raise FFmpegError(argv, proc.returncode, proc.stderr or "")
+        return proc
+
+    # Streaming mode: used for long encodes so a heartbeat can be updated and
+    # progress reported while ffmpeg works.
+    collected: list[str] = []
+    with subprocess.Popen(
+        argv,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    ) as popen:
+        assert popen.stderr is not None
+        for line in popen.stderr:
+            collected.append(line)
+            on_stderr_line(line.rstrip("\r\n"))
+        returncode = popen.wait(timeout=timeout)
+
+    stderr = "".join(collected)
+    if check and returncode != 0:
+        raise FFmpegError(argv, returncode, stderr)
+    return subprocess.CompletedProcess(argv, returncode, "", stderr)

@@ -11,10 +11,43 @@ from __future__ import annotations
 
 import pytest
 
-from clipforge import config
+from clipforge import config, ffmpeg
+from tests.fixtures.make_fixture import FixtureSpec, generate, load_manifest
 
 
 @pytest.fixture(autouse=True)
 def hermetic_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LOCAL_FILE", tmp_path / "no-such-local.yaml")
     monkeypatch.delenv(config.ENV_CONFIG, raising=False)
+
+
+@pytest.fixture(scope="session")
+def has_ffmpeg() -> bool:
+    return ffmpeg.find_binary("ffmpeg").ok and ffmpeg.find_binary("ffprobe").ok
+
+
+@pytest.fixture(scope="session")
+def needs_ffmpeg(has_ffmpeg):
+    """Skip rather than fail on a machine that has not installed ffmpeg.
+
+    The suite has to stay runnable on the build machine before setup and on CI,
+    so anything shelling out to ffmpeg opts in explicitly.
+    """
+    if not has_ffmpeg:
+        pytest.skip("ffmpeg/ffprobe not available")
+
+
+@pytest.fixture(scope="session")
+def fixture_dir(needs_ffmpeg):
+    """The synthetic stream, generated once per session and cached on disk.
+
+    Regeneration is skipped when the spec hash is unchanged, so this costs a
+    few seconds the first time and nothing thereafter.
+    """
+    return generate(FixtureSpec())
+
+
+@pytest.fixture(scope="session")
+def manifest(fixture_dir) -> dict:
+    """Ground truth. Tests assert against this, never against constants."""
+    return load_manifest(fixture_dir)
