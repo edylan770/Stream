@@ -111,6 +111,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="extract per-track WAV",
         phase=1,
         requires=("probe",),
+        module="clipforge.extract.audio",
     ),
     StageSpec(
         name="audio_features",

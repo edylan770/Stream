@@ -7,6 +7,7 @@ media disagree, every later test is measuring the wrong thing while passing.
 from __future__ import annotations
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -23,9 +24,13 @@ from tests.fixtures.make_fixture import (
 )
 
 #: The authored signal is lossless FLAC; the only transform between it and a
-#: 16 kHz mono WAV is resampling of band-limited content. Half a dB is
-#: generous for that and still tight enough to catch a real error.
-DB_TOLERANCE = 0.5
+#: 16 kHz mono WAV is resampling of band-limited content, which measures at
+#: 0.01 dB.
+#:
+#: This was 0.5 dB and that was too loose to be useful: it hid clipped peaks
+#: that pulled the loudest region 0.45 dB below its declared level. A tolerance
+#: wide enough to pass a broken fixture is not a tolerance.
+DB_TOLERANCE = 0.25
 
 
 def probe_json(path, *args) -> dict:
@@ -185,6 +190,53 @@ def test_extracted_audio_matches_the_manifest(fixture_dir, manifest, tmp_path):
         ), f"{region['label']} on {track}"
 
 
+def test_no_track_clips(fixture_dir, manifest, tmp_path):
+    """The regression guard for a bug this fixture actually had.
+
+    Band-limited noise has a ~6.5 dB crest factor, so authoring a region at
+    -6 dBFS RMS wants peaks above full scale — and FLAC, being integer-based,
+    clips them. The symptom was 1062 samples pinned at full scale and the most
+    important region reading 0.45 dB low, which the old 0.5 dB tolerance
+    happily accepted.
+    """
+    import soundfile as sf
+
+    binary = ffmpeg.require("ffmpeg")
+    ceiling = 10 ** (manifest["peak_ceiling_dbfs"] / 20.0)
+
+    for name, index in manifest["expected_track_map"].items():
+        out = tmp_path / f"{name}.wav"
+        ffmpeg.run([
+            binary, "-hide_banner", "-nostdin", "-y",
+            "-i", str(fixture_dir / manifest["video"]),
+            "-map", f"0:a:{index}", "-ac", "1", "-ar", "16000",
+            "-c:a", "pcm_s16le", str(out),
+        ])
+        data, _ = sf.read(out, dtype="float32")
+        peak = float(np.max(np.abs(data)))
+        pinned = int(np.sum(np.abs(data) >= 0.999))
+        assert pinned == 0, f"{name} has {pinned} clipped samples"
+        # Resampling can overshoot slightly; the ceiling exists to absorb that.
+        assert peak <= ceiling * 1.05, f"{name} peaks at {peak:.4f}, ceiling {ceiling:.4f}"
+
+
+def test_headroom_preserves_relative_track_levels(manifest):
+    """One scale factor across mic/game/party, not one each.
+
+    Per-track normalization would change the tracks' levels relative to each
+    other, and the entire point of the game-loud-while-mic-quiet region is that
+    that relationship is exact.
+    """
+    by_label = {r["label"].split("#")[0]: r for r in manifest["regions"]}
+    scale_db = 20 * math.log10(manifest["headroom_scale"])
+
+    for label, track in (("speech_peak", "mic"), ("game_explosion", "game"),
+                         ("party_laugh", "party")):
+        region = by_label[label]
+        expected = region["declared_dbfs"] + scale_db
+        assert region["measured_dbfs"][track] == pytest.approx(expected, abs=0.05)
+
+
 def test_the_contamination_case_is_actually_indistinguishable(manifest):
     """§4.2's claim, made concrete.
 
@@ -194,14 +246,18 @@ def test_the_contamination_case_is_actually_indistinguishable(manifest):
     §4.2 calls the separation non-negotiable and unrecoverable after the fact.
     """
     by_label = {r["label"].split("#")[0]: r for r in manifest["regions"]}
-    explosion = by_label["game_explosion"]["measured_dbfs"]
-    speech = by_label["speech_peak"]["measured_dbfs"]
+    explosion = by_label["game_explosion"]
+    speech = by_label["speech_peak"]
 
-    # On their own tracks they are trivially separable...
-    assert explosion["game"] == pytest.approx(-6.0, abs=0.1)
-    assert speech["mic"] == pytest.approx(-6.0, abs=0.1)
+    # On their own tracks they are trivially separable and equally loud.
+    assert explosion["measured_dbfs"]["game"] == pytest.approx(
+        speech["measured_dbfs"]["mic"], abs=0.1
+    )
     # ...and the mic is near its floor during the explosion.
-    assert explosion["mic"] < manifest["floors_dbfs"]["mic"] + 3.0
+    scale_db = 20 * math.log10(manifest["headroom_scale"])
+    assert explosion["measured_dbfs"]["mic"] < manifest["floors_dbfs"]["mic"] + scale_db + 3.0
+
+    explosion, speech = explosion["measured_dbfs"], speech["measured_dbfs"]
 
     # But mixed down they are the same event as far as RMS is concerned.
     assert abs(explosion["mixed"] - speech["mixed"]) < 1.0

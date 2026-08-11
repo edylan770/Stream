@@ -83,6 +83,16 @@ EDGE_FADE_S = 0.005
 #: Seconds of periodic noise generated per track, then tiled.
 NOISE_SEED_S = 4.0
 
+#: Peak ceiling for the authored tracks, in dBFS.
+#:
+#: Band-limited noise has a crest factor around 6.5 dB, so a region authored at
+#: -6 dBFS RMS wants peaks above full scale. The container's FLAC codec is
+#: integer-based, so those peaks clip on encode — measured at 1062 pinned
+#: samples, dragging the loudest region 0.45 dB below its declared level while
+#: still sneaking under a 0.5 dB test tolerance. A fixture that is the
+#: measuring instrument for everything downstream cannot be quietly 0.45 dB out.
+PEAK_CEILING_DBFS = -1.0
+
 #: §4.2 track order. Index is the ffmpeg output stream index (0-based), which
 #: is what §5.3's `-map 0:a:N` addresses.
 TRACK_ORDER = ("mixed", "mic", "game", "party")
@@ -122,7 +132,8 @@ class FixtureSpec:
     record_start_epoch_ms: int = 1_755_123_456_789
     track_titles: bool = True
     seed: int = 20260810
-    generator_version: int = 1
+    peak_ceiling_dbfs: float = PEAK_CEILING_DBFS
+    generator_version: int = 2
 
     #: Filled by build_pattern().
     regions: list[Region] = field(default_factory=list)
@@ -288,6 +299,26 @@ def build_track(spec: FixtureSpec, track: str) -> np.ndarray:
     return signal
 
 
+def apply_headroom(tracks: dict[str, np.ndarray], ceiling_dbfs: float) -> float:
+    """Scale every source track by ONE factor so none of them clips.
+
+    One shared factor, not one per track. Scaling each to its own peak would
+    change the tracks' levels *relative to each other*, and the whole point of
+    the game-loud-while-mic-quiet region is that the relationship between those
+    two tracks is exact. Absolute levels shift; the manifest records what they
+    became, and scoring only ever cares about relative level anyway.
+    """
+    peak = max((float(np.max(np.abs(signal))) for signal in tracks.values()), default=0.0)
+    ceiling = dbfs_to_rms(ceiling_dbfs)
+    if peak <= ceiling or peak == 0.0:
+        return 1.0
+
+    scale = ceiling / peak
+    for name in tracks:
+        tracks[name] = tracks[name] * scale
+    return scale
+
+
 def build_mixed(tracks: dict[str, np.ndarray]) -> tuple[np.ndarray, float]:
     """The §4.2 track-1 mix: everything summed, scaled off the clipping ceiling.
 
@@ -431,6 +462,7 @@ def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = Fals
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tracks = {name: build_track(spec, name) for name in ("mic", "game", "party")}
+    headroom_scale = apply_headroom(tracks, spec.peak_ceiling_dbfs)
     tracks["mixed"], mix_scale = build_mixed(tracks)
 
     wavs = write_wavs(spec, tracks, out_dir)
@@ -458,6 +490,11 @@ def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = Fals
         "expected_is_vfr": False,
         "floors_dbfs": spec.floors_dbfs,
         "mix_scale": round(mix_scale, 6),
+        # One factor applied to mic/game/party together, so their levels
+        # relative to each other survive exactly. Declared dB in `regions`
+        # is pre-headroom; `measured_dbfs` is what is actually in the file.
+        "headroom_scale": round(headroom_scale, 6),
+        "peak_ceiling_dbfs": spec.peak_ceiling_dbfs,
         "regions": measure_regions(spec, tracks),
         "markers": spec.markers,
         "notes": {
@@ -468,6 +505,13 @@ def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = Fals
                 "would not match what the pipeline extracts."
             ),
             "audio_codec": "flac (lossless, so RMS survives the container)",
+            "why_headroom": (
+                "FLAC is integer-based, so float peaks above full scale clip on "
+                "encode. Band-limited noise has a ~6.5 dB crest factor, so a "
+                "region authored at -6 dBFS RMS would clip and read ~0.45 dB low. "
+                "All source tracks share one scale factor so their relative levels "
+                "are untouched."
+            ),
             "contamination_case": (
                 "game_explosion is loud while mic is at its floor. On the mixed "
                 "track it is indistinguishable from the operator shouting, which "

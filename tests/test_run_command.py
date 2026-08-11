@@ -43,7 +43,10 @@ def test_up_to_date_pipeline_exits_zero(registered, capsys, tmp_path):
     conn = db.open_db(cfg.db_path, migrate_to_latest=False)
     engine = runner.Runner(cfg=cfg, conn=conn, stream_id="fx", log=lambda *_: None)
     engine.mark_external_done("register_stream")
-    engine.execute(engine.plan(["register_stream", "probe", "proxy"]))
+    # Everything runnable, not a named subset: this test is about the exit code
+    # when nothing is left to do, and should not need editing each time a stage
+    # is implemented.
+    engine.execute(engine.plan())
     conn.close()
 
     assert cli.main(["run", "fx", "--set", f"paths.data_root={registered}"]) == 0

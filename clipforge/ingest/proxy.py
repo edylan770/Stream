@@ -17,18 +17,15 @@ verification after each encode converts that into an error message.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
 from clipforge import db, ffmpeg
 from clipforge.ingest import probe as probe_stage
+from clipforge.pipeline import progress
 from clipforge.pipeline.atomic import atomic_output
 from clipforge.pipeline.context import StageContext, master_identity
-
-#: ffmpeg -progress emits `out_time_us=<int>` among its key=value lines.
-_PROGRESS_TIME = re.compile(r"^out_time_us=(\d+)$")
 
 
 class ProxyError(RuntimeError):
@@ -313,7 +310,7 @@ def run(ctx: StageContext) -> None:
             ffmpeg_bin, master, tmp, cfg=ctx.cfg,
             source_height=source_h, rate=rate, audio_index=audio_index,
         )
-        ffmpeg.run(argv, on_stderr_line=_progress_reporter(ctx, master_duration))
+        ffmpeg.run(argv, on_stderr_line=progress.reporter(ctx, master_duration))
 
         expected_frames = round(master_duration * float(rate))
         check = inspect(
@@ -345,27 +342,3 @@ def run(ctx: StageContext) -> None:
         f"    {size_mb:.1f} MB, {check.duration_s:.2f}s, "
         f"{check.frames if check.frames is not None else '?'} frames{keyframes}"
     )
-
-
-def _progress_reporter(ctx: StageContext, total_s: float):
-    """Turn ffmpeg's -progress stream into a heartbeat and a percentage.
-
-    The heartbeat is what lets the next invocation tell a crashed run from a
-    long encode; a four-hour master takes long enough that the distinction
-    matters.
-    """
-    state = {"pct": -10}
-
-    def handle(line: str) -> None:
-        match = _PROGRESS_TIME.match(line.strip())
-        if not match:
-            return
-        ctx.heartbeat()
-        if total_s <= 0:
-            return
-        pct = int(min(100.0, (int(match.group(1)) / 1_000_000.0) / total_s * 100))
-        if pct >= state["pct"] + 10:
-            state["pct"] = pct
-            ctx.log(f"      {pct}%")
-
-    return handle

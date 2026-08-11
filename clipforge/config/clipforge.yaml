@@ -101,10 +101,32 @@ ingest:
 
   # §5.3. 16 kHz mono is correct for WhisperX and every audio feature. Do not
   # raise it.
+  #
+  # STORAGE, which §13.1's table has no row for: 16 kHz mono s16le is ~115 MB
+  # per hour per track, so mic+game+party over a 4-hour stream is ~1.4 GB and
+  # ~140 GB across 100 streams -- comparable to the previews and metadata tiers
+  # combined. Regenerable from the master, so safe to delete, but Phase 2's
+  # WhisperX consumes them.
   audio:
     sample_rate_hz: 16000
     channels: 1
     codec: pcm_s16le
+    # §5.3 maps a:1/2/3 and deliberately not a:0 -- the proxy already carries
+    # the mix for review, so extracting it would add ~460 MB per stream for
+    # something nothing analyses. Roles absent from the probed track map are
+    # skipped, so a single-track file yields only mic.wav.
+    extract_roles: [mic, game, party]
+    verify:
+      # A truncated extraction is silent corruption: it shows up much later as
+      # candidates that stop appearing partway through a stream.
+      max_duration_delta_s: 0.5
+      # Sampled from a few blocks rather than by reading the file; a 4-hour
+      # mono WAV is ~230 MB and the header already gives the frame count.
+      silence_probe_blocks: 12
+      # Peak below this counts as digital silence. A silent mic.wav means the
+      # track mapping is wrong; a silent party.wav just means nobody was in
+      # Discord -- so this warns and never fails.
+      silence_peak_dbfs: -80.0
     # role -> ffmpeg audio stream index (§4.2's track layout).
     # null = infer from probe. A single-track file maps to `mic` and warns:
     # mic RMS is then contaminated by game audio, which §4.2 calls
