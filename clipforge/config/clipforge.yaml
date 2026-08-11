@@ -29,6 +29,17 @@ paths:
 ingest:
   stream_id_slug_max_len: 40
 
+  probe:
+    # Seconds of presentation timestamps sampled to decide constant vs variable
+    # frame rate. The classifier fits PTS against a constant rate and checks the
+    # residual, because neither frame durations nor PTS deltas can tell the two
+    # apart: an MKV on a 1 ms timebase stores CFR 30 fps as alternating 33/34 ms
+    # frames, and ffprobe's duration_time field reports a nominal value that
+    # cannot detect real VFR at all. Two windows are sampled -- the start, and
+    # mid-file, since a recording can begin CFR and degrade once the encoder is
+    # under load. Longer is more evidence and more probe time.
+    rate_sample_seconds: 4.0
+
   # §5.2. The proxy exists for scrubbing speed, not storage (§13.1).
   proxy:
     height: 720

@@ -97,6 +97,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="ffprobe: duration, fps, resolution, track map",
         phase=1,
         requires=("register_stream",),
+        module="clipforge.ingest.probe",
     ),
     StageSpec(
         name="proxy",
