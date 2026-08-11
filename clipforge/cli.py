@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "config": ("clipforge.config", "show the merged configuration and its version hash"),
     "db": ("clipforge.db.commands", "init, inspect, or relink the database"),
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),
+    "register": ("clipforge.ingest.register", "register a recording as a stream"),
     "run": ("clipforge.pipeline.cmd_run", "run the extraction pipeline for a stream"),
     "status": ("clipforge.pipeline.cmd_status", "show pipeline state for a stream"),
 }
