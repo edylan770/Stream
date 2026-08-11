@@ -8,7 +8,6 @@ from clipforge import config, db
 
 
 def add_arguments(parser) -> None:
-    config.add_config_arguments(parser)
     actions = parser.add_subparsers(dest="db_action", metavar="<action>")
 
     init = actions.add_parser("init", help="create the database and apply migrations")
@@ -29,6 +28,15 @@ def add_arguments(parser) -> None:
     relink.add_argument("--to", dest="to_prefix", required=True)
     relink.add_argument("--dry-run", action="store_true")
     relink.set_defaults(db_action="relink")
+
+    # Config flags go on each action, not on the `db` parser. argparse routes
+    # everything after the action name to the sub-parser, so a --set declared
+    # only on the parent makes `clipforge db init --set x=y` -- the form
+    # anybody would actually type -- fail as an unrecognized argument. Putting
+    # it on both would be worse: the sub-parser's default None overwrites the
+    # parent's parsed value in the shared namespace.
+    for action in (init, schema, info, relink):
+        config.add_config_arguments(action)
 
 
 def main(args) -> int:

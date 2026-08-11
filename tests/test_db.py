@@ -86,7 +86,8 @@ def test_every_spec_table_exists(conn):
 def test_migrate_is_idempotent(tmp_path):
     path = tmp_path / "twice.db"
     first = db.connect(path)
-    assert db.migrate(first) == [1]
+    # Every migration, whatever the count is today.
+    assert db.migrate(first) == list(range(1, db.latest_version() + 1))
     assert db.migrate(first) == []      # nothing pending the second time
     first.close()
 

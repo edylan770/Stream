@@ -36,6 +36,13 @@ FEATURE_SCHEMA_FILE = CONFIG_DIR / "feature_schema.yaml"
 
 ENV_CONFIG = "CLIPFORGE_CONFIG"
 
+#: Layout version of the config files themselves — not the tuning values, the
+#: shape. Bumped when a key is renamed, moved, or removed in a way that would
+#: make an older `local.yaml` merge into something wrong rather than something
+#: that fails. Checked on load so a stale override is an error rather than a
+#: silently ignored file.
+CONFIG_SCHEMA = 1
+
 #: Subtrees that determine what a scoring run produces. Changing any of these
 #: must produce a new `config_version`; changing `review.port` must not.
 VERSIONED_SUBTREES = ("extract", "score")
@@ -391,6 +398,17 @@ def load(
             f"warning: no clipforge project root found; resolving relative paths "
             f"against the working directory ({root}). Set an absolute "
             f"paths.data_root in local.yaml to make this unambiguous."
+        )
+
+    found_schema = merged.get("config_schema")
+    if found_schema != CONFIG_SCHEMA:
+        origin = provenance.get("config_schema", "default")
+        raise ConfigError(
+            f"config_schema is {found_schema!r} (from the {origin} layer), but this "
+            f"build expects {CONFIG_SCHEMA}. A config written for a different layout "
+            f"would merge into something subtly wrong rather than failing, so it is "
+            f"rejected. Compare your local.yaml against "
+            f"clipforge/config/local.yaml.example."
         )
 
     profile_name = profile or merged.get("score", {}).get("profile")
