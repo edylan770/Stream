@@ -12,7 +12,12 @@ from __future__ import annotations
 import pytest
 
 from clipforge import config, ffmpeg
-from tests.fixtures.make_fixture import FixtureSpec, generate, load_manifest
+from tests.fixtures.make_fixture import (
+    SPEECH_DURATION_S,
+    FixtureSpec,
+    generate,
+    load_manifest,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -67,3 +72,53 @@ def ntsc_fixture_dir(needs_ffmpeg):
 @pytest.fixture(scope="session")
 def ntsc_manifest(ntsc_fixture_dir) -> dict:
     return load_manifest(ntsc_fixture_dir)
+
+
+# --------------------------------------------------------------------------
+# speech (Phase 2)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def has_piper() -> bool:
+    from tests.fixtures.speech import voices_available
+
+    try:
+        import piper  # noqa: F401
+    except ImportError:
+        return False
+    return voices_available()
+
+
+@pytest.fixture(scope="session")
+def needs_piper(has_piper):
+    """Skip rather than fail when the voice models are not downloaded.
+
+    They are ~60 MB each and fetched over the network. A fresh clone with no
+    network has to go green, so nothing here downloads implicitly — see
+    `make_fixture.py --download-voices`.
+    """
+    if not has_piper:
+        pytest.skip(
+            "piper voices not available; "
+            "run `python tests/fixtures/make_fixture.py --download-voices`"
+        )
+
+
+@pytest.fixture(scope="session")
+def speech_fixture_dir(needs_ffmpeg, needs_piper):
+    """Authored dialogue: speaker A on the mic track, B on the party track.
+
+    Phase 2 has nothing else to work on — every other fixture is band-limited
+    noise by design, because that is what makes a level detector testable and
+    exactly what makes a transcriber untestable.
+    """
+    return generate(FixtureSpec(
+        name="speech", kind="speech", duration_s=SPEECH_DURATION_S
+    ))
+
+
+@pytest.fixture(scope="session")
+def speech_manifest(speech_fixture_dir) -> dict:
+    """Ground truth by construction: exact text, exact placement, known speaker."""
+    return load_manifest(speech_fixture_dir)

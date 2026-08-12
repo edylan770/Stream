@@ -40,9 +40,10 @@ Phase 2.
 | 14c | `f68a811` | the shell's UI — library, add-a-recording, run |
 | 15 | `86ee9e9` | FCPXML export (§10.5) |
 | 16 | `f13d7ac` | Phase 0 capture layer; the file contract, defined once |
-| 17 | *this* | setup docs, launchers |
+| 17 | `58ba6c5` | setup docs, launchers |
+| 18 | *this* | speech fixture (Piper TTS), for Phase 2 |
 
-715 tests pass. `.venv\Scripts\python.exe -m pytest -q`.
+747 tests pass. `.venv\Scripts\python.exe -m pytest -q`.
 
 **What is not built, by design:** no transcript (Phase 2), no dual profiles or preview
 assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision (Phase 7). §15
@@ -266,6 +267,21 @@ carries the ground truth every numeric test asserts against. Regenerate with
 integer frame rate where every boundary lands on a clean multiple and a rounding bug in
 the rational path passes silently. 30000/1001 is the one that does not. Generate it with
 `--fps 30000/1001`.
+
+**`speech` is the exception to "synthetic".** Phase 2 needs something to transcribe, and
+band-limited noise is exactly what makes a level detector testable and a transcriber
+untestable. It is Piper TTS dialogue — speaker A on mic, B on party (§4.2) — with the
+text and placement authored, so the manifest still carries ground truth by construction.
+Needs the voice models:
+
+```bash
+python tests\fixtures\make_fixture.py --download-voices    # ~60 MB each, once
+python tests\fixtures\make_fixture.py --kind speech --name speech
+```
+
+Tests skip cleanly when they are absent, so a fresh clone with no network still passes.
+Piper's noise scales are pinned to zero: VITS samples noise during inference, and a
+measuring instrument has to be identical on every machine that regenerates it.
 
 ---
 

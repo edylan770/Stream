@@ -39,6 +39,13 @@ capture = [
     "obsws-python>=1.6",    # §4.1's RecordStateChanged anchor
 ]
 
+# Only needed to GENERATE the speech fixture, never to run the application.
+# Phase 2 needs something to transcribe and every other fixture is band-limited
+# noise by design. Piper because it is offline and deterministic: the fixture is
+# the measuring instrument for the transcript layer, so its audio has to be the
+# same on any machine that regenerates it.
+fixtures = ["piper-tts>=1.6"]
+
 [project.scripts]
 clipforge = "clipforge.cli:main"
 

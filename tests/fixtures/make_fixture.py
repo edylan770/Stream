@@ -110,13 +110,29 @@ TRACK_TITLES = {
 
 @dataclass(frozen=True)
 class Region:
-    """A stretch of one track held at a known level."""
+    """A stretch of one track held at a known level.
+
+    An utterance is a Region too, carrying `text`/`speaker`/`voice`. That is
+    deliberate rather than convenient: `measure_regions` already records the
+    measured level of EVERY track across each region's window, so making
+    utterances regions means the manifest carries "how loud was the mic, and how
+    loud was the party track, while this line was spoken" for free — which is
+    exactly the ground truth §5.8's speaker assignment has to reproduce.
+    """
 
     track: str
     t_start: float
     t_end: float
     dbfs: float
     label: str
+    #: Speech only. Empty on a noise region.
+    text: str = ""
+    speaker: str = ""
+    voice: str = ""
+
+    @property
+    def is_speech(self) -> bool:
+        return bool(self.text)
 
 
 @dataclass
@@ -136,7 +152,11 @@ class FixtureSpec:
     peak_ceiling_dbfs: float = PEAK_CEILING_DBFS
     generator_version: int = 2
 
-    #: Filled by build_pattern().
+    #: 'noise' is the original band-limited pattern; 'speech' authors dialogue
+    #: (§5.7/§5.8 need something to transcribe). Selects the pattern builder.
+    kind: str = "noise"
+
+    #: Filled by build_pattern() / build_speech_pattern().
     regions: list[Region] = field(default_factory=list)
     markers: list[dict] = field(default_factory=list)
     floors_dbfs: dict[str, float] = field(default_factory=dict)
@@ -144,6 +164,10 @@ class FixtureSpec:
     def hash(self) -> str:
         payload = json.dumps(asdict(self), sort_keys=True, default=str)
         return hashlib.sha256(payload.encode()).hexdigest()[:12]
+
+    @property
+    def utterances(self) -> list[Region]:
+        return [r for r in self.regions if r.is_speech]
 
 
 # --------------------------------------------------------------------------
@@ -223,6 +247,170 @@ def build_pattern(spec: FixtureSpec) -> None:
 
 
 # --------------------------------------------------------------------------
+# the speech pattern (§5.6, §5.7, §5.8)
+# --------------------------------------------------------------------------
+
+#: Terms §5.7's vocabulary seeding is supposed to fix. Whisper renders these as
+#: "Hawk I" and "Iron First" without seeding, and §5.7 says bad captions read as
+#: amateur immediately. Recorded in the manifest so the A/B test reads its
+#: targets from ground truth rather than repeating this list.
+VOCABULARY_TERMS = ("Hawkeye", "Luna Snow", "Iron Fist", "Mantis", "Namor", "Jeff")
+
+#: Drawn from §5.6's own pattern list, so phrase_detect has real material.
+PASSIVE_PHRASES = ("oh my god", "no way", "did you see that", "let's go", "holy shit")
+
+#: The phrase repeated three times at the end. §5.6 flags a phrase repeated
+#: >=3x within 90 s as bit formation in real time.
+REPEATED_PHRASE = "Let's go, Hawkeye."
+
+#: (speaker, track, declared start, dBFS, text)
+#:
+#: Starts are declared; ENDS ARE MEASURED after rendering, because the true
+#: duration of a line is whatever the synthesiser produced. The manifest records
+#: what actually happened, never the intention -- the same rule as the noise
+#: fixture's measured_dbfs.
+SPEECH_SCRIPT = [
+    # -- speaker A alone on the mic. Hero names for §5.7's vocabulary test.
+    ("A", "mic", 8.0, -12.0, "Oh my god, did you see that? Hawkeye just hit that "
+                             "shot from across the map."),
+    ("A", "mic", 13.5, -12.0, "No way. Luna Snow ulted right as I got the pick."),
+    ("A", "mic", 18.0, -13.0, "Iron Fist is diving our backline again, watch out."),
+
+    # -- speaker B alone on the party track.
+    ("B", "party", 22.5, -14.0, "I'm on Mantis, I'll try to heal you through it."),
+    ("B", "party", 26.5, -14.0, "Namor's turrets are melting me, holy shit."),
+    ("B", "party", 30.0, -15.0, "Okay, I'm going Jeff. This is not working."),
+
+    # -- 32 to 52 s: NOTHING. A4 says VAD must be on or Whisper hallucinates
+    #    phantom text over silence, and calls it a well-documented failure mode
+    #    that would poison every downstream signal. Twenty seconds of floor
+    #    turns that warning into an assertion.
+
+    # -- both at once. §5.8's `both` branch is its only ambiguous case, and
+    #    §5.4.1's overlap_speech is "everyone talking at once = something
+    #    happened".
+    ("A", "mic", 52.0, -11.0, "Let's go! That was actually insane, did you see it?"),
+    ("B", "party", 52.6, -13.0, "Oh my god, that was insane. How did that even hit?"),
+
+    # -- A on mic with the game loud underneath. §4.2's contamination case:
+    #    on a single-track recording this is indistinguishable from shouting.
+    ("A", "mic", 62.0, -14.0, "I can't believe that actually worked."),
+    ("A", "mic", 67.0, -14.0, "Hawkeye, one shot, right through the Mantis."),
+
+    # -- the repeated phrase, three times inside 90 s.
+    ("A", "mic", 74.0, -12.0, REPEATED_PHRASE),
+    ("A", "mic", 80.0, -12.0, REPEATED_PHRASE),
+    ("A", "mic", 86.0, -12.0, REPEATED_PHRASE),
+]
+
+#: Noise regions under the speech. The loud one sits beneath A's 62-74 s lines.
+SPEECH_NOISE_REGIONS = [
+    ("game", 8.0, 32.0, -28.0, "game_background_early"),
+    ("game", 62.0, 74.0, -6.0, "game_explosion"),
+    ("game", 74.0, 92.0, -30.0, "game_background_late"),
+]
+
+#: Long enough for the script plus the trailing marker. The last line starts at
+#: 86 s and the last marker presses at 92 s.
+SPEECH_DURATION_S = 95.0
+
+#: So the fixture still exercises the whole Phase 1 pipeline (§4.3 reaction lag).
+SPEECH_MARKERS = [
+    (24.0, "marker_maybe", 8.0, 22.0),
+    (60.0, "marker_definite", 52.0, 62.0),
+    (92.0, "marker_definite", 74.0, 90.0),
+]
+
+
+def build_speech_pattern(spec: FixtureSpec, renderer, rendered: dict) -> None:
+    """Place the script, using each line's REAL rendered duration.
+
+    `rendered` is filled with label -> conditioned audio at the authoring rate,
+    so `build_track` writes exactly what was measured here.
+    """
+    from tests.fixtures import speech as speech_mod
+
+    regions: list[Region] = []
+
+    for index, (speaker, track, start, dbfs, text) in enumerate(SPEECH_SCRIPT):
+        voice = speech_mod.VOICES[speaker]
+        source_sr, audio = renderer.render(text, voice)
+        audio = speech_mod.resample(audio, source_sr, spec.audio_sr)
+        audio = speech_mod.band_limit(audio, spec.audio_sr, BAND_LIMIT_HZ)
+
+        label = f"utt{index:02d}_{speaker}"
+        end = start + audio.size / spec.audio_sr
+        if end > spec.duration_s:
+            raise ValueError(
+                f"utterance {label} runs to {end:.2f}s, past the fixture's "
+                f"{spec.duration_s}s. Lengthen the fixture or shorten the line."
+            )
+
+        rendered[label] = audio
+        regions.append(Region(
+            track=track, t_start=round(start, 4), t_end=round(end, 4),
+            dbfs=dbfs, label=label, text=text, speaker=speaker, voice=voice,
+        ))
+
+    for track, start, end, dbfs, label in SPEECH_NOISE_REGIONS:
+        if end <= spec.duration_s:
+            regions.append(Region(track, start, end, dbfs, label))
+
+    markers = [
+        {
+            "t_press": press,
+            "kind": kind,
+            "intended_event_t": event_start,
+            "intended_event_end_t": event_end,
+            "intended_label": "speech",
+            "reaction_delay_s": round(press - event_end, 3),
+        }
+        for press, kind, event_start, event_end in SPEECH_MARKERS
+        if press <= spec.duration_s
+    ]
+
+    spec.regions = regions
+    spec.markers = markers
+    spec.floors_dbfs = dict(FLOORS_DBFS)
+
+
+def speech_windows(spec: FixtureSpec) -> dict:
+    """Silence and overlap windows, DERIVED from where the lines actually fell.
+
+    Declaring them would be asserting the intention. These are computed from the
+    placed regions, so if a synthesiser change moves a line the manifest follows
+    it and the tests still describe the file that exists.
+    """
+    speech = sorted(spec.utterances, key=lambda r: r.t_start)
+
+    silence: list[list[float]] = []
+    cursor = 0.0
+    for region in speech:
+        if region.t_start - cursor >= 2.0:
+            silence.append([round(cursor, 3), round(region.t_start, 3)])
+        cursor = max(cursor, region.t_end)
+    if spec.duration_s - cursor >= 2.0:
+        silence.append([round(cursor, 3), round(spec.duration_s, 3)])
+
+    overlap: list[list[float]] = []
+    for i, first in enumerate(speech):
+        for second in speech[i + 1:]:
+            if second.t_start >= first.t_end:
+                break
+            if second.track == first.track:
+                continue
+            overlap.append([
+                round(second.t_start, 3), round(min(first.t_end, second.t_end), 3)
+            ])
+
+    return {
+        "silence_windows": silence,
+        "overlap_windows": overlap,
+        "longest_silence_s": round(max((b - a for a, b in silence), default=0.0), 3),
+    }
+
+
+# --------------------------------------------------------------------------
 # signal generation
 # --------------------------------------------------------------------------
 
@@ -274,7 +462,9 @@ def apply_edge_fade(signal: np.ndarray, sr: int) -> np.ndarray:
     return signal
 
 
-def build_track(spec: FixtureSpec, track: str) -> np.ndarray:
+def build_track(
+    spec: FixtureSpec, track: str, rendered: dict | None = None
+) -> np.ndarray:
     """One mono track: a quiet floor with louder regions written over it."""
     sr = spec.audio_sr
     n = int(round(spec.duration_s * sr))
@@ -289,9 +479,19 @@ def build_track(spec: FixtureSpec, track: str) -> np.ndarray:
         end = min(int(round(region.t_end * sr)), n)
         if end <= start:
             continue
-        chunk = periodic_band_limited_noise(
-            end - start, sr, BAND_LIMIT_HZ, track_seed + 1000 + index
-        )
+
+        if region.is_speech:
+            # Already resampled and band-limited by build_speech_pattern, which
+            # is also where its length was measured -- so it fits the window by
+            # construction.
+            chunk = (rendered or {})[region.label][: end - start]
+            if chunk.size < end - start:
+                end = start + chunk.size
+        else:
+            chunk = periodic_band_limited_noise(
+                end - start, sr, BAND_LIMIT_HZ, track_seed + 1000 + index
+            )
+
         chunk = scale_to_rms(chunk, dbfs_to_rms(region.dbfs))
         # Replace rather than add: the region's level is then exactly its
         # declared level, not its level plus an unstated floor.
@@ -432,7 +632,14 @@ def write_capture_files(spec: FixtureSpec, out_dir: Path) -> None:
         written_at_epoch_ms=spec.record_start_epoch_ms,
     )
 
-    with contract.JsonlSink(out_dir / contract.MARKERS_FILENAME) as sink:
+    # JsonlSink APPENDS, which is right for a daemon that may be restarted
+    # mid-stream and must never truncate a session's presses -- and wrong here.
+    # The generator owns this directory, and regenerating a fixture into an
+    # existing one silently doubled its markers until this line existed.
+    markers_path = out_dir / contract.MARKERS_FILENAME
+    markers_path.unlink(missing_ok=True)
+
+    with contract.JsonlSink(markers_path) as sink:
         for marker in spec.markers:
             sink.write(contract.marker_record(
                 spec.record_start_epoch_ms + int(round(marker["t_press"] * 1000)),
@@ -440,9 +647,26 @@ def write_capture_files(spec: FixtureSpec, out_dir: Path) -> None:
             ))
 
 
-def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = False) -> Path:
-    """Build the fixture. Cached on the spec hash."""
-    build_pattern(spec)
+def generate(
+    spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = False, renderer=None
+) -> Path:
+    """Build the fixture. Cached on the spec hash.
+
+    A speech fixture renders before the cache check, because an utterance's true
+    end time is whatever the synthesiser produced and the spec hash covers those
+    placed regions. Synthesis of the whole script takes a few seconds; the mux
+    it saves takes considerably longer.
+    """
+    rendered: dict = {}
+    if spec.kind == "speech":
+        if renderer is None:
+            from tests.fixtures.speech import PiperRenderer
+
+            renderer = PiperRenderer()
+        build_speech_pattern(spec, renderer, rendered)
+    else:
+        build_pattern(spec)
+
     out_dir = out_root / spec.name
     manifest_path = out_dir / "manifest.json"
     video_path = out_dir / "fixture.mkv"
@@ -455,7 +679,9 @@ def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = Fals
     ffmpeg_bin = ffmpeg.require("ffmpeg")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tracks = {name: build_track(spec, name) for name in ("mic", "game", "party")}
+    tracks = {
+        name: build_track(spec, name, rendered) for name in ("mic", "game", "party")
+    }
     headroom_scale = apply_headroom(tracks, spec.peak_ceiling_dbfs)
     tracks["mixed"], mix_scale = build_mixed(tracks)
 
@@ -491,6 +717,7 @@ def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = Fals
         "peak_ceiling_dbfs": spec.peak_ceiling_dbfs,
         "regions": measure_regions(spec, tracks),
         "markers": spec.markers,
+        **_speech_manifest(spec, tracks),
         "notes": {
             "band_limit_hz": BAND_LIMIT_HZ,
             "why_band_limited": (
@@ -517,6 +744,44 @@ def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = Fals
     return out_dir
 
 
+def _speech_manifest(spec: FixtureSpec, tracks: dict[str, np.ndarray]) -> dict:
+    """The ground truth Phase 2 asserts against. Empty for a noise fixture.
+
+    `utterances` repeats the measured levels from `regions` deliberately: the
+    per-track energy across each line is what §5.8's speaker assignment must
+    reproduce, and a test should not have to filter `regions` and re-derive it.
+    """
+    if spec.kind != "speech":
+        return {}
+
+    measured = {entry["label"]: entry for entry in measure_regions(spec, tracks)}
+    utterances = [
+        {
+            "index": index,
+            "label": region.label,
+            "speaker": region.speaker,
+            "track": region.track,
+            "voice": region.voice,
+            "text": region.text,
+            "t_start": region.t_start,
+            "t_end": region.t_end,
+            "duration_s": round(region.t_end - region.t_start, 4),
+            "declared_dbfs": region.dbfs,
+            "measured_dbfs": measured[region.label]["measured_dbfs"],
+        }
+        for index, region in enumerate(sorted(spec.utterances, key=lambda r: r.t_start))
+    ]
+
+    return {
+        "utterances": utterances,
+        "vocabulary_terms": list(VOCABULARY_TERMS),
+        "passive_phrases": list(PASSIVE_PHRASES),
+        "repeated_phrase": REPEATED_PHRASE,
+        "speaker_tracks": {"A": "mic", "B": "party"},
+        **speech_windows(spec),
+    }
+
+
 def load_manifest(out_dir: Path) -> dict:
     return json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
 
@@ -536,15 +801,37 @@ def main(argv: list[str] | None = None) -> int:
         help="omit MKV track titles, forcing probe onto positional inference",
     )
     parser.add_argument("--force", action="store_true", help="regenerate even if cached")
+    parser.add_argument(
+        "--kind", default="noise", choices=("noise", "speech"),
+        help="'speech' authors TTS dialogue for Phase 2 (§5.6-§5.8)",
+    )
+    parser.add_argument(
+        "--download-voices", action="store_true",
+        help="fetch the Piper voice models (~60 MB each) and exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.download_voices:
+        from tests.fixtures.speech import download_voices
+
+        for path in download_voices():
+            print(f"  {path}")
+        return 0
+
+    # A speech fixture has to be long enough to hold the script, and 60 s is the
+    # noise default. Take the longer of the two rather than silently truncating.
+    duration = args.duration
+    if args.kind == "speech":
+        duration = max(duration, SPEECH_DURATION_S)
 
     spec = FixtureSpec(
         name=args.name,
-        duration_s=args.duration,
+        duration_s=duration,
         width=args.width,
         height=args.height,
         fps=args.fps,
         track_titles=not args.no_track_titles,
+        kind=args.kind,
     )
     out_dir = generate(spec, force=args.force)
     manifest = load_manifest(out_dir)

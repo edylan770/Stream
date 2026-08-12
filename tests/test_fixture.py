@@ -18,6 +18,7 @@ from tests.fixtures.make_fixture import (
     FixtureSpec,
     build_pattern,
     dbfs_to_rms,
+    generate,
     periodic_band_limited_noise,
     rms_to_dbfs,
     scale_to_rms,
@@ -286,6 +287,21 @@ def test_markers_are_epoch_ms_only(fixture_dir, manifest):
         assert set(record) == {"epoch_ms", "kind"}
         assert isinstance(record["epoch_ms"], int)
         assert record["kind"] in ("marker_maybe", "marker_definite")
+
+
+def test_regenerating_does_not_double_the_markers(tmp_path, needs_ffmpeg):
+    """MEASURED BUG. `write_capture_files` writes through
+    `capture.contract.JsonlSink`, which APPENDS -- right for a daemon that may
+    be restarted mid-stream and must never truncate a session's presses, wrong
+    for a generator that owns its output directory. Regenerating a fixture into
+    an existing one silently doubled its marker count, and every marker-related
+    assertion then measured a file nobody had authored."""
+    spec = FixtureSpec(name="dupe", duration_s=60.0)
+    out_dir = generate(spec, out_root=tmp_path)
+    first = (out_dir / "markers.jsonl").read_text(encoding="utf-8")
+
+    generate(FixtureSpec(name="dupe", duration_s=60.0), out_root=tmp_path, force=True)
+    assert (out_dir / "markers.jsonl").read_text(encoding="utf-8") == first
 
 
 def test_marker_epoch_converts_back_to_the_intended_press_time(fixture_dir, manifest):

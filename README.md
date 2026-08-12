@@ -71,7 +71,7 @@ pip install "clipforge[capture]"
 |---|---|---|
 | `dev` | pytest, httpx | small |
 | `capture` | pynput, obsws-python | small |
-| `fixtures` | piper-tts, onnxruntime | ~50 MB + voice models |
+| `fixtures` | piper-tts, onnxruntime | ~50 MB, plus ~120 MB of voice models |
 | `asr` | whisperx, torch, faster-whisper | **~2 GB of wheels**, plus models on first run |
 
 ### Machine-local settings
@@ -257,7 +257,7 @@ Safe to run while the app is open.
 .venv\Scripts\python -m pytest -q
 ```
 
-715 tests. The test fixtures are **synthetic** — ffmpeg `testsrc2` video with
+747 tests. The test fixtures are **synthetic** — ffmpeg `testsrc2` video with
 numerically authored audio, colour bars and static, deliberately. Real footage
 cannot validate a detector: nobody can say what the correct mic RMS at t=412 of
 a real recording is. Each fixture's `manifest.json` carries ground truth by
@@ -266,6 +266,16 @@ hardcoded number.
 
 ```powershell
 .venv\Scripts\python tests\fixtures\make_fixture.py --duration 600 --name long
+```
+
+The one exception is the **speech** fixture, which Phase 2 needs because you
+cannot test a transcriber on static. It is Piper TTS dialogue with authored text
+and placement, so the ground truth is still known by construction. It needs the
+voice models once, and tests skip cleanly without them:
+
+```powershell
+.venv\Scripts\python tests\fixtures\make_fixture.py --download-voices
+.venv\Scripts\python tests\fixtures\make_fixture.py --kind speech --name speech
 ```
 
 Layout follows spec §2.3. Directories for unbuilt phases (`digest/`, `ideate/`,

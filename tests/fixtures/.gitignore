@@ -1,3 +1,7 @@
 # Fixtures are generated, never committed. `make_fixture.py` is the artifact
 # that lives in git; the media it produces does not.
 _generated/
+
+# Piper voice models, ~60 MB each. Fetched once with
+# `python tests/fixtures/make_fixture.py --download-voices`.
+_voices/
