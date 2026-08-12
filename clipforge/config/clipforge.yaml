@@ -310,6 +310,30 @@ review:
   # `clipforge metrics`, not enforced.
   target_ms_per_candidate: 4000
 
+  # NOT IN THE SPEC. §2.2 says "local web app" and nothing about who may talk to
+  # it, which was harmless while every route was read-only. A file browser and a
+  # "run the pipeline" trigger are reachable by every page open in the browser:
+  # loopback keeps other machines out, not other tabs.
+  #
+  # Requests that change something must carry an X-ClipForge header. The value
+  # is never checked -- sending it at all is what forces a CORS preflight that a
+  # cross-origin page cannot pass. Set false only if something other than the
+  # bundled UI has to POST here.
+  require_header: true
+  # Host names this server will answer to, beyond loopback and review.host. The
+  # Host check is what catches DNS rebinding, which makes an attacker's page
+  # genuinely same-origin and so defeats both the header and the Origin check.
+  # Adding a name here is deliberately a config decision.
+  allow_hosts: []
+
+  browse:
+    # A recording drive directory can hold thousands of files, sometimes over a
+    # network. Cap the listing rather than stat()ing all of them.
+    max_entries: 500
+    # What counts as a recording worth offering. §4.2 mandates MKV or
+    # fragmented MP4; the rest are here because footage arrives in them.
+    media_extensions: ['.mkv', '.mp4', '.mov', '.flv', '.ts', '.m2ts', '.webm']
+
 export:
   fcpxml_version: '1.10'
   # master | proxy. The master is the quality source; the proxy is the fallback

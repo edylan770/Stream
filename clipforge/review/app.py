@@ -13,6 +13,11 @@ contribution breakdowns and their sparklines are loaded once. A round trip per
 
 **The only per-action request is the rating**, and it is fire-and-forget from
 the client's side — the keyboard never waits on the network.
+
+Around that screen sits the app shell: browsing for a recording, registering
+it, and running the pipeline. Those routes are why `guard.py` exists — a file
+browser and a run trigger are reachable by every page open in the operator's
+browser, which a read-only API was not.
 """
 
 from __future__ import annotations
@@ -25,7 +30,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from clipforge import db, paths
-from clipforge.review import media, queries
+from clipforge.ingest import register
+from clipforge.pipeline import runner
+from clipforge.review import browse, guard, jobs, media, queries
 
 STATIC = Path(__file__).parent / "static"
 
@@ -33,9 +40,18 @@ STATIC = Path(__file__).parent / "static"
 def create_app(cfg) -> FastAPI:
     app = FastAPI(title="ClipForge", docs_url=None, redoc_url=None)
     app.state.cfg = cfg
+    #: Per-app rather than module-level, so two apps in one test process do not
+    #: share a registry and refuse each other's runs.
+    app.state.jobs = jobs.JobRegistry()
+    guard.install(app, cfg)
 
     def connect() -> sqlite3.Connection:
         return db.open_db(cfg.db_path, migrate_to_latest=False)
+
+    def require_stream(conn: sqlite3.Connection, stream_id: str) -> None:
+        row = conn.execute("SELECT id FROM streams WHERE id = ?", (stream_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"no stream {stream_id!r}")
 
     # -- pages ------------------------------------------------------------
 
@@ -123,6 +139,128 @@ def create_app(cfg) -> FastAPI:
         finally:
             conn.close()
         return JSONResponse({"ok": True})
+
+    # -- adding a recording -----------------------------------------------
+
+    @app.get("/api/browse")
+    def api_browse(path: str | None = None) -> JSONResponse:
+        """List one directory.
+
+        The browser cannot hand a web page a filesystem path, so this is what
+        stands in for a file dialog. See browse.py for why it is not a drop
+        target.
+        """
+        listing = browse.list_dir(
+            path or browse.default_start(),
+            media_extensions=cfg.get("review.browse.media_extensions", ()),
+            max_entries=int(cfg.get("review.browse.max_entries", 500)),
+        )
+        return JSONResponse(listing.to_json())
+
+    def _spec(body: dict) -> register.RegisterSpec:
+        master = str(body.get("master") or "").strip()
+        if not master:
+            raise HTTPException(status_code=400, detail="no master path given")
+        return register.RegisterSpec(
+            master=Path(master).expanduser(),
+            stream_id=body.get("id") or None,
+            date=body.get("date") or None,
+            title=body.get("title") or None,
+            games=body.get("games") or None,
+            notes=body.get("notes") or None,
+        )
+
+    @app.post("/api/register/preflight")
+    async def api_preflight(request: Request) -> JSONResponse:
+        """What registering this file would do, without doing it.
+
+        Worth a round trip of its own because of the anchor. §4.1 makes
+        `record_start_epoch_ms` the entire sync solution, and a stream
+        registered without it silently reads §4.3's epoch-millisecond marker
+        presses as VOD seconds. After the row is written is too late to notice.
+        """
+        conn = connect()
+        try:
+            pre = register.preflight(cfg, conn, _spec(await request.json()))
+        except register.RegisterError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            conn.close()
+        return JSONResponse(pre.to_json())
+
+    @app.post("/api/register")
+    async def api_register(request: Request) -> JSONResponse:
+        conn = connect()
+        try:
+            result = register.register_stream(cfg, conn, _spec(await request.json()))
+        except register.AlreadyRegistered as exc:
+            # Not a failure: re-registration is a real operation that happens to
+            # invalidate artifacts, so it stays a deliberate `--force` at a
+            # terminal rather than a button.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except register.RegisterError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            conn.close()
+        return JSONResponse(result.to_json())
+
+    # -- running the pipeline ---------------------------------------------
+
+    @app.get("/api/streams/{stream_id}/plan")
+    def api_plan(stream_id: str) -> JSONResponse:
+        """§5.1's decision table — what would run, and why.
+
+        Each stage carries its `pipeline_stages` status alongside the decision
+        so the screen can tell "not built until Phase 2" from "failed" from
+        "done", and can withhold the review link until `score` has actually
+        completed rather than handing over an empty screen.
+        """
+        conn = connect()
+        try:
+            require_stream(conn, stream_id)
+            engine = runner.Runner(cfg=cfg, conn=conn, stream_id=stream_id)
+            entries = []
+            for decision in engine.plan():
+                row = engine.row(decision.stage)
+                entries.append({
+                    **jobs.decision_json(decision),
+                    "status": row["status"] if row is not None else None,
+                    "finished_at": row["finished_at"] if row is not None else None,
+                    "error": row["error"] if row is not None else None,
+                })
+        finally:
+            conn.close()
+
+        job = app.state.jobs.for_stream(stream_id)
+        return JSONResponse({
+            "stream_id": stream_id,
+            "stages": entries,
+            "will_run": [e["stage"] for e in entries if e["will_run"]],
+            "job": job.snapshot()["id"] if job is not None else None,
+            "job_live": bool(job is not None and job.live),
+        })
+
+    @app.post("/api/streams/{stream_id}/run")
+    def api_run(stream_id: str) -> JSONResponse:
+        conn = connect()
+        try:
+            require_stream(conn, stream_id)
+        finally:
+            conn.close()
+
+        try:
+            job = app.state.jobs.start(cfg, stream_id)
+        except jobs.JobBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse(job.snapshot())
+
+    @app.get("/api/jobs/{job_id}")
+    def api_job(job_id: str, since: int = 0) -> JSONResponse:
+        """Polled while a run is live. `since` is an absolute line cursor."""
+        job = app.state.jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
+        return JSONResponse(job.snapshot(since=since))
 
     # -- media ------------------------------------------------------------
 

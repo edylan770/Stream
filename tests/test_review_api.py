@@ -43,7 +43,15 @@ def processed(tmp_path_factory):
 @pytest.fixture
 def client(processed):
     cfg, _ = processed
-    with TestClient(review_app.create_app(cfg)) as test_client:
+    # TestClient defaults to `Host: testserver`, which guard.py refuses — a
+    # request arriving under a name this server does not answer to is how DNS
+    # rebinding reaches a local server. The header goes on every request for the
+    # same reason app.js sends it.
+    with TestClient(
+        review_app.create_app(cfg),
+        base_url="http://127.0.0.1",
+        headers={"X-ClipForge": "1"},
+    ) as test_client:
         yield test_client
 
 

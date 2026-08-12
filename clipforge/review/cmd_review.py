@@ -1,4 +1,14 @@
-"""`clipforge review` — start the review server."""
+"""`clipforge review` — start the app.
+
+Named for the screen that matters (C4), but it opens the whole shell: the
+stream list, adding a recording, and running the pipeline.
+
+It deliberately does **not** check that anything is reviewable first. It used
+to, and that was backwards the moment the app could add a recording — a fresh
+install has no candidates and no proxy by definition, which is exactly the
+state the shell exists to get you out of. Naming a stream still checks that
+stream, because `clipforge review <id>` is a request to go straight there.
+"""
 
 from __future__ import annotations
 
@@ -43,17 +53,6 @@ def main(args) -> int:
                 print(f"{args.stream_id} has no proxy, so there is nothing to play. "
                       f"Run `clipforge run {args.stream_id}`.")
                 return 1
-
-        ready = conn.execute(
-            "SELECT COUNT(*) FROM streams s WHERE s.proxy_path IS NOT NULL AND EXISTS "
-            "(SELECT 1 FROM candidates c WHERE c.stream_id = s.id AND c.is_current = 1)"
-        ).fetchone()[0]
-        if not ready:
-            print("no stream has candidates and a proxy yet.")
-            print("Register a recording and run the pipeline first:")
-            print("  clipforge register --master <file>")
-            print("  clipforge run <stream_id>")
-            return 1
     finally:
         conn.close()
 

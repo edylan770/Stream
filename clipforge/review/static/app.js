@@ -24,6 +24,14 @@ const state = {
   playTimer: null,
 };
 
+/* Anything that changes something must carry this. The value is never checked —
+ * sending it at all is what forces a CORS preflight, which is what stops
+ * another page in the browser from posting here. See review/guard.py. */
+const POST = {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "X-ClipForge": "1" },
+};
+
 const $ = (id) => document.getElementById(id);
 const fmt = (s) => {
   const m = Math.floor(s / 60);
@@ -322,8 +330,7 @@ function rate(value) {
 
   // Fire and forget: the keyboard must never wait on the network.
   fetch(`/api/candidates/${c.id}/rating`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    ...POST,
     body: JSON.stringify({ rating: value, review_ms: elapsed }),
   }).catch(() => {});
 
@@ -364,8 +371,7 @@ async function finish() {
   const seconds = (performance.now() - state.sessionStart) / 1000;
   if (state.reviewed > 0) {
     await fetch(`/api/streams/${encodeURIComponent(state.streamId)}/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      ...POST,
       body: JSON.stringify({ duration_s: seconds, reviewed: state.reviewed }),
     }).catch(() => {});
   }
