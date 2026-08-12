@@ -19,3 +19,20 @@ paths:
 
 # review:
 #   port: 8765
+
+# ---------------------------------------------------------------------------
+# PHASE 2 — transcription. Not built yet; these keys do nothing today.
+#
+# §5.7 specifies large-v3 on CUDA at float16, which is right for the streaming
+# PC and unusable anywhere else: the model is ~3 GB and CPU inference on it runs
+# many times slower than realtime.
+#
+# On a machine with no NVIDIA GPU, uncomment this block. `compute_type: float16`
+# is not merely slow on CPU -- CTranslate2 rejects it outright, so leaving the
+# default in place fails with an error that says nothing about the cause.
+# ---------------------------------------------------------------------------
+# extract:
+#   whisperx:
+#     model: tiny          # or base/small; large-v3 is the default and needs a GPU
+#     device: cpu
+#     compute_type: int8   # `auto` resolves this per device; never float16 on CPU

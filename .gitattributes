@@ -1,0 +1,19 @@
+# Line endings.
+#
+# Git normalises to LF in the repository and converts on checkout according to
+# whatever core.autocrlf happens to be set to on a given machine. For two files
+# that is not a preference, it is a correctness requirement:
+#
+#   *.cmd  cmd.exe misparses an LF-only batch file in a way that STILL RUNS --
+#          it split a "-m" out of a later line into a phantom command and
+#          printed "'m' is not recognized" before carrying on. A launcher that
+#          half-works is worse than one that does not.
+#
+#   *.ps1  PowerShell tolerates LF, but a here-string terminator is matched at
+#          the start of a line and the failure modes are similarly quiet.
+#
+# Everything else follows the platform default.
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf

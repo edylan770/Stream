@@ -12,7 +12,15 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ## Status
 
-**Phase 1 of §15 is complete.** Nothing from Phase 2+ is implemented, deliberately.
+**Phase 1 and Phase 0 of §15 are complete.** Nothing from Phase 2+ is implemented,
+deliberately.
+
+**The venv is Python 3.12.** WhisperX declares `python <3.14` in every release from
+3.7.0 on, and on 3.14 pip silently resolves back to whisperx 3.2.0, which pins a
+CTranslate2 with no wheel for that interpreter — so the failure arrives as a C++ build
+error for a transitive dependency. `pyproject.toml` pins `>=3.11,<3.14` to make that one
+legible error instead. Everything in Phase 1 runs fine on 3.14; the ceiling is for
+Phase 2.
 
 | # | Commit | What |
 |---|---|---|
@@ -30,14 +38,22 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 | 14a | `4c7ecd1` | pipeline jobs; `register` split into a core + a CLI |
 | 14b | `94a4c19` | the shell's HTTP surface, behind a request guard |
 | 14c | `f68a811` | the shell's UI — library, add-a-recording, run |
-| 15 | *this* | FCPXML export (§10.5) |
+| 15 | `86ee9e9` | FCPXML export (§10.5) |
+| 16 | `f13d7ac` | Phase 0 capture layer; the file contract, defined once |
+| 17 | *this* | setup docs, launchers |
 
-664 tests pass. `.venv\Scripts\python.exe -m pytest -q`.
+715 tests pass. `.venv\Scripts\python.exe -m pytest -q`.
 
-**What Phase 1 does not have, by design:** no transcript (Phase 2), no dual profiles or
-preview assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision
-(Phase 7). §15 says to ship this, use it for ten streams, and choose what comes next
-from observed friction.
+**What is not built, by design:** no transcript (Phase 2), no dual profiles or preview
+assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision (Phase 7). §15
+says to ship this, use it for ten streams, and choose what comes next from observed
+friction.
+
+**Untested and needs a real machine:** `obs_anchor`'s WebSocket path. The hotkey
+fallback is verified end to end here, but nothing has ever received a real
+`RecordStateChanged` event. On the streaming PC: start it, hit record, confirm
+`anchor.json` appears next to the `.mkv`, then `clipforge register --master <that file>`
+with no `--anchor` flag.
 
 **The one thing missing that Phase 1 does not ask for:** §13.2's nightly
 `VACUUM INTO` backup. The spec calls the database the irreplaceable tier and prescribes
@@ -166,6 +182,33 @@ looks correct and is not.
   start unless something had candidates and a proxy — the exact state the shell exists
   to get you out of.
 
+**Capture (Phase 0, §4)**
+
+- **The file contract is defined once**, in `capture/contract.py`. It used to be prose
+  in a README, a writer in the fixture generator and a validator in `register`, with the
+  README itself saying "change one and you must change all three" — drift waiting to
+  happen in the one place drift is undetectable, since a wrong anchor shifts every marker
+  in a stream by a constant and nothing downstream can tell.
+- **`capture/` imports nothing from the rest of clipforge**, enforced by an AST test.
+  §2.1 requires Layer A to run without the application installed, so the folder can be
+  copied to the streaming PC and run with stdlib plus `pynput`.
+- **`anchor.json` is written beside the recording.** §4.1 never says where it goes.
+  `RecordStateChanged` carries `outputPath` and `register.find_capture_file` already
+  looks there, so `clipforge register --master <rec>` needs no flags, and stopping and
+  restarting OBS mid-session yields one correct anchor per recording. Markers and input
+  go to a daily file in a capture directory instead — those daemons cannot know where OBS
+  is writing, and §4.5 forbids making them depend on OBS to find out.
+- **The input logger cannot record which key was pressed.** `Aggregator.key()` takes no
+  arguments and the pynput adapter discards the key object before calling it, so no
+  function in the module can see a key identity. A global hook sees every password typed
+  into every window; §4.4's own example is rates-only, but that had to be structural
+  rather than a habit.
+- **Hooks never suppress**, and hotkeys are rebindable. F1 is help or ping in most games
+  including Marvel Rivals, and §4.5 says capture must never interrupt OBS.
+- **Wall clock for timestamps, monotonic for cadence.** A8 wants epoch ms in the files;
+  the 10 Hz aggregation window must be monotonic or an NTP step mid-stream stretches a
+  bucket and puts a spurious spike in the one signal meant to detect spikes.
+
 **Export (§10.5)**
 
 - **Ratings are read across generations, never `is_current`.** Inheritance only carries
@@ -194,11 +237,19 @@ looks correct and is not.
 
 ## Running it
 
+Setup, the daily workflow and troubleshooting are in [`README.md`](README.md), which is
+written for someone who has not seen this before. In short:
+
 ```bash
-.venv\Scripts\clipforge.exe doctor                       # environment + chosen encoder
-.venv\Scripts\clipforge.exe review                       # the app: add, run, review
-.venv\Scripts\clipforge.exe export <stream_id>           # FCPXML for Resolve
+ClipForge.cmd                                            # double-click; opens the app
+.\clipforge.ps1 doctor                                   # environment + chosen encoder
+.\clipforge.ps1 export <stream_id>                       # FCPXML for Resolve
 ```
+
+Launchers are scripts, not a frozen executable: once Phase 2 lands a PyInstaller build
+would have to bundle torch — 3-5 GB, quarantined by antivirus, rebuilt on every
+dependency change — and would still need ffmpeg and the Whisper models fetched
+separately. It adds a build step without removing a setup step.
 
 Everything the app does is also a command — `register`, `run`, `status`, `score`,
 `signals`, `metrics`, `db`, `config`, `synth-markers`. All take `--set key.path=value`
@@ -244,7 +295,10 @@ Worth continuing, because it has caught real bugs:
 
 ## Starting a fresh session
 
-Phase 1 is done. Before starting Phase 2, §15 is explicit about what to do first:
+Phase 1 and the capture layer are done, so the pipeline can now take a real recording
+with real markers in it end to end. Phase 2 (the transcript layer) is in progress.
+
+§15 is worth re-reading before adding anything, because it is explicit:
 
 > Ship it, use it for ten streams, then decide what to add based on what actually
 > caused friction.
@@ -254,6 +308,7 @@ and names the real risk:
 > month three, half the system built, zero videos published, and having become a person
 > who builds video tooling rather than a person who makes videos.
 
-So the next session should probably not be Phase 2. It should be Phase 0 — the capture
-scripts in `clipforge/capture/` (marker daemon, OBS anchor, input logger), which are the
-only thing standing between this pipeline and real footage with real markers in it.
+**Ten real streams is the thing that has not happened.** Every weight, threshold and
+window length in `clipforge/config/` is an educated guess (C5), and §17's tuning
+procedure needs `signal_firing_rate_by_rating` from actual ratings on actual footage.
+Nothing in Phase 2 or beyond is worth as much as that data.
