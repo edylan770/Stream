@@ -7,9 +7,14 @@ name = "clipforge"
 version = "0.1.0"
 description = "Stream -> clip -> video pipeline. Phase 1 (spec §15)."
 readme = "README.md"
-# The build machine and the streaming PC are different boxes. Do not pin to
-# whatever interpreter happens to be installed here.
-requires-python = ">=3.11"
+# The build machine and the streaming PC are different boxes, so the floor stays
+# low. The CEILING is not caution -- it is measured. WhisperX (§2.2's choice, and
+# §5.7 is written entirely around its API) declares `python <3.14` in every
+# release from 3.7.0 on. Without this bound pip silently resolves back to
+# whisperx 3.2.0, which pins ctranslate2==4.4.0, which has no cp314 wheel -- so
+# the failure surfaces as a C++ build error for a transitive dependency rather
+# than as "your interpreter is too new".
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
@@ -25,6 +30,14 @@ dependencies = [
 # httpx backs starlette's TestClient, which is how the review API is tested
 # without binding a port.
 dev = ["pytest>=8.0", "httpx>=0.27"]
+
+# Layer A (§4), installed on the STREAMING PC. Deliberately its own extra: §2.1
+# requires capture to run whether or not this application is installed or
+# working, and nothing in clipforge/capture/ imports the rest of the package.
+capture = [
+    "pynput>=1.7",          # §4.3 hotkeys, §4.4 input hook
+    "obsws-python>=1.6",    # §4.1's RecordStateChanged anchor
+]
 
 [project.scripts]
 clipforge = "clipforge.cli:main"

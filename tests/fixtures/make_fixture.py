@@ -66,6 +66,7 @@ import soundfile as sf
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from clipforge import ffmpeg  # noqa: E402
+from clipforge.capture import contract  # noqa: E402
 
 OUTPUT_ROOT = Path(__file__).parent / "_generated"
 
@@ -418,32 +419,25 @@ def mux(spec: FixtureSpec, wavs: list[Path], out_path: Path, ffmpeg_bin: str) ->
 def write_capture_files(spec: FixtureSpec, out_dir: Path) -> None:
     """The two Layer-A artifacts (§4.1, §4.3).
 
-    THIS DEFINES A CONTRACT. §4.1 specifies the anchor mechanism — epoch ms
-    captured at record start — but never the file that carries it, because the
-    capture scripts do not exist yet (§15 Phase 0). Whatever shape is written
-    here is what `clipforge/capture/obs_anchor.py` must eventually produce.
-    Mirrored in clipforge/capture/README.md; change both or neither.
+    Written through `clipforge.capture.contract`, the same module the real
+    daemons use and `ingest.register` validates against. It used to restate the
+    shapes here, which meant the contract existed in three places and was
+    enforced in none — and a drifting anchor is undetectable downstream, because
+    there is no checksum for "these timestamps are 40 seconds late".
     """
-    anchor = {
-        "schema": 1,
-        "record_start_epoch_ms": spec.record_start_epoch_ms,
-        "source": "synthetic",
-        "written_at_epoch_ms": spec.record_start_epoch_ms,
-    }
-    (out_dir / "anchor.json").write_text(json.dumps(anchor, indent=2), encoding="utf-8")
+    contract.write_anchor(
+        out_dir / contract.ANCHOR_FILENAME,
+        spec.record_start_epoch_ms,
+        contract.SOURCE_SYNTHETIC,
+        written_at_epoch_ms=spec.record_start_epoch_ms,
+    )
 
-    # §4.3 shape exactly: one JSON object per line, epoch ms, no VOD times.
-    # A8: epoch milliseconds everywhere in capture, converted only at ingest.
-    lines = [
-        json.dumps(
-            {
-                "epoch_ms": spec.record_start_epoch_ms + int(round(m["t_press"] * 1000)),
-                "kind": m["kind"],
-            }
-        )
-        for m in spec.markers
-    ]
-    (out_dir / "markers.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with contract.JsonlSink(out_dir / contract.MARKERS_FILENAME) as sink:
+        for marker in spec.markers:
+            sink.write(contract.marker_record(
+                spec.record_start_epoch_ms + int(round(marker["t_press"] * 1000)),
+                marker["kind"],
+            ))
 
 
 def generate(spec: FixtureSpec, out_root: Path = OUTPUT_ROOT, force: bool = False) -> Path:

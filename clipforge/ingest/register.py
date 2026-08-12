@@ -33,18 +33,14 @@ from datetime import datetime
 from pathlib import Path
 
 from clipforge import config, db, paths
+from clipforge.capture import contract
 from clipforge.pipeline import runner
 
-#: Contract version of anchor.json. Documented in clipforge/capture/README.md
-#: and produced by tests/fixtures/make_fixture.py. Phase 0's obs_anchor.py must
-#: match; refusing an unknown version beats silently reading a field that has
-#: moved.
-ANCHOR_SCHEMA = 1
-
-#: Earliest epoch-ms we will believe as a record-start anchor (2020-01-01).
-#: Catches the classic mistake of writing seconds where milliseconds belong,
-#: which would put every marker ~55 years before the recording started.
-MIN_PLAUSIBLE_EPOCH_MS = 1_577_836_800_000
+#: The one definition, shared with the daemons that write these files and the
+#: fixture generator that fakes them. See clipforge/capture/contract.py for why
+#: this is imported rather than restated.
+ANCHOR_SCHEMA = contract.ANCHOR_SCHEMA
+MIN_PLAUSIBLE_EPOCH_MS = contract.MIN_PLAUSIBLE_EPOCH_MS
 
 
 #: §4.1. Markers carry epoch milliseconds and the anchor is the only thing that

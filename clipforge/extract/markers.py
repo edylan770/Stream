@@ -26,11 +26,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from clipforge import db
+from clipforge.capture import contract
 from clipforge.pipeline.context import StageContext
 
-#: §4.3's two hotkeys. Anything else in the file is a typo or a future kind,
-#: and either way is worth reporting rather than silently importing.
-MARKER_KINDS = ("marker_maybe", "marker_definite")
+#: §4.3's two hotkeys, from the one place they are defined — the same module
+#: `marker_daemon` writes through. Anything else in the file is a typo or a
+#: future kind, and either way is worth reporting rather than silently
+#: importing.
+MARKER_KINDS = contract.MARKER_KINDS
 
 SOURCE = "marker"
 
