@@ -1,14 +1,23 @@
 /* ClipForge review — §7.3's keyboard loop.
  *
- * C4's target is 120 candidates in under 8 minutes, so the guiding rule here is
- * that a keypress never waits on the network. Every candidate arrives in the
- * first payload; ratings are fired off without awaiting a response; navigation
- * only moves a highlight and seeks a <video> that is already loaded.
+ * Commit 13's app.js, moved into the shell's module contract. The behaviour is
+ * unchanged: it was verified in a browser and this is a relocation, not a
+ * rewrite.
+ *
+ * C4's target is 120 candidates in under 8 minutes, so the guiding rule is that
+ * a keypress never waits on the network. Every candidate arrives in the first
+ * payload; ratings are fired off without awaiting a response; navigation only
+ * moves a highlight and seeks a <video> that is already loaded.
  *
  * review_ms is measured from the moment a candidate gains focus to the moment
  * it is rated (§7.5). That is the honest observation even when it includes a
  * coffee break, which is why `clipforge metrics` reports the median.
  */
+
+import { $, escape, fmt, get, post, postAndForget } from "./api.js";
+import * as router from "./router.js";
+
+export const root = "view-review";
 
 const state = {
   streamId: null,
@@ -24,81 +33,10 @@ const state = {
   playTimer: null,
 };
 
-/* Anything that changes something must carry this. The value is never checked —
- * sending it at all is what forces a CORS preflight, which is what stops
- * another page in the browser from posting here. See review/guard.py. */
-const POST = {
-  method: "POST",
-  headers: { "Content-Type": "application/json", "X-ClipForge": "1" },
-};
+/* ------------------------------------------------------------- lifecycle */
 
-const $ = (id) => document.getElementById(id);
-const fmt = (s) => {
-  const m = Math.floor(s / 60);
-  const rest = (s % 60).toFixed(1).padStart(4, "0");
-  return `${m}:${rest}`;
-};
-
-/* ------------------------------------------------------------- bootstrap */
-
-/* `force` skips the auto-open shortcuts.
- *
- * Without it, "back" was unusable: openStream puts ?stream=<id> in the URL so a
- * reload resumes where you were, and boot() honoured that param — so leaving a
- * stream immediately re-entered it. The same applied when only one stream was
- * reviewable, which auto-opens. Going back has to mean the picker, always. */
-async function boot(force = false) {
-  const res = await fetch("/api/streams");
-  const { streams } = await res.json();
-
-  if (force) {
-    history.replaceState(null, "", location.pathname);
-    return showPicker(streams);
-  }
-
-  const fromUrl = new URLSearchParams(location.search).get("stream");
-  if (fromUrl && streams.some((s) => s.id === fromUrl)) return openStream(fromUrl);
-
-  const reviewable = streams.filter((s) => s.candidates > 0 && s.has_proxy);
-  if (reviewable.length === 1) return openStream(reviewable[0].id);
-  showPicker(streams);
-}
-
-function showPicker(streams) {
-  $("review").hidden = true;
-  $("summary").hidden = true;
-  $("picker").hidden = false;
-
-  const list = $("stream-list");
-  list.innerHTML = "";
-  const reviewable = streams.filter((s) => s.candidates > 0 && s.has_proxy);
-  $("picker-empty").hidden = reviewable.length > 0;
-
-  for (const s of streams) {
-    const ready = s.candidates > 0 && s.has_proxy;
-    const li = document.createElement("li");
-    const button = document.createElement("button");
-    button.disabled = !ready;
-    button.onclick = () => openStream(s.id);
-
-    const why = !s.has_proxy ? "no proxy yet" : s.candidates === 0 ? "not scored yet" : "";
-    button.innerHTML = `
-      <span class="grow">
-        <span class="name">${escape(s.title || s.id)}</span><br>
-        <span class="muted">${s.date} · ${s.duration_s ? fmt(s.duration_s) : "?"} ·
-        ${escape(s.resolution || "")} ${why ? "· " + why : ""}</span>
-      </span>
-      <span class="count">${s.candidates}</span>
-      <span class="muted">${s.rated}/${s.candidates} rated</span>`;
-    li.appendChild(button);
-    list.appendChild(li);
-  }
-}
-
-async function openStream(id) {
-  const res = await fetch(`/api/streams/${encodeURIComponent(id)}/candidates`);
-  if (!res.ok) return showPicker([]);
-  const data = await res.json();
+export async function enter(id) {
+  const data = await get(`/api/streams/${encodeURIComponent(id)}/candidates`);
 
   state.streamId = id;
   state.stream = data.stream;
@@ -108,9 +46,8 @@ async function openStream(id) {
   state.sessionStart = performance.now();
   state.reviewed = 0;
 
-  $("picker").hidden = true;
+  $("review-main").hidden = false;
   $("summary").hidden = true;
-  $("review").hidden = false;
 
   $("stream-name").textContent = data.stream.title || id;
   $("stream-meta").textContent =
@@ -129,6 +66,11 @@ async function openStream(id) {
 
   applyFilter();
   history.replaceState(null, "", `?stream=${encodeURIComponent(id)}`);
+}
+
+export function leave() {
+  stopPlayback();
+  $("video").removeAttribute("src");
 }
 
 /* ------------------------------------------------------------- rendering */
@@ -329,10 +271,7 @@ function rate(value) {
   if (wasUnrated) state.reviewed += 1;
 
   // Fire and forget: the keyboard must never wait on the network.
-  fetch(`/api/candidates/${c.id}/rating`, {
-    ...POST,
-    body: JSON.stringify({ rating: value, review_ms: elapsed }),
-  }).catch(() => {});
+  postAndForget(`/api/candidates/${c.id}/rating`, { rating: value, review_ms: elapsed });
 
   renderList();
   // §7.3: "Rating advances automatically to the next candidate."
@@ -370,14 +309,12 @@ function stopPlayback() {
 async function finish() {
   const seconds = (performance.now() - state.sessionStart) / 1000;
   if (state.reviewed > 0) {
-    await fetch(`/api/streams/${encodeURIComponent(state.streamId)}/session`, {
-      ...POST,
-      body: JSON.stringify({ duration_s: seconds, reviewed: state.reviewed }),
+    await post(`/api/streams/${encodeURIComponent(state.streamId)}/session`, {
+      duration_s: seconds, reviewed: state.reviewed,
     }).catch(() => {});
   }
 
-  const res = await fetch(`/api/streams/${encodeURIComponent(state.streamId)}/metrics`);
-  const m = await res.json();
+  const m = await get(`/api/streams/${encodeURIComponent(state.streamId)}/metrics`);
 
   // §7.1: 120 candidates in under 8 minutes, i.e. ~4 s each.
   const target = 4000;
@@ -400,18 +337,14 @@ async function finish() {
     <p>${verdict}</p>`;
 
   stopPlayback();
-  $("review").hidden = true;
+  $("review-main").hidden = true;
   $("summary").hidden = false;
 }
 
 /* -------------------------------------------------------------- keyboard */
 
-document.addEventListener("keydown", (event) => {
-  // Never swallow keys meant for a text field.
-  const tag = event.target.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || event.target.isContentEditable) return;
-  if (event.ctrlKey || event.metaKey || event.altKey) return;
-  if ($("review").hidden) return;
+export function onKey(event) {
+  if (!$("summary").hidden) return;   // the session is over; nothing to drive
 
   switch (event.key) {
     case "j": case "ArrowDown": event.preventDefault(); move(1); break;
@@ -430,20 +363,13 @@ document.addEventListener("keydown", (event) => {
       break;
     case "q": finish(); break;
   }
-});
-
-$("filter-toggle").onclick = () => { state.markersOnly = !state.markersOnly; applyFilter(); };
-$("back").onclick = () => { stopPlayback(); boot(true); };
-$("summary-back").onclick = () => boot(true);
-
-setInterval(() => {
-  if ($("review").hidden || !state.sessionStart) return;
-  $("clock").textContent = fmt((performance.now() - state.sessionStart) / 1000);
-}, 1000);
-
-function escape(text) {
-  return String(text ?? "").replace(/[&<>"']/g, (ch) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
-boot();
+$("filter-toggle").onclick = () => { state.markersOnly = !state.markersOnly; applyFilter(); };
+$("back").onclick = () => router.show("library");
+$("summary-back").onclick = () => router.show("library");
+
+setInterval(() => {
+  if (router.activeName() !== "review" || !state.sessionStart) return;
+  $("clock").textContent = fmt((performance.now() - state.sessionStart) / 1000);
+}, 1000);

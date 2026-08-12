@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 
 import pytest
@@ -78,11 +79,31 @@ def test_no_external_resources(client):
     """§2.2 says avoid heavy frameworks; a dedicated streaming PC may have no
     internet at all, so nothing may be fetched from a CDN."""
     page = client.get("/").text
-    for asset in ("/static/app.css", "/static/app.js"):
-        assert asset in page
-        assert client.get(asset).status_code == 200
+    assert "/static/app.css" in page
     assert "http://" not in page.replace("http://www.w3.org", "")
     assert "https://" not in page
+
+
+def test_every_module_is_served_and_local(client):
+    """ES modules, no bundler: every import has to resolve from /static, or the
+    page silently loads nothing. Walked from main.js rather than listed, so a
+    new module cannot be added without this noticing."""
+    seen: set[str] = set()
+    queue = ["/static/main.js"]
+    while queue:
+        url = queue.pop()
+        if url in seen:
+            continue
+        seen.add(url)
+        response = client.get(url)
+        assert response.status_code == 200, f"{url} is not served"
+        for target in re.findall(r'^\s*(?:import|export)[^\n]*?from\s+"([^"]+)"',
+                                 response.text, re.MULTILINE):
+            assert target.startswith("./"), f"{url} imports {target!r} from outside /static"
+            queue.append(f"/static/{target[2:]}")
+
+    assert {"/static/main.js", "/static/api.js", "/static/router.js",
+            "/static/review.js"} <= seen
 
 
 # --------------------------------------------------------------------------

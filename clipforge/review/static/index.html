@@ -3,106 +3,173 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ClipForge — review</title>
+<title>ClipForge</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 
-<!-- Stream picker. Shown when no stream is selected, or when there is more
-     than one and the operator wants to switch. -->
-<section id="picker" class="picker" hidden>
-  <h1>ClipForge</h1>
-  <p class="muted">Pick a stream to review.</p>
+<!-- LIBRARY — every registered stream, not only the reviewable ones. The one
+     that needs an action is the one that is not ready yet. -->
+<section id="view-library" class="pane" hidden>
+  <header class="pane-head">
+    <div>
+      <h1>ClipForge</h1>
+      <p class="muted">Pick a stream, or add a recording.</p>
+    </div>
+    <button id="add-recording" class="primary">Add a recording <kbd>a</kbd></button>
+  </header>
   <ul id="stream-list" class="stream-list"></ul>
-  <p id="picker-empty" class="empty" hidden>
-    No streams with candidates yet. Register a recording and run the pipeline:
-    <code>clipforge register --master &lt;file&gt;</code> then
-    <code>clipforge run &lt;id&gt;</code>.
+  <p id="library-empty" class="empty" hidden>
+    Nothing registered yet. <b>Add a recording</b> to point ClipForge at an OBS
+    capture — it stays where it is; only a path is stored.
   </p>
 </section>
 
-<!-- The review screen. -->
-<main id="review" hidden>
-
-  <header class="bar">
-    <div class="bar-left">
-      <button id="back" class="link" title="Back to stream list">&larr;</button>
-      <strong id="stream-name"></strong>
-      <span id="stream-meta" class="muted"></span>
-    </div>
-    <div class="bar-right">
-      <span id="filter-state" class="pill" hidden>markers only</span>
-      <span id="progress" class="muted"></span>
-      <span id="clock" class="muted mono" title="Session length — §7.1 targets 8 min per 120"></span>
+<!-- ADD — the server-side file browser. A browser will not hand a page a
+     filesystem path, so the listing comes from the server (review/browse.py). -->
+<section id="view-add" class="pane" hidden>
+  <header class="pane-head">
+    <div>
+      <button id="add-back" class="link" title="Back to the library">&larr;</button>
+      <h1>Add a recording</h1>
     </div>
   </header>
 
-  <div id="warnings" class="warnings" hidden></div>
+  <div class="browse">
+    <div class="browse-bar">
+      <input id="add-path" class="path mono" spellcheck="false"
+             aria-label="Path — type or paste one and press Enter">
+      <span id="add-roots" class="roots"></span>
+    </div>
 
-  <div class="layout">
+    <p id="add-error" class="error" hidden></p>
 
-    <!-- Ranked candidate list. -->
-    <aside class="list" id="list-pane">
-      <div class="list-head">
-        <span>Candidates</span>
-        <button id="filter-toggle" class="chip" title="Show only marker-anchored (m)">m</button>
-      </div>
-      <ol id="candidates" class="candidates"></ol>
-    </aside>
+    <ol id="add-entries" class="entries"></ol>
+    <p id="add-truncated" class="muted small" hidden>
+      …more files than shown. Narrow the path or raise
+      <code>review.browse.max_entries</code>.
+    </p>
 
-    <!-- The candidate under review. -->
-    <section class="stage">
-      <div class="video-wrap">
-        <video id="video" preload="auto" playsinline></video>
-        <div id="playing" class="playing" hidden>playing window…</div>
-      </div>
-
-      <div class="detail">
-        <div class="detail-head">
-          <div>
-            <div id="window" class="window mono"></div>
-            <div id="position" class="muted"></div>
-          </div>
-          <div class="score-block">
-            <div id="score" class="score mono"></div>
-            <div class="muted">score</div>
-          </div>
-        </div>
-
-        <!-- Drawn from signal_series, already in the database: no ffmpeg, no
-             preview assets (those are Phase 3, §7.2). -->
-        <figure class="spark">
-          <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"
-               role="img" aria-label="signal level across the window"></svg>
-          <figcaption id="spark-caption" class="muted"></figcaption>
-        </figure>
-
-        <div id="signals" class="signals" hidden></div>
-
-        <div id="verdict" class="verdict"></div>
-      </div>
-    </section>
+    <p id="add-capture" class="muted small"></p>
   </div>
 
-  <footer class="keys">
-    <span><kbd>j</kbd><kbd>k</kbd> move</span>
-    <span><kbd>1</kbd> skip</span>
-    <span><kbd>2</kbd> maybe</span>
-    <span><kbd>3</kbd> clip it</span>
-    <span><kbd>space</kbd> play window</span>
-    <span><kbd>?</kbd> signals</span>
-    <span><kbd>m</kbd> markers only</span>
-    <span><kbd>q</kbd> finish</span>
-  </footer>
-</main>
+  <div class="add-form">
+    <label>Title <input id="add-title" placeholder="optional"></label>
+    <label>Games <input id="add-games" placeholder="comma-separated, optional"></label>
+  </div>
 
-<!-- Shown after `q`. Reports against §7.1's target. -->
-<section id="summary" class="picker" hidden>
-  <h1>Session finished</h1>
-  <div id="summary-body"></div>
-  <p><button id="summary-back" class="chip">Back to streams</button></p>
+  <!-- Nothing is written until Register. §4.1 makes the anchor the entire sync
+       solution; learning it was missing after the row exists is too late. -->
+  <div id="add-choice" class="choice" hidden></div>
+  <p>
+    <button id="add-register" class="primary" disabled>Register <kbd>enter</kbd></button>
+    <span class="muted small">
+      <kbd>j</kbd><kbd>k</kbd> move · <kbd>enter</kbd> open or pick ·
+      <kbd>backspace</kbd> up · <kbd>esc</kbd> back
+    </span>
+  </p>
 </section>
 
-<script src="/static/app.js"></script>
+<!-- RUN — §5.1's decision table, then the log. -->
+<section id="view-run" class="pane" hidden>
+  <header class="pane-head">
+    <div>
+      <button id="run-back" class="link" title="Back to the library">&larr;</button>
+      <h1 id="run-name" class="mono"></h1>
+      <p id="run-summary" class="muted"></p>
+    </div>
+    <div class="run-actions">
+      <span id="run-state" class="pill" hidden></span>
+      <span id="run-elapsed" class="muted mono"></span>
+      <button id="run-start" class="primary">Run</button>
+      <button id="run-review" class="chip" hidden>Review this stream <kbd>r</kbd></button>
+    </div>
+  </header>
+
+  <ol id="run-stages" class="stages"></ol>
+  <pre id="run-log" class="log mono" aria-live="polite"></pre>
+</section>
+
+<!-- REVIEW — commit 13's screen, unchanged. -->
+<main id="view-review" hidden>
+  <div id="review-main">
+    <header class="bar">
+      <div class="bar-left">
+        <button id="back" class="link" title="Back to the library">&larr;</button>
+        <strong id="stream-name"></strong>
+        <span id="stream-meta" class="muted"></span>
+      </div>
+      <div class="bar-right">
+        <span id="filter-state" class="pill" hidden>markers only</span>
+        <span id="progress" class="muted"></span>
+        <span id="clock" class="muted mono" title="Session length — §7.1 targets 8 min per 120"></span>
+      </div>
+    </header>
+
+    <div id="warnings" class="warnings" hidden></div>
+
+    <div class="layout">
+      <aside class="list" id="list-pane">
+        <div class="list-head">
+          <span>Candidates</span>
+          <button id="filter-toggle" class="chip" title="Show only marker-anchored (m)">m</button>
+        </div>
+        <ol id="candidates" class="candidates"></ol>
+      </aside>
+
+      <section class="stage">
+        <div class="video-wrap">
+          <video id="video" preload="auto" playsinline></video>
+          <div id="playing" class="playing" hidden>playing window…</div>
+        </div>
+
+        <div class="detail">
+          <div class="detail-head">
+            <div>
+              <div id="window" class="window mono"></div>
+              <div id="position" class="muted"></div>
+            </div>
+            <div class="score-block">
+              <div id="score" class="score mono"></div>
+              <div class="muted">score</div>
+            </div>
+          </div>
+
+          <!-- Drawn from signal_series, already in the database: no ffmpeg, no
+               preview assets (those are Phase 3, §7.2). -->
+          <figure class="spark">
+            <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"
+                 role="img" aria-label="signal level across the window"></svg>
+            <figcaption id="spark-caption" class="muted"></figcaption>
+          </figure>
+
+          <div id="signals" class="signals" hidden></div>
+
+          <div id="verdict" class="verdict"></div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="keys">
+      <span><kbd>j</kbd><kbd>k</kbd> move</span>
+      <span><kbd>1</kbd> skip</span>
+      <span><kbd>2</kbd> maybe</span>
+      <span><kbd>3</kbd> clip it</span>
+      <span><kbd>space</kbd> play window</span>
+      <span><kbd>?</kbd> signals</span>
+      <span><kbd>m</kbd> markers only</span>
+      <span><kbd>q</kbd> finish</span>
+    </footer>
+  </div>
+
+  <!-- Shown after `q`. Reports against §7.1's target. -->
+  <section id="summary" class="pane" hidden>
+    <h1>Session finished</h1>
+    <div id="summary-body"></div>
+    <p><button id="summary-back" class="chip">Back to streams</button></p>
+  </section>
+</main>
+
+<script type="module" src="/static/main.js"></script>
 </body>
 </html>
