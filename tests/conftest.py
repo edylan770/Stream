@@ -51,3 +51,19 @@ def fixture_dir(needs_ffmpeg):
 def manifest(fixture_dir) -> dict:
     """Ground truth. Tests assert against this, never against constants."""
     return load_manifest(fixture_dir)
+
+
+@pytest.fixture(scope="session")
+def ntsc_fixture_dir(needs_ffmpeg):
+    """29.97 fps — the rate that actually exercises the FCPXML frame math.
+
+    Every other fixture, and Testvid, runs at an integer rate where every frame
+    boundary lands on a clean multiple and a rounding bug in the rational path
+    passes silently. 30000/1001 is the one that does not.
+    """
+    return generate(FixtureSpec(name="ntsc", duration_s=30.0, fps="30000/1001"))
+
+
+@pytest.fixture(scope="session")
+def ntsc_manifest(ntsc_fixture_dir) -> dict:
+    return load_manifest(ntsc_fixture_dir)

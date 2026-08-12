@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "config": ("clipforge.config", "show the merged configuration and its version hash"),
     "db": ("clipforge.db.commands", "init, inspect, or relink the database"),
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),
+    "export": ("clipforge.render.cmd_export", "approved moments as an FCPXML timeline (§10.5)"),
     "metrics": ("clipforge.review.cmd_metrics", "is review fast enough? (§7.1's target)"),
     "register": ("clipforge.ingest.register", "register a recording as a stream"),
     "review": ("clipforge.review.cmd_review", "open the review UI"),

@@ -3,7 +3,7 @@
 Stream → clip → video pipeline. Built to the specification in
 [`spec/CLIPFORGE-SPEC.md`](spec/CLIPFORGE-SPEC.md).
 
-**Status: Phase 1 (spec §15) in progress.** Nothing from Phase 2+ is implemented.
+**Status: Phase 1 (spec §15) complete.** Nothing from Phase 2+ is implemented.
 
 See [`HANDOFF.md`](HANDOFF.md) for what is built, what is next, and every place the
 implementation deliberately departs from the spec — several of those fix silent-failure
@@ -13,7 +13,15 @@ bugs and should not be reverted without reading why.
 
 Register a recording, probe it, build a scrubbing proxy, split audio, extract mic
 RMS, parse markers, score naively (markers + RMS), generate candidate windows,
-export FCPXML, and review the candidates in a keyboard-driven UI.
+review them in a keyboard-driven UI, and export the approved ones as an FCPXML
+timeline for Resolve.
+
+```bash
+clipforge review     # the app: add a recording, run the pipeline, review
+clipforge export <stream_id>
+```
+
+Everything the app does is also a command; `clipforge --help` lists them.
 
 ## Setup
 

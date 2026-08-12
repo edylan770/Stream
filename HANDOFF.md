@@ -6,13 +6,13 @@ been deliberately departed from.
 
 **`git log` is the real archive.** Every commit message explains what was built and
 why, including the reasoning behind each deviation. `git log --format='%s%n%n%b'` is
-worth skimming before changing anything in `score/` or `pipeline/`.
+worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ---
 
 ## Status
 
-**Phase 1 of §15 only.** Nothing from Phase 2+ is implemented, deliberately.
+**Phase 1 of §15 is complete.** Nothing from Phase 2+ is implemented, deliberately.
 
 | # | Commit | What |
 |---|---|---|
@@ -27,20 +27,23 @@ worth skimming before changing anything in `score/` or `pipeline/`.
 | 11 | `dc9b4c7` | `marker_events` + `synth-markers` |
 | 12 | `89ca0d4` | scoring engine (§6.2–§6.7) |
 | 13 | `2ca5046` | review screen (§7.3 subset) |
+| 14a | `4c7ecd1` | pipeline jobs; `register` split into a core + a CLI |
+| 14b | `94a4c19` | the shell's HTTP surface, behind a request guard |
+| 14c | `f68a811` | the shell's UI — library, add-a-recording, run |
+| 15 | *this* | FCPXML export (§10.5) |
 
-**Remaining in Phase 1:**
+664 tests pass. `.venv\Scripts\python.exe -m pytest -q`.
 
-- **14 — app shell.** Stream list, add-a-recording via a *server-side file browser*
-  (browsers cannot expose local paths, so drag-and-drop would mean uploading a 50 GB
-  master), running the pipeline from the browser in a background thread with live
-  progress. Approved but not started.
-- **15 — FCPXML export.** §10.5. Must read operator ratings **across generations**,
-  not `is_current`: a re-score that drops a moment you already approved must not drop
-  it from the export. The hard part is that FCPXML times must be exact integer
-  multiples of a rational `frameDuration` (29.97 is `1001/30000`, not `1/29.97`), or
-  Resolve rejects the file or silently rounds.
+**What Phase 1 does not have, by design:** no transcript (Phase 2), no dual profiles or
+preview assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision
+(Phase 7). §15 says to ship this, use it for ten streams, and choose what comes next
+from observed friction.
 
-547 tests pass. `.venv\Scripts\python.exe -m pytest -q`.
+**The one thing missing that Phase 1 does not ask for:** §13.2's nightly
+`VACUUM INTO` backup. The spec calls the database the irreplaceable tier and prescribes
+it; nothing implements it, there is no `data/backups/`, and the app shell is now the
+first component that gets left running for hours. This is the first thing to build if
+anything goes wrong before Phase 2 starts.
 
 ---
 
@@ -137,28 +140,81 @@ looks correct and is not.
 - **`metrics` reports the median**, not the mean: one candidate left on screen over
   lunch would swamp an average and make §7.1's 4 s target unmeasurable.
 
+**The app shell (§2.2 says "local web app" and nothing else)**
+
+- **The loopback bind is not a security boundary.** Every page open in the operator's
+  browser can reach this server. Harmless while the routes were read-only; a file
+  browser and a run trigger are not. `review/guard.py` checks `Host` on every request
+  (the only thing that catches DNS rebinding, which makes an attacker's page genuinely
+  same-origin), checks `Origin` when present, and requires an `X-ClipForge` header on
+  anything that changes something — a cross-origin *simple* POST needs no preflight, and
+  `request.json()` parses a `text/plain` body regardless of its declared type.
+- **Adding a recording is a server-side file browser, not a drop target.** A browser
+  hands a page a `File` and deliberately never a path, so drag-and-drop would mean
+  *uploading* a 40–55 GB master to localhost to discover where it already is.
+- **`register` was split into a library core and a CLI**, so the shell can call
+  `preflight()` — what registration *would* do, before anything is written. That matters
+  for the anchor: without `anchor.json` a stream registers as `marker_time_base='vod'`
+  and §4.3's epoch presses are read as VOD seconds, which nothing downstream can detect.
+- **One writer at a time is now enforced, not assumed.** `reclaim_crashed` marks *any*
+  `running` row dead, so a browser run started beside a terminal `clipforge run` would
+  declare that stage dead and re-run it on top of the file it was writing.
+  `JobRegistry.start` refuses when this process is already running a stream, and when
+  the database shows a `running` stage with a fresh heartbeat from another process.
+  Keyed on heartbeat age, so a crash's leftover row still gets reclaimed normally.
+- **`clipforge review` no longer requires a reviewable stream.** It used to refuse to
+  start unless something had candidates and a proxy — the exact state the shell exists
+  to get you out of.
+
+**Export (§10.5)**
+
+- **Ratings are read across generations, never `is_current`.** Inheritance only carries
+  a rating forward when the windows overlap by `score.rating_inherit_min_overlap`, so a
+  re-score that moves a window further than that strands the approval on a superseded
+  generation where an `is_current` read cannot see it.
+- **…but the most recent opinion still wins.** A plain union across generations would
+  re-export a moment you rated *clip it*, then re-scored, then rated *skip*. Overlapping
+  operator-rated windows are clustered into one moment and the latest `rated_at` in the
+  cluster is the verdict. `rating_source='inherited'` rows never count — they are copies.
+- **Times are written unreduced, over the format's timescale.** `Fraction` would reduce
+  30 frames at 29.97 to `1001/1000s` — the same instant, and exactly what a naive parser
+  mishandles. Final Cut emits `3603600/30000s`; so does this.
+- **Starts floor and ends ceil, never round-to-nearest** (C2: a false negative costs a
+  clip). With one measured exception: a time within `BOUNDARY_EPSILON` of a frame is
+  *on* it. `candidates.t_start` is SQLite REAL, and `float(250 × 1001/30000)` is a
+  double's width above the true rational, so `ceil` was adding a frame at each end of
+  every already-aligned window.
+- **A VFR master is refused.** It has no constant `frameDuration`, so a constant grid
+  over it imports cleanly and is quietly misaligned. `--set export.source=proxy` (CFR by
+  construction) or `--allow-vfr`.
+- **Export is a command, not a §5.1 stage.** A stage re-runs unattended when its inputs
+  change; an export is a decision taken after reviewing.
+
 ---
 
 ## Running it
 
 ```bash
 .venv\Scripts\clipforge.exe doctor                       # environment + chosen encoder
-.venv\Scripts\clipforge.exe register --master <file>     # add a recording
-.venv\Scripts\clipforge.exe run <stream_id>              # the pipeline
-.venv\Scripts\clipforge.exe score <stream_id> --list     # re-score, free and repeatable
-.venv\Scripts\clipforge.exe review                       # the UI
-.venv\Scripts\clipforge.exe metrics <stream_id>          # is review fast enough?
+.venv\Scripts\clipforge.exe review                       # the app: add, run, review
+.venv\Scripts\clipforge.exe export <stream_id>           # FCPXML for Resolve
 ```
 
-`status`, `signals`, `db`, `config`, `synth-markers` are the rest. Everything takes
-`--set key.path=value` to override config for one invocation.
+Everything the app does is also a command — `register`, `run`, `status`, `score`,
+`signals`, `metrics`, `db`, `config`, `synth-markers`. All take `--set key.path=value`
+to override config for one invocation.
 
-**The fixtures are synthetic test data, not footage.** `fixture_short` and
-`fixture_long` are ffmpeg `testsrc2` video with numerically authored audio —
-colour bars and static, deliberately. They exist because real footage cannot validate a
-detector: nobody can say what the correct mic RMS at t=412 of a real recording is.
-Their `manifest.json` carries the ground truth every numeric test asserts against.
-Regenerate with `python tests\fixtures\make_fixture.py [--duration 600 --name long]`.
+**The fixtures are synthetic test data, not footage.** `fixture_short`, `fixture_long`
+and `ntsc` are ffmpeg `testsrc2` video with numerically authored audio — colour bars and
+static, deliberately. They exist because real footage cannot validate a detector: nobody
+can say what the correct mic RMS at t=412 of a real recording is. Their `manifest.json`
+carries the ground truth every numeric test asserts against. Regenerate with
+`python tests\fixtures\make_fixture.py [--duration 600 --name long]`.
+
+**`ntsc` exists for one reason.** Every other fixture, and `Testvid.mp4`, runs at an
+integer frame rate where every boundary lands on a clean multiple and a rounding bug in
+the rational path passes silently. 30000/1001 is the one that does not. Generate it with
+`--fps 30000/1001`.
 
 ---
 
@@ -170,23 +226,34 @@ Worth continuing, because it has caught real bugs:
    relevant spec sections and reporting what was ambiguous, contradictory, or wrong
    before writing anything. Roughly a dozen genuine spec bugs were found this way.
 2. **Measure, don't assume.** The VFR classifier, the encoder detection, the fixture's
-   clipping and the pedestal bug were all found by checking rather than reasoning.
+   clipping, the pedestal bug and the frame-boundary epsilon were all found by checking
+   rather than reasoning.
 3. **Never assert against hardcoded numbers.** Every numeric test reads
-   `manifest.json`. A tolerance wide enough to pass a broken fixture is not a tolerance
-   — 0.5 dB was hiding a 0.45 dB clipping error until it was tightened to 0.25.
+   `manifest.json`, the config object, or the stage registry. A tolerance wide enough to
+   pass a broken fixture is not a tolerance — 0.5 dB was hiding a 0.45 dB clipping error
+   until it was tightened to 0.25.
 4. **Small commits, each with a full explanation**, and stop after each for the
    operator to test.
+5. **Never write to `data/clipforge.db` while verifying.** §13.2 calls it the
+   irreplaceable tier and there are no backups. Copy it to a scratch directory and point
+   `--set paths.db=...` at the copy. This rule exists because it was broken once, and a
+   cleanup that was supposed to remove one fabricated rating also deleted every
+   `review_session_duration_s` row in the database.
 
 ---
 
 ## Starting a fresh session
 
-Open with something like:
+Phase 1 is done. Before starting Phase 2, §15 is explicit about what to do first:
 
-> Read `HANDOFF.md` then `spec/CLIPFORGE-SPEC.md`. We're building Phase 1 only,
-> currently through commit 13. Continue with commit 14 (the app shell). Same as
-> before: tell me anything you'd do differently first, test against the fixture
-> manifest rather than hardcoded numbers, small commits, stop after each.
+> Ship it, use it for ten streams, then decide what to add based on what actually
+> caused friction.
 
-Nothing else needs carrying over — the deviations above and the commit messages hold
-the reasoning.
+and names the real risk:
+
+> month three, half the system built, zero videos published, and having become a person
+> who builds video tooling rather than a person who makes videos.
+
+So the next session should probably not be Phase 2. It should be Phase 0 — the capture
+scripts in `clipforge/capture/` (marker daemon, OBS anchor, input logger), which are the
+only thing standing between this pipeline and real footage with real markers in it.
