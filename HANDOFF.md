@@ -1,8 +1,13 @@
 # ClipForge — project state
 
-Read this, then [`spec/CLIPFORGE-SPEC.md`](spec/CLIPFORGE-SPEC.md). The spec is the
-requirement; this file records where the build is and which of its instructions have
-been deliberately departed from.
+Read [`CLAUDE.md`](CLAUDE.md) first — the standing rules. Then this, then
+[`spec/CLIPFORGE-SPEC.md`](spec/CLIPFORGE-SPEC.md). The spec is the requirement; this
+file records where the build is and which of its instructions have been deliberately
+departed from.
+
+[`spec/GUESSES.md`](spec/GUESSES.md) lists every unvalidated parameter with what would
+show it is wrong. Most of this project's numbers are guesses (C5); that file is what
+keeps them from looking like measurements.
 
 **`git log` is the real archive.** Every commit message explains what was built and
 why, including the reasoning behind each deviation. `git log --format='%s%n%n%b'` is
