@@ -166,25 +166,63 @@ def validate_seek_placement(argv: Sequence[str]) -> None:
             )
 
 
+def filter_file(path: str | os.PathLike[str]) -> tuple[str, str]:
+    """A file referenced from inside a filter graph: `(value, working_dir)`.
+
+    NOT the same problem as passing a path as an argument. Inside a filter
+    description ffmpeg re-parses the string: `:` separates options, `,`
+    separates filters, `'` quotes, `[` and `]` mark pads. A Windows path is
+    therefore split at its drive letter — `-vf ass=C:/x/y.ass` makes ffmpeg
+    read `/x/y.ass` as the `ass` filter's *second* option and fail with
+    "Unable to parse original_size", naming neither the file nor the colon.
+
+    MEASURED, on this machine's ffmpeg, over five awkward directory names:
+
+    | form                                    | result |
+    |---|---|
+    | `ass=filename='C\\:/dir/f.ass'`          | works — except an apostrophe |
+    | `ass=filename=C\\:/dir/f.ass` (unquoted) | fails to parse |
+    | `'...o'\\''brien...'` (shell-style)      | fails |
+    | `'...o\\'brien...'`                      | fails |
+    | run from the directory, bare filename   | **works in every case** |
+
+    There is no escaping that survives an apostrophe in a parent directory, and
+    `C:\\Users\\O'Brien` is an ordinary Windows home directory. So the file is
+    referenced by bare name and ffmpeg is run from beside it — nothing to
+    escape, because the only name in the string is one this project chose.
+
+    Inputs and outputs are unaffected: those are argv elements, not filter
+    values, and stay absolute.
+    """
+    resolved = Path(path)
+    return resolved.name, str(resolved.parent)
+
+
 def run(
     argv: Sequence[str],
     *,
     timeout: float | None = None,
     check: bool = True,
+    cwd: str | os.PathLike[str] | None = None,
     on_stderr_line: Callable[[str], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run ffmpeg/ffprobe with A1 enforced and stderr captured.
 
     Arguments are always a list — never a shell string. Paths on the target
     machine are unknown and will contain spaces.
+
+    `cwd` exists for `filter_file`: a filter graph that names a file has to name
+    it relatively, because no escaping of an absolute Windows path survives the
+    filter parser. Every other path stays absolute regardless.
     """
     validate_seek_placement(argv)
     argv = [str(a) for a in argv]
+    working_dir = str(cwd) if cwd is not None else None
 
     if on_stderr_line is None:
         proc = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout, check=False,
-            encoding="utf-8", errors="replace",
+            encoding="utf-8", errors="replace", cwd=working_dir,
         )
         if check and proc.returncode != 0:
             raise FFmpegError(argv, proc.returncode, proc.stderr or "")
@@ -201,6 +239,7 @@ def run(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        cwd=working_dir,
     ) as popen:
         assert popen.stderr is not None
         for line in popen.stderr:

@@ -17,7 +17,10 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ## Status
 
-**Phases 0, 1 and 2 of §15 are complete.** Phases 3–7 are not started.
+**Phases 0, 1 and 2 of §15 are complete. Phase 4 is in progress.** Phase 3 is
+skipped for now by choice — §8's renderer is what turns an approved moment into
+something postable, and Phase 3 adds signals that only change *which* moments
+surface. Phases 3, 5, 6 and 7 are not started.
 
 Phase 2 ships **off by default** (`extract.whisperx.enabled: false`). §15 says to ship
 Phase 1 and stream ten times before adding anything, and a transcript costs a multi-GB
@@ -54,9 +57,10 @@ Phase 2.
 | 19 | `aaaf651` | `whisperx` stage — transcript + word timestamps (§5.7) |
 | 20 | `a552654` | `speaker_assign` — §5.8, in the linear domain |
 | 21 | `e37273c` | `phrase_detect`, speech_rate, swear_density, word snapping |
-| 22 | *this* | `embeddings` (§5.10, Ollama) — Phase 2 complete |
+| 22 | `a109847` | `embeddings` (§5.10, Ollama) — Phase 2 complete |
+| 23 | *this* | ASS captions (§8.3): word timeline, per-track colouring, `render:` config |
 
-886 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+973 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no renderer (Phase 4); no digests (Phase 5); no trends
@@ -384,6 +388,59 @@ looks correct and is not.
 - **No search command was built.** §11.6's pull search is twenty lines and Phase 6 —
   with zero streams there is nothing to search, and one built now would be tuned against
   a fixture (C5).
+
+**Captions (Phase 4, §8.3)**
+
+- **A caption line runs to the NEXT word's start, not to its own end.** §8.3's
+  pseudocode is `start, end = active_word.start, active_word.end`. A word's
+  `end` is the end of its *audio* and the next word starts later, so between
+  every pair of words the Dialogue line expires and the screen is blank — the
+  caption strobes several times a second. Lines are emitted on the *boundaries*
+  between words instead, which keeps the group continuously on screen with only
+  the highlight moving. That is what §8.3 describes in prose; the code beside it
+  does something else.
+- **Colour comes from `segments.track`, never `segments.speaker`.** §8.3's third
+  rule — "`both` → alternate per word by source track" — cannot be done from
+  `speaker`: `speakers.classify` compares mic and party energy across a span and
+  never reads `track`, so a segment labelled `both` holds words from exactly one
+  track and has nothing inside it to alternate between. What an overlap really
+  produces is *two* segments, one per track, both labelled `both`. Worse,
+  `speaker` can be wrong about a segment's own author — a party-track segment
+  during a mic-dominant moment is labelled `operator`, and colouring by that
+  paints the party's words in the operator's colour. Track is provenance and
+  cannot be wrong. One rule then implements all three of §8.3's cases. `speaker`
+  is the fallback only when `track` is NULL or §4.2 found a single track.
+- **Groups are built per role, and each role has its own `MarginV`.** Two people
+  talking at once are two simultaneous word streams; interleaving them into one
+  line reads as gibberish ("Oh my / no way / god"). Each role stacks on its own
+  row. With one speaker the output is identical.
+- **Line boundaries are quantised to centiseconds once, as a shared array.**
+  Rounding each line's start and end independently makes adjacent lines overlap
+  by up to 10 ms — two copies of the same text drawn on top of each other, which
+  reads as a bold flicker — or leaves a hole. Sharing the boundary makes both
+  impossible.
+- **`PlayResX`/`PlayResY` are the OUTPUT resolution.** libass scales every font
+  and margin by them, and §8.4's whole point is that output and source are
+  different shapes. Related: `ass` must come *after* `scale` in the chain, which
+  is the order §8.3's burn-in command already uses.
+- **Unaligned words are interpolated, not dropped.** §5.7 deliberately stores
+  null timestamps rather than inventing them. A caption cannot show a hole, so
+  the gap between aligned neighbours is divided evenly and every word it touched
+  is flagged and counted — a transcript that is mostly interpolated is a caption
+  track that is mostly guesswork, and that should be visible.
+- **The ASS file is named to the filter graph by bare filename, with ffmpeg run
+  from its directory.** MEASURED, and the reason `ffmpeg.run` gained `cwd`:
+  inside a filter description ffmpeg re-parses the string, so `-vf ass=C:/x.ass`
+  splits at the drive letter and fails with "Unable to parse original_size" —
+  naming neither the file nor the colon. Quoting plus `\:` fixes that, but
+  **nothing** survives an apostrophe in a parent directory (`C:\Users\O'Brien`
+  is an ordinary home directory): not `\'`, not shell-style `'\''`. Running from
+  the file's own directory leaves nothing to escape. Inputs and outputs are argv
+  elements, not filter values, and stay absolute.
+- **`render:` sits outside `VERSIONED_SUBTREES`.** Only `extract` and `score`
+  feed `config_version`. Changing a caption colour must not invalidate a
+  candidate or force a re-score — nothing under `render` can change which
+  moments were detected, only how an approved one is finished.
 
 **Export (§10.5)**
 

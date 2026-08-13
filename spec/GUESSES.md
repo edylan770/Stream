@@ -94,6 +94,35 @@ as requiring empirical tuning, and the tuning input is
 | `ingest.probe.rate_sample_seconds` | `4.0` | **plausible** | Enough PTS to fit a constant rate and check the residual; two windows are sampled | A recording that starts CFR and degrades later being classified constant |
 | `ingest.audio.verify.silence_peak_dbfs` | `-80.0` | **plausible** | Below this counts as digital silence. Warns, never fails — a silent `party.wav` just means nobody was in Discord | A quiet-but-real track being flagged |
 
+## Render — captions (Phase 4, §8.3)
+
+None of these has been seen on a real clip. They are the numbers that decide
+whether captions *read*, and the only way to falsify them is to watch a finished
+short — which is one more reason the next thing to do is record a stream.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `render.captions.group_size` | `4` | **plausible** | §8.3 says "3–5 words on screen at a time"; 4 is the middle. Not in §17 | Captions reading as too dense (too high) or the highlight jumping between screens mid-phrase (too low) |
+| `render.captions.min_group_size` | `3` | **plausible** | §8.3's lower bound, used to stop a run ending with one word alone on screen | A last group of 5+ words looking crowded, meaning the rebalance should merge less eagerly |
+| `render.captions.max_gap_s` | `1.2` | **arbitrary** | NOT IN §8.3. Something has to end a group at a silence, or the word before a four-second pause shares the screen with the word after it and the highlight sits on a word nobody is saying. 1.2 s was picked as "longer than a breath, shorter than a beat" | Groups splitting mid-sentence at ordinary pauses (too low), or a caption sitting on screen through a silence (too high) |
+| `render.captions.tail_hold_s` | `0.35` | **arbitrary** | NOT IN §8.3. Without a hold the last word of a sentence vanishes on its own final syllable. Picked as "about a frame count you notice" | The last words of sentences feeling clipped, or captions lingering after the speaker has moved on |
+| `render.captions.min_line_s` | `0.08` | **arbitrary** | Below this a highlight state is a flash rather than a read. Only fires on words that share a start, which is what interpolation produces | Words visibly never highlighting; or a flicker, meaning it is too low |
+| `render.captions.font_size` | `64` | **arbitrary** | In PlayRes units against a 1080-wide output, so roughly 6% of frame width. A guess at what reads on a phone | Captions wrapping to three lines, or being unreadable at phone size |
+| `render.captions.outline` | `3.0` | **plausible** | §8.3 wants "white with dark outline"; an outline has to survive gameplay of any brightness | Text disappearing against a bright explosion (too thin) or looking like a sticker (too thick) |
+| `render.captions.margin_v` (`mic` 220, `party` 330) | | **arbitrary** | The two differ *only* so simultaneous speakers stack instead of colliding. The absolute values are a guess at "above the platform's own UI chrome" | Captions sitting under TikTok's caption bar or Shorts' title, or the two rows overlapping when both people talk |
+| `render.captions.styles.mic.colour` | `#FFFFFF` | **plausible** | §8.3's "color A (e.g. white with dark outline)", verbatim | — |
+| `render.captions.styles.party.colour` | `#7FE7FF` | **plausible** | §8.3's "color B (e.g. light cyan)" | Two speakers being hard to tell apart on a phone, or the party colour reading as a UI element |
+| `render.captions.highlight` | `#FFD400` | **arbitrary** | NOT IN §8.3, which never names the highlight colour — the one thing that makes word-level highlighting visible at all. Yellow because it is distinct from both speaker colours | The highlight being invisible against gameplay, or too loud to read past |
+| `render.captions.uppercase` | `false` | **plausible** | Short-form convention is uppercase, but the transcript's own casing is information and this is a taste decision | The operator preferring the convention after seeing five clips |
+| `render.captions.wrap_style` | `0` | **grounded** | libass smart wrapping. 2 (no wrap) puts an unusually long group off the side of the frame with no warning | — |
+| `render.handles_s` | `0.25` | **arbitrary** | Distinct from `export.handles_s` because they are different decisions: an editor conforming an FCPXML wants room, a short's first frame is the hook (§8.5) and dead air in front of it is worse than a tight cut | Clips starting mid-word (too small) or opening on silence (too large) |
+
+**Not a guess, but recorded because it looks like one:** the ASS file is
+referenced from the filter graph by bare filename with ffmpeg run from its
+directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg's
+filter parser once a parent directory contains an apostrophe. See
+`ffmpeg.filter_file`.
+
 ## Review and export
 
 | Parameter | Value | Confidence | Rationale | Falsified by |

@@ -504,6 +504,100 @@ review:
     # fragmented MP4; the rest are here because footage arrives in them.
     media_extensions: ['.mkv', '.mp4', '.mov', '.flv', '.ts', '.m2ts', '.webm']
 
+# ---------------------------------------------------------------------------
+# RENDER -- §8's auto-finish renderer.
+#
+# Deliberately NOT under `extract` or `score`, which are the only subtrees that
+# feed `config_version` (see config.py VERSIONED_SUBTREES). Changing a caption
+# colour must not invalidate a candidate or force a re-score: nothing here can
+# change which moments were detected, only how an approved one is finished.
+#
+# Almost every number below is a guess -- see spec/GUESSES.md. The crop
+# coordinates in crop_templates.yaml are the worst of them and are marked
+# ARBITRARY: they are placeholders until a real OBS layout is measured.
+# ---------------------------------------------------------------------------
+render:
+  # master | proxy. Same meaning as export.source, kept separate because they
+  # are different decisions: an FCPXML references the master for an editor to
+  # conform against, while a burned-in short is the deliverable and wants the
+  # quality source even when the FCPXML path is pointed at a proxy.
+  source: master
+
+  # Padding either side of the approved window, in seconds. C2 says a false
+  # positive costs three seconds of review and a false negative costs a clip,
+  # so the default expands rather than trims -- but only slightly, because a
+  # short's first frame is the hook (§8.5) and dead air in front of it is worse
+  # than a tight cut.
+  handles_s: 0.25
+
+  captions:                          # §8.3
+    enabled: true
+
+    # §8.3: "3-5 words on screen at a time, with the currently-spoken word
+    # highlighted. This is the format that reads at short-form pacing."
+    # `group_size` is the target; `min_group_size` stops a run ending with one
+    # word alone on screen.
+    group_size: 4
+    min_group_size: 3
+
+    # A silence longer than this ends a group. Without it, the word before a
+    # four-second pause shares the screen with the word after it and the
+    # highlight sits on a word nobody is saying.
+    max_gap_s: 1.2
+    # How long the last word of a group holds after it finishes. Never runs
+    # into the next group or past the end of the clip.
+    tail_hold_s: 0.35
+    # A highlight state shorter than this is skipped -- the word stays on
+    # screen as part of its group but never becomes the active one. Two words
+    # sharing a start (an interpolated pair) is what produces this.
+    min_line_s: 0.08
+    # 0 = libass smart wrapping, 2 = no wrapping. 0, so an unusually long group
+    # wraps instead of running off the frame.
+    wrap_style: 0
+    # Short-form convention is uppercase; off by default because it is a taste
+    # decision and the transcript's own casing is information.
+    uppercase: false
+
+    # Shared style, overridden per speaker below. Sizes and margins are in
+    # PlayRes units, which the renderer sets to the OUTPUT resolution (§8.4's
+    # 1080x1920), not the master's.
+    font: Arial
+    font_size: 64
+    bold: true
+    outline: 3.0
+    shadow: 0.0
+    outline_colour: '#000000'
+    border_style: 1                  # 1 = outline + shadow, 3 = opaque box
+    alignment: 2                     # numpad layout; 2 = bottom centre
+    margin_l: 60
+    margin_r: 60
+    margin_v: 220
+    colour: '#FFFFFF'
+
+    # A3: these are #RRGGBB and the renderer converts to ASS's BGR.
+    #
+    # The active word's colour. §8.3 does not name one -- it is the thing that
+    # makes word-level highlighting visible at all.
+    highlight: '#FFD400'
+
+    # §8.3's per-speaker colouring. Keyed by §4.2 ROLE, resolved from
+    # `segments.track` rather than `segments.speaker` -- see render/words.py for
+    # why `speaker` cannot decide this.
+    #
+    # `margin_v` differs per role on purpose: two people talking at once
+    # produce two simultaneous groups, and distinct margins stack them instead
+    # of drawing them on top of each other. With one speaker this is invisible.
+    styles:
+      mic:                           # the operator. §8.3's "color A"
+        colour: '#FFFFFF'
+        margin_v: 220
+      party:                         # §8.3's "color B"
+        colour: '#7FE7FF'
+        margin_v: 330
+      default:                       # no track and no speaker to read
+        colour: '#FFFFFF'
+        margin_v: 220
+
 export:
   fcpxml_version: '1.10'
   # master | proxy. The master is the quality source; the proxy is the fallback
