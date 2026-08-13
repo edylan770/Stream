@@ -107,6 +107,28 @@ def _check_transcription() -> list[Check]:
     return checks
 
 
+def _check_ollama(cfg) -> Check:
+    """§5.10's embedder. Never required — the stage defers without it."""
+    from clipforge.extract import embeddings
+
+    host = str(cfg.get("extract.embeddings.host"))
+    wanted = str(cfg.get("extract.embeddings.model"))
+    models = embeddings.list_models(host)
+
+    if models is None:
+        return Check(
+            label="ollama", ok=False, required=False,
+            detail=f"not reachable at {host} — embeddings (§5.10) will be skipped",
+        )
+    if not embeddings.model_present(models, wanted):
+        return Check(
+            label="ollama", ok=False, required=False,
+            detail=f"running, but no {wanted!r} — run `ollama pull {wanted}`",
+        )
+    return Check(label="ollama", ok=True, required=False,
+                 detail=f"{wanted} (§5.10 embeddings)")
+
+
 def _check_data_root(root) -> Check:
     """The data root must exist or be creatable, and be writable.
 
@@ -167,6 +189,7 @@ def run_checks(
     checks.extend(_check_transcription())
 
     if cfg is not None:
+        checks.append(_check_ollama(cfg))
         checks.append(_check_data_root(cfg.data_root))
         if checks[1].ok:  # ffmpeg present
             checks.append(_check_encoder(cfg, ffmpeg_path))

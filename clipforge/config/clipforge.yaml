@@ -265,6 +265,46 @@ extract:
     # one keeps the file sane, the token budget keeps Whisper alive.
     max_vocabulary_terms: 160
 
+  # §5.10. Per-segment vectors, served by a local Ollama.
+  #
+  # Nothing reads these yet -- §11.6's search and §11.1's clustering are Phase 6.
+  # They are written anyway because §11.1 says "build the logging now (it cannot
+  # be reconstructed)". Enabled by default and cheap; the stage DEFERS when
+  # Ollama is not running, so it never costs a pipeline run.
+  embeddings:
+    enabled: true
+    host: http://127.0.0.1:11434
+
+    # DEVIATION from §5.10, which recommends `bge-small-en-v1.5` (384-dim).
+    # Ollama's library does not ship that model under that name. This is §5.10's
+    # own second choice: 768-dim, so ~600 MB per 100 streams instead of 300 MB,
+    # which is still trivial beside a 4 GB proxy.
+    #
+    # CHANGING THIS INVALIDATES EVERY EXISTING EMBEDDING. Two models' vectors
+    # occupy unrelated spaces, and a cosine between them is finite, ordered and
+    # meaningless -- so segment_embeddings records the model per row and a search
+    # must filter by it rather than compare across.
+    model: nomic-embed-text
+
+    # NOT IN §5.10, and easy to miss: nomic models are trained with task
+    # prefixes. Indexed text gets this one; a QUERY gets "search_query: ", which
+    # extract/embeddings.py holds as QUERY_PREFIX for §11.6's search to use.
+    # Omitting them puts documents and queries in slightly different regions and
+    # degrades retrieval WITHOUT ERRORING.
+    document_prefix: "search_document: "
+
+    # §5.10's "~50 ms over 200k vectors" is one matmul, which holds only over
+    # unit vectors. Normalising at query time instead allocates a second 600 MB
+    # array per search. Measured: Ollama's /api/embed already returns unit
+    # vectors for this model, so this is usually a no-op -- but the legacy
+    # endpoint and other models make no such promise.
+    normalise: true
+
+    # One HTTP round trip per segment would be minutes of latency for
+    # milliseconds of compute on a 2000-segment stream.
+    batch_size: 32
+    timeout_s: 120.0
+
   # §5.6 / §5.4.1. Everything derived from the transcript's words.
   phrases:
     # Resolved against clipforge/config/ when relative.

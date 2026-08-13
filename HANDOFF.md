@@ -17,12 +17,12 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ## Status
 
-**Phase 1 and Phase 0 of §15 are complete. Phase 2 is in progress** — the transcript and
-speaker labelling are built; phrase detection and embeddings are not.
+**Phases 0, 1 and 2 of §15 are complete.** Phases 3–7 are not started.
 
-Phase 2's stages ship **off by default** (`extract.whisperx.enabled`). §15 says to ship
-Phase 1 first, and until the rest of Phase 2 lands a transcript feeds nothing while
-costing a multi-GB download.
+Phase 2 ships **off by default** (`extract.whisperx.enabled: false`). §15 says to ship
+Phase 1 and stream ten times before adding anything, and a transcript costs a multi-GB
+download to feed signals that no profile weights yet. Turn it on with that key plus the
+CPU block in `local.yaml.example` if there is no NVIDIA GPU.
 
 **The venv is Python 3.12.** WhisperX declares `python <3.14` in every release from
 3.7.0 on, and on 3.14 pip silently resolves back to whisperx 3.2.0, which pins a
@@ -53,26 +53,58 @@ Phase 2.
 | 18 | `312783d` | speech fixture (Piper TTS), for Phase 2 |
 | 19 | `aaaf651` | `whisperx` stage — transcript + word timestamps (§5.7) |
 | 20 | `a552654` | `speaker_assign` — §5.8, in the linear domain |
-| 21 | *this* | `phrase_detect`, speech_rate, swear_density, word snapping |
+| 21 | `e37273c` | `phrase_detect`, speech_rate, swear_density, word snapping |
+| 22 | *this* | `embeddings` (§5.10, Ollama) — Phase 2 complete |
 
-861 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+886 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
-**What is not built, by design:** no transcript (Phase 2), no dual profiles or preview
-assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision (Phase 7). §15
-says to ship this, use it for ten streams, and choose what comes next from observed
-friction.
+**What is not built, by design:** no dual profiles, laughter, pitch, input signals or
+preview assets (Phase 3); no renderer (Phase 4); no digests (Phase 5); no trends
+(Phase 6); no vision (Phase 7).
 
-**Untested and needs a real machine:** `obs_anchor`'s WebSocket path. The hotkey
-fallback is verified end to end here, but nothing has ever received a real
-`RecordStateChanged` event. On the streaming PC: start it, hit record, confirm
-`anchor.json` appears next to the `.mkv`, then `clipforge register --master <that file>`
-with no `--anchor` flag.
+---
 
-**The one thing missing that Phase 1 does not ask for:** §13.2's nightly
-`VACUUM INTO` backup. The spec calls the database the irreplaceable tier and prescribes
-it; nothing implements it, there is no `data/backups/`, and the app shell is now the
-first component that gets left running for hours. This is the first thing to build if
-anything goes wrong before Phase 2 starts.
+## THE NEXT THING TO DO IS NOT CODE
+
+**Zero streams exist.** Every weight, threshold and window length in
+`clipforge/config/` is an educated guess — `spec/GUESSES.md` lists all of them and what
+would show each one wrong. §17's tuning procedure needs
+`signal_firing_rate_by_rating` from `tool_metrics`, which needs ratings, which needs
+footage. §15 is blunt about the failure mode:
+
+> month three, half the system built, zero videos published, and having become a person
+> who builds video tooling rather than a person who makes videos.
+
+The pipeline can take a real recording end to end today. **Record one, run it, review
+it, export it.** Ten streams of that will say more about what to build next than any
+amount of reading the spec.
+
+**Three things a first real stream would settle immediately**, each currently a guess:
+
+1. Whether `obs_anchor`'s WebSocket path works at all (see below).
+2. Whether `score.peak.target_candidates_per_hour` produces a reviewable number.
+3. Whether §7.1's 4-seconds-per-candidate target is met — `clipforge metrics` reports it.
+
+### Untested, and only a real machine can test it
+
+- **`obs_anchor`'s WebSocket path.** The hotkey fallback is verified end to end; nothing
+  has ever received a real `RecordStateChanged`. Start it, hit record in OBS, confirm
+  `anchor.json` lands next to the `.mkv`, then `clipforge register --master <that file>`
+  with no `--anchor` flag.
+- **`marker_daemon` and `input_logger` against real hotkeys.** Both are tested through
+  fake sources; neither has seen `pynput`.
+- **WhisperX on CUDA with `large-v3`.** Only `tiny` on CPU has run. `clipforge doctor`
+  reports whether the GPU is visible before a forty-minute surprise.
+- **The FCPXML export in Resolve.** Two files were generated and handed over; whether
+  Resolve accepts them is unknown.
+
+### Still missing, and not asked for by any phase
+
+**§13.2's nightly `VACUUM INTO` backup.** The spec calls the database the irreplaceable
+tier — "signals can be re-extracted from footage; the operator's judgment calls cannot" —
+and prescribes a nightly job. Nothing implements it and there is no `data/backups/`.
+README carries a one-liner in the meantime. This is the first thing to build the moment
+there are real ratings to lose.
 
 ---
 
@@ -329,6 +361,30 @@ looks correct and is not.
   made for frame boundaries. A snap that would break the window bounds is skipped rather
   than re-clamped, since re-clamping would silently undo it.
 
+**Embeddings (§5.10)**
+
+- **§5.10's first-choice model does not exist in Ollama.** It recommends
+  `bge-small-en-v1.5` (384-dim); Ollama's library ships nothing under that name. The
+  default is §5.10's own second choice, `nomic-embed-text` (768-dim) — ~600 MB per 100
+  streams instead of 300 MB, still trivial beside a 4 GB proxy.
+- **Vectors are stored L2-normalised.** §5.10's "~50 ms over 200k vectors" is a single
+  matmul, which holds only over unit vectors; normalising at query time instead allocates
+  a second 600 MB array per search. MEASURED: Ollama's `/api/embed` already returns unit
+  vectors for this model, so it is usually a no-op — but the legacy endpoint and other
+  models promise nothing, and a search that assumes unit length has to be right.
+- **Nomic models use paired task prefixes.** Documents are embedded with
+  `search_document: ` (config) and **a query must use `search_query: `**, which
+  `extract/embeddings.py` holds as `QUERY_PREFIX` for §11.6's future search. Omitting
+  them degrades retrieval *without erroring*.
+- **`model` and `dim` are recorded per row and must never be compared across.** Two
+  models' vectors occupy unrelated spaces; a cosine between them is finite, ordered and
+  meaningless. A search filters by model rather than averaging two geometries.
+- **Empty segments are skipped.** An embedding of `""` is a valid vector pointing
+  somewhere arbitrary, and it would rank among real results with no text.
+- **No search command was built.** §11.6's pull search is twenty lines and Phase 6 —
+  with zero streams there is nothing to search, and one built now would be tuned against
+  a fixture (C5).
+
 **Export (§10.5)**
 
 - **Ratings are read across generations, never `is_current`.** Inheritance only carries
@@ -430,20 +486,31 @@ Worth continuing, because it has caught real bugs:
 
 ## Starting a fresh session
 
-Phase 1 and the capture layer are done, so the pipeline can now take a real recording
-with real markers in it end to end. Phase 2 (the transcript layer) is in progress.
+Read [`CLAUDE.md`](CLAUDE.md) for the standing rules, this file for state, and
+[`spec/GUESSES.md`](spec/GUESSES.md) before touching any number. Then open with
+something like:
 
-§15 is worth re-reading before adding anything, because it is explicit:
+> Read CLAUDE.md, HANDOFF.md and spec/CLIPFORGE-SPEC.md §<the sections you are
+> touching>. Phases 0–2 are done. <What you want built.> Same as before: tell me
+> anything you'd do differently first, test against the fixture manifest rather than
+> hardcoded numbers, small commits, stop after each.
 
-> Ship it, use it for ten streams, then decide what to add based on what actually
-> caused friction.
+The remaining phases, in §15's order and with what each will cost:
 
-and names the real risk:
+| Phase | Adds | Needs |
+|---|---|---|
+| **3** Full signals | Pitch, laughter, silence, overlap, input signals, dual profiles + combined score, gated negatives, spacing, preview assets | Nothing new to download. Phase 0's `input_logger` must have run on a real stream for four of these |
+| **4** Auto-finish | ASS captions with speaker colouring, vertical reframe, loudnorm, export presets | Real crop coordinates, measured off a real OBS layout |
+| **5** Digests | Structured per-stream summaries, theme/assembly passes | An API key for a frontier model (~$0.10–0.30/stream) |
+| **6** Trends | N-gram bits, HDBSCAN clustering, idea dashboard, §11.6 pull search | **60+ streams before clustering finds anything real.** The n-gram half and the search are cheap and work sooner |
+| **7** Vision | Kill feed, multikill, clutch, MVP | OpenCV plus per-game templates captured by hand; §5.9 says build it last and cut it if hard |
 
-> month three, half the system built, zero videos published, and having become a person
-> who builds video tooling rather than a person who makes videos.
+Two things worth doing before any of them, both small:
 
-**Ten real streams is the thing that has not happened.** Every weight, threshold and
-window length in `clipforge/config/` is an educated guess (C5), and §17's tuning
-procedure needs `signal_firing_rate_by_rating` from actual ratings on actual footage.
-Nothing in Phase 2 or beyond is worth as much as that data.
+- **§13.2's backup job.** The database is the irreplaceable tier and there is none.
+- **Phase 6's n-gram baseline** (`is_baseline_tic`) once ten streams exist, replacing the
+  hand-written stopword list in `phrases.yaml` — the one place a guess is currently
+  standing in for a measurement the corpus would provide.
+
+But the honest answer is at the top of this file: **the next thing to do is record a
+stream.**

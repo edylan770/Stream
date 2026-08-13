@@ -189,7 +189,10 @@ STAGE_LIST: list[StageSpec] = [
         name="embeddings",
         summary="per-segment vectors",
         phase=2,
+        # whisperx, not speaker_assign: §5.10 embeds what a sentence MEANS, and
+        # who said it does not change that.
         requires=("whisperx",),
+        module="clipforge.extract.embeddings",
     ),
     StageSpec(
         name="score",
