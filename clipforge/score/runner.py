@@ -87,6 +87,28 @@ def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features
         else:
             missing.append(name)
 
+    # A9: "Feature vectors are logged in full, always, EVEN FOR SIGNALS NOT
+    # CURRENTLY WEIGHTED. They cannot be reconstructed retroactively and they
+    # are the input to all future tuning."
+    #
+    # Loading only what the profile weights satisfied that by accident while
+    # Phase 1 had three signals and the naive profile named all three. Phase 2's
+    # speech_rate and swear_density are the first that exist without being
+    # weighted, and they would have been stored, declared in feature_schema.yaml,
+    # and written into every vector as null — with §17's tuning input silently
+    # absent.
+    #
+    # Weight 0 contributes exactly nothing to the composite, so no score moves.
+    weighted = {track.name for track in tracks}
+    for name, series in stored.items():
+        if name in weighted:
+            continue
+        raw = grid.resample(series, timeline)
+        z, baseline, _ = grid.rolling_zscore(raw, baseline_samples, std_floor)
+        tracks.append(features.SignalTrack(
+            name=name, values=z, weight=0.0, is_event=False, baseline=baseline, raw=raw,
+        ))
+
     return tracks, missing
 
 
@@ -162,6 +184,8 @@ def score_stream(ctx: StageContext) -> ScoreResult:
         max_window_s=float(ctx.cfg.get("score.window.max_window_s")),
         duration_s=float(duration),
     )
+    built = snap_windows(ctx, built, float(duration))
+
     # §6.2 step 8 — "merge overlapping windows across profiles" — is a no-op in
     # Phase 1: there is one profile, same-bump peaks were already merged by
     # hysteresis_enter, and distinct overlapping windows are §6.6's business.
@@ -173,6 +197,61 @@ def score_stream(ctx: StageContext) -> ScoreResult:
     )
 
     return write_candidates(ctx, ranked, tracks, smoothed, calibration, missing)
+
+
+def word_boundaries(ctx: StageContext) -> tuple[np.ndarray, np.ndarray]:
+    """Aligned word starts and ends across the whole stream, sorted.
+
+    Only words forced alignment could place: one with no timestamp cannot be a
+    boundary, and treating a null as zero would snap every window to the start
+    of the stream.
+    """
+    starts: list[float] = []
+    ends: list[float] = []
+    for row in ctx.conn.execute(
+        "SELECT words FROM segments WHERE stream_id = ?", (ctx.stream_id,)
+    ):
+        for word in json.loads(row["words"] or "[]"):
+            if word.get("start") is None or word.get("end") is None:
+                continue
+            starts.append(float(word["start"]))
+            ends.append(float(word["end"]))
+    return np.array(sorted(starts)), np.array(sorted(ends))
+
+
+def snap_windows(
+    ctx: StageContext, built: list[windows.Window], duration_s: float
+) -> list[windows.Window]:
+    """§6.3's word-boundary snapping — a documented no-op until Phase 2.
+
+    `score.window.snap_to_word_boundaries` has been config-only since commit 12
+    for want of word timestamps. It does something now.
+    """
+    if not bool(ctx.cfg.get("score.window.snap_to_word_boundaries")):
+        return built
+
+    starts, ends = word_boundaries(ctx)
+    if starts.size == 0:
+        return built
+
+    max_distance = float(ctx.cfg.get("score.window.snap_max_distance_s"))
+    min_window = float(ctx.cfg.get("score.window.min_window_s"))
+    max_window = float(ctx.cfg.get("score.window.max_window_s"))
+
+    moved = 0
+    for window in built:
+        t_start, t_end = windows.snap_to_words(
+            window.t_start, window.t_end,
+            starts=starts, ends=ends, max_distance_s=max_distance,
+            min_window_s=min_window, max_window_s=max_window, duration_s=duration_s,
+        )
+        if (t_start, t_end) != (window.t_start, window.t_end):
+            moved += 1
+            window.t_start, window.t_end = t_start, t_end
+
+    if moved:
+        ctx.log(f"    snapped {moved} of {len(built)} window(s) to word boundaries")
+    return built
 
 
 def calibrate_peaks(ctx: StageContext, composite: np.ndarray, duration_s: float):

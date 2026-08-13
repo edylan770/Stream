@@ -459,3 +459,98 @@ def test_contributions_are_ordered_by_magnitude():
     tracks = tracks_for({"a": (0.1, 1.0), "b": (5.0, 1.0), "c": (-2.0, 1.0)})
     detail = features.breakdown(tracks, 0, smoothed_value=3.1)
     assert list(detail.contributions) == ["b", "c", "a"]
+
+
+# --------------------------------------------------------------------------
+# word-boundary snapping (§6.3) — real since Phase 2 supplies word timestamps
+# --------------------------------------------------------------------------
+
+
+def snap(t_start, t_end, starts, ends, **kwargs):
+    options = {
+        "max_distance_s": 0.5, "min_window_s": 8.0, "max_window_s": 60.0,
+        "duration_s": 600.0,
+    }
+    options.update(kwargs)
+    return windows.snap_to_words(
+        t_start, t_end, starts=np.array(starts), ends=np.array(ends), **options
+    )
+
+
+def test_boundaries_move_onto_nearby_words():
+    """§6.3: "snap t_start / t_end to nearest word boundary from WhisperX"."""
+    assert snap(10.2, 20.2, [10.0, 15.0], [12.0, 20.5]) == (10.0, 20.5)
+
+
+def test_a_boundary_in_silence_stays_put():
+    """A window ending in silence has no word near it, and nearest-boundary
+    snapping would drag the edge to a word twenty seconds away."""
+    assert snap(100.0, 110.0, [10.0], [12.0]) == (100.0, 110.0)
+
+
+def test_the_leash_is_the_only_thing_stopping_that():
+    """Same geometry, a leash wide enough to reach: it does move."""
+    moved = snap(100.0, 110.0, [99.0], [111.0], max_distance_s=2.0)
+    assert moved == (99.0, 111.0)
+
+
+def test_the_start_prefers_a_word_start_at_or_before_it():
+    """§8.2 says the point of snapping is "no clipped syllables", and §6.3's
+    "nearest" can clip: a start that moves forward cuts the word it lands in."""
+    start, _end = snap(10.3, 30.0, [10.0, 10.4], [30.0])
+    assert start == 10.0
+
+
+def test_the_end_prefers_a_word_end_at_or_after_it():
+    _start, end = snap(10.0, 29.7, [10.0], [29.6, 30.0])
+    assert end == 30.0
+
+
+def test_a_snap_past_max_window_is_skipped():
+    """Re-clamping afterwards would silently undo the snap and leave the window
+    neither snapped nor honestly unsnapped.
+
+    max_window_s is the bound that snapping actually threatens: preferring a
+    start before and an end after means it GROWS the window, never shrinks it."""
+    # 60.0 s exactly; snapping outward on both edges would make it 60.6.
+    assert snap(10.0, 70.0, [9.7], [70.3], max_window_s=60.0) == (10.0, 70.0)
+
+
+def test_a_snap_under_min_window_is_skipped():
+    """The rarer direction: nothing in the preferred direction is within reach,
+    so both edges fall back inward."""
+    assert snap(10.0, 18.2, [10.4], [17.9], min_window_s=8.0) == (10.0, 18.2)
+
+
+def test_a_snap_past_the_end_of_the_stream_is_skipped():
+    assert snap(10.0, 99.8, [10.0], [100.2], duration_s=100.0) == (10.0, 99.8)
+
+
+def test_no_words_means_no_movement():
+    assert snap(10.0, 20.0, [], []) == (10.0, 20.0)
+
+
+# --------------------------------------------------------------------------
+# A9 — unweighted signals reach the vector, not the breakdown
+# --------------------------------------------------------------------------
+
+
+def test_unweighted_signals_are_excluded_from_the_breakdown():
+    """A9 requires them in the feature vector, so build_tracks loads them at
+    weight 0 — but a row of 0.000 in the review UI's `?` panel is noise in the
+    one place that explains the number beside it."""
+    tracks = tracks_for({"mic_rms": (2.0, 1.0), "speech_rate": (3.0, 0.0)})
+    detail = features.breakdown(tracks, 0, smoothed_value=2.0)
+    assert "speech_rate" not in detail.contributions
+    assert detail.total_raw == pytest.approx(2.0)
+
+
+def test_unweighted_signals_still_reach_the_feature_vector():
+    """A9: "logged in full, always, even for signals not currently weighted"."""
+    from clipforge import config
+
+    schema = config.load().feature_schema
+    tracks = tracks_for({"mic_rms": (2.0, 1.0), "speech_rate": (3.0, 0.0)})
+    vector = features.vector(schema, tracks, 0)
+    assert vector["speech_rate"] == pytest.approx(3.0)
+    assert vector["mic_rms"] == pytest.approx(2.0)

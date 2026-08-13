@@ -68,8 +68,17 @@ def breakdown(
 
     Sorted because the question being answered is always "what made this score
     what it did", and the answer is the first two or three entries.
+
+    **Unweighted signals are excluded.** A9 requires them in the feature vector,
+    so `build_tracks` loads them at weight 0 — but a row of `0.000` in the review
+    UI's `?` panel is noise in the one place that explains the number beside it.
+    The vector answers "what was observed"; this answers "what moved the score".
     """
-    contributions = {track.name: round(track.contribution(index), 6) for track in tracks}
+    contributions = {
+        track.name: round(track.contribution(index), 6)
+        for track in tracks
+        if track.weight
+    }
     ordered = dict(sorted(contributions.items(), key=lambda kv: abs(kv[1]), reverse=True))
     return Breakdown(
         contributions=ordered,

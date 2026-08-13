@@ -1,0 +1,156 @@
+# §5.6 — passive voice triggers.
+#
+# "the operator explicitly rejected an *active* voice trigger (deliberately
+# saying a codeword). This is the passive version — pattern matching on natural
+# speech that already occurs. Zero behavior change."
+#
+# Matched against the transcript with WORD BOUNDARIES, not substrings: "no way"
+# must not fire inside "I know ways around it". Apostrophes are optional in the
+# match, so "let's" and "lets" are one entry, not two.
+#
+# Tune against: how many phrase_excitement events fire per stream, and what
+# fraction of them land on candidates you rate 2. Add a phrase when you notice
+# yourself saying it at good moments; remove one that fires constantly.
+
+version: 1
+
+# §5.6's list, verbatim.
+excitement:
+  - oh my god
+  - no way
+  - what the fuck
+  - did you see that
+  - are you kidding
+  - holy shit
+  - let's go
+  - oh my days
+  - what just happened
+  - i can't believe
+
+# §5.6: "Plus swearing density: profanity count per 10 s window as a continuous
+# signal." Counted, never censored -- §8.6 keeps muting off by default and
+# applies it at export time from word timestamps, so this list only feeds the
+# signal.
+profanity:
+  - fuck
+  - fucking
+  - fucked
+  - shit
+  - shitty
+  - bullshit
+  - bitch
+  - cunt
+  - dick
+  - piss
+  - bastard
+  - arse
+  - ass
+  - asshole
+  - wanker
+  - twat
+  - prick
+  - bollocks
+
+# --------------------------------------------------------------------------
+# phrase_repeat (§5.4.2: "same phrase >=3x in 90 s -- bit formation in real
+# time")
+# --------------------------------------------------------------------------
+#
+# §11.2 has the real answer to "what is a tic rather than a bit": compute a
+# baseline from the first ~10 streams and store it as `is_baseline_tic`. There
+# are zero streams, so that cannot exist yet, and this list stands in for it.
+#
+# WHEN THE CORPUS EXISTS, Phase 6 should replace this with the measured
+# baseline. A hand-written stopword list cannot know that YOU say "to be fair"
+# in every sentence; ten streams of transcript can.
+repeat:
+  # An n-gram made only of these is filler, not a bit.
+  stopwords:
+    - a
+    - about
+    - all
+    - and
+    - are
+    - as
+    - at
+    - be
+    - but
+    - by
+    - do
+    - for
+    - from
+    - get
+    - go
+    - going
+    - got
+    - had
+    - has
+    - have
+    - he
+    - her
+    - him
+    - his
+    - i
+    - if
+    - in
+    - is
+    - it
+    - its
+    - just
+    - like
+    - me
+    - my
+    - no
+    - not
+    - of
+    - off
+    - oh
+    - ok
+    - okay
+    - on
+    - one
+    - or
+    - our
+    - out
+    - really
+    - right
+    - she
+    - so
+    - that
+    - the
+    - their
+    - them
+    - then
+    - there
+    - they
+    - this
+    - to
+    - too
+    - up
+    - was
+    - we
+    - well
+    - were
+    - what
+    - when
+    - where
+    - which
+    - who
+    - will
+    - with
+    - would
+    - yeah
+    - yes
+    - you
+    - your
+
+  # Verbal tics that are filler even when they are not stopwords. This is the
+  # part §11.2 would measure rather than guess.
+  tics:
+    - you know
+    - i mean
+    - kind of
+    - sort of
+    - or something
+    - or whatever
+    - to be fair

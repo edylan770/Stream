@@ -225,12 +225,56 @@ def test_feature_vector_holds_exactly_the_declared_schema(scored):
         assert set(json.loads(row["feature_vector"])) == expected
 
 
-def test_feature_vector_nulls_what_phase_1_does_not_compute(scored):
+def test_the_vector_holds_signals_the_profile_does_not_weight(scored):
+    """A9: "Feature vectors are logged in full, always, EVEN FOR SIGNALS NOT
+    CURRENTLY WEIGHTED. They cannot be reconstructed retroactively and they are
+    the input to all future tuning."
+
+    This test used to assert the opposite — that the vector held exactly the
+    three signals the naive profile weights — because `build_tracks` only
+    loaded what the profile named. That was invisible while Phase 1 had three
+    signals and the profile weighted all three; `game_rms` and `party_rms` are
+    extracted for any multi-track recording and weighted by nothing, so they
+    were being dropped on the floor.
+    """
+    from clipforge import signals
+
     cfg, conn, engine, manifest, _ = scored
     vector = json.loads(candidates(conn)[0]["feature_vector"])
     computed = {k for k, v in vector.items() if v is not None}
-    assert computed == {"mic_rms", "marker_maybe", "marker_definite"}
+
+    stored = set(signals.kinds(conn, "fx"))
+    weighted = set(cfg.profile.weights)
+
+    unweighted = stored - weighted
+    assert unweighted, "the fixture should extract a signal the profile ignores"
+    assert unweighted <= computed, f"A9 requires {sorted(unweighted)} in the vector"
+    assert stored <= computed
+
+    # Everything else — the ~25 signals no phase computes yet — is still null,
+    # which is what makes a Phase 1 vector and a Phase 3 vector comparable.
+    assert not computed - stored - weighted
     assert len(vector) == len(cfg.feature_schema.keys)
+
+
+def test_unweighted_signals_do_not_appear_in_the_breakdown(scored):
+    """The vector answers "what was observed"; contributing_signals answers
+    "what moved the score". A row of 0.000 in the review UI's `?` panel is noise
+    in the one place that explains the number beside it."""
+    cfg, conn, engine, manifest, _ = scored
+    contributions = json.loads(candidates(conn)[0]["contributing_signals"])
+    named = {k for k in contributions if not k.startswith("_")}
+    assert named <= set(cfg.profile.weights)
+
+
+def test_unweighted_signals_do_not_move_the_score(scored):
+    """Weight 0 contributes weight * value = 0, so loading them for A9 cannot
+    change what scored."""
+    cfg, conn, engine, manifest, _ = scored
+    for row in candidates(conn):
+        contributions = json.loads(row["contributing_signals"])
+        total = sum(v for k, v in contributions.items() if not k.startswith("_"))
+        assert total == pytest.approx(contributions["_total_raw"], abs=1e-6)
 
 
 def test_feature_schema_version_is_recorded(scored):

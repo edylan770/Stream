@@ -47,9 +47,10 @@ Phase 2.
 | 17 | `58ba6c5` | setup docs, launchers |
 | 18 | `312783d` | speech fixture (Piper TTS), for Phase 2 |
 | 19 | `aaaf651` | `whisperx` stage — transcript + word timestamps (§5.7) |
-| 20 | *this* | `speaker_assign` — §5.8, in the linear domain |
+| 20 | `a552654` | `speaker_assign` — §5.8, in the linear domain |
+| 21 | *this* | `phrase_detect`, speech_rate, swear_density, word snapping |
 
-814 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+861 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no transcript (Phase 2), no dual profiles or preview
 assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision (Phase 7). §15
@@ -280,6 +281,48 @@ looks correct and is not.
   headphones, so there is no acoustic path, and C5 says not to build ahead of the data.
   **If the audio setup ever changes to speakers, duplicated captions are the symptom**,
   and `speaker_assign` is where the fix belongs since it holds both text and energies.
+
+**Phrases and transcript signals (§5.6, §5.4.1, §6.3)**
+
+- **A9 was being violated the moment an unweighted signal existed.** A9 requires feature
+  vectors "logged in full, always, even for signals not currently weighted", but
+  `score.runner.build_tracks` only loaded what the profile named. Invisible while Phase 1
+  had three signals and the naive profile weighted all three — `game_rms` and `party_rms`
+  were already being dropped on any multi-track recording, and `speech_rate` and
+  `swear_density` would have joined them. Unweighted signals now load at weight 0: they
+  contribute `weight × value` = nothing, so no score moves, but the vector fills.
+- **…and are excluded from `contributing_signals`.** The vector answers "what was
+  observed"; the breakdown answers "what moved the score". A row of `0.000` in the review
+  UI's `?` panel is noise in the one place that explains the number beside it.
+- **Phrase matching is word-boundary, not substring.** §5.6 says only "match against the
+  transcript"; a substring search fires "no way" inside "I know ways around it", and each
+  one is a candidate the operator rejects by hand. Apostrophes are optional in the
+  pattern, so "let's" and "lets" are one config entry.
+- **Only the longest repeated phrase fires.** MEASURED: a repeated four-word line fired
+  every n-gram inside it — `lets go`, `go hawkeye` *and* `lets go hawkeye` at the same
+  instant. Non-marker kernels combine with `sum` (§6.2 step 4), so a longer catchphrase
+  would have scored higher purely for containing more n-grams. Length is not a signal.
+- **`phrase_repeat` fires on the third occurrence, not the first.** Firing on the first
+  would mean reaching backwards to score a moment that had not happened yet.
+- **The tic filter is a stand-in for §11.2's `is_baseline_tic`**, which is "computed from
+  the first ~10 streams" and cannot exist yet. `phrases.yaml` carries a hand-written
+  stopword and tic list instead. **Phase 6 should replace it with the measurement** — a
+  written list cannot know which phrases *this* operator says constantly; ten streams of
+  transcript can.
+- **Phrase events carry the speaker**, because §5.4.2 weights a party reaction above the
+  operator's own and Phase 3 should be able to split that weight without re-extracting.
+  `phrase_detect` therefore requires `speaker_assign`, not `whisperx`.
+- **`speech_rate` counts aligned words only**, and reports the excluded share. §5.4.1
+  calls it a detector of "both excitement and dead air", so a rate depressed by failed
+  alignment would read as silence.
+- **Word snapping (§6.3) has a leash and a direction.** §6.3 says only "snap to nearest
+  word boundary". Nearest would drag a window that ends in silence to a word twenty
+  seconds away, so there is a maximum distance (`score.window.snap_max_distance_s`,
+  0.5 s). And nearest can clip a syllable, which is the exact thing §8.2 says snapping is
+  *for* — so the start takes a word start at or before it and the end a word end at or
+  after it, growing onto the boundary rather than shrinking off it. Same choice commit 15
+  made for frame boundaries. A snap that would break the window bounds is skipped rather
+  than re-clamped, since re-clamping would silently undo it.
 
 **Export (§10.5)**
 

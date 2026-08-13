@@ -154,7 +154,11 @@ STAGE_LIST: list[StageSpec] = [
         name="phrase_detect",
         summary="passive voice triggers, repeated phrases",
         phase=2,
-        requires=("whisperx",),
+        # speaker_assign rather than whisperx: §5.4.2 weights a party reaction
+        # above the operator's own, so phrase events carry the speaker — which
+        # means the labels have to exist first.
+        requires=("speaker_assign",),
+        module="clipforge.extract.phrases",
     ),
     StageSpec(
         name="input_signals",

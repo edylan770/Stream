@@ -265,6 +265,28 @@ extract:
     # one keeps the file sane, the token budget keeps Whisper alive.
     max_vocabulary_terms: 160
 
+  # §5.6 / §5.4.1. Everything derived from the transcript's words.
+  phrases:
+    # Resolved against clipforge/config/ when relative.
+    file: phrases.yaml
+
+    # §5.4.1: "words/sec in 3 s sliding window. Detects both excitement and dead
+    # air." Shorter is twitchier; longer smooths over the pause before a
+    # punchline, which is exactly what §8.7 says a model cannot hear anyway.
+    speech_rate_window_s: 3.0
+
+    # §5.6: "profanity count per 10 s window as a continuous signal."
+    swear_window_s: 10.0
+
+    repeat:
+      # §5.4.2: "Same phrase >=3x in 90 s window -- bit formation in real time."
+      window_s: 90.0
+      min_occurrences: 3
+      # N-gram length to consider. §11.2 uses 2-6 grams for the same job across
+      # streams; this is the within-stream half of it.
+      min_words: 2
+      max_words: 6
+
   # §5.8. Speaker identity is which track has energy -- no model, no HF token.
   speaker:
     # NOT IN §17's table, though it belongs there: this one number decides every
@@ -347,8 +369,18 @@ score:
     # How to satisfy min/max when hysteresis disagrees: grow or shrink around
     # t_peak, keeping the peak inside. (§6.3 says "clamp" without saying how.)
     clamp_mode: expand_around_peak
-    # §6.3. No-op until Phase 2 supplies word timestamps.
+    # §6.3. Real since Phase 2 supplies word timestamps.
     snap_to_word_boundaries: true
+    # NOT IN §6.3, which says only "snap to nearest word boundary". A window
+    # that ends in silence has no word near it, and nearest-boundary snapping
+    # would drag the edge to a word twenty seconds away. Beyond this the
+    # boundary stays where the composite put it.
+    #
+    # Direction is not symmetric either: the start prefers a word start at or
+    # BEFORE it and the end a word end at or AFTER it, so the window grows onto
+    # the boundary rather than shrinking off it. §8.2 says the point of snapping
+    # is "no clipped syllables", and nearest can clip.
+    snap_max_distance_s: 0.5
 
   spacing:
     # §17 / §6.6.

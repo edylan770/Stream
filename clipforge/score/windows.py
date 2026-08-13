@@ -289,6 +289,76 @@ def clamp(
 
 
 # --------------------------------------------------------------------------
+# word-boundary snapping (§6.3)
+# --------------------------------------------------------------------------
+
+
+def snap_to_words(
+    t_start: float, t_end: float, *,
+    starts: np.ndarray, ends: np.ndarray,
+    max_distance_s: float, min_window_s: float, max_window_s: float,
+    duration_s: float,
+) -> tuple[float, float]:
+    """§6.3: "snap t_start / t_end to nearest word boundary from WhisperX".
+
+    Free given word-level timestamps, as §6.3 says — but it needs two rules the
+    spec does not give:
+
+    **A leash.** A window that ends in silence has no word anywhere near it, and
+    "nearest boundary" would drag the edge to a word twenty seconds away. Beyond
+    `max_distance_s` the boundary stays where the composite put it.
+
+    **A direction.** §6.3 says *nearest*; §8.2 says the point is "no clipped
+    syllables". Nearest can clip — a start that moves forward onto the next word
+    cuts the first one in half. So the start prefers a word start at or before
+    it and the end prefers a word end at or after it: the window grows onto the
+    boundary rather than shrinking off it. Same choice commit 15 made for frame
+    boundaries, and the same reason — C2, a false negative costs a clip.
+
+    A snap that would break `[min_window_s, max_window_s]` or leave the stream
+    is skipped rather than re-clamped, because re-clamping would silently undo
+    it and leave the window neither snapped nor honestly unsnapped.
+    """
+    new_start = _snap_backward(t_start, starts, max_distance_s)
+    new_end = _snap_forward(t_end, ends, max_distance_s)
+
+    if new_start < 0.0 or new_end > duration_s:
+        return t_start, t_end
+    length = new_end - new_start
+    if length < min_window_s or length > max_window_s:
+        return t_start, t_end
+    return new_start, new_end
+
+
+def _snap_backward(t: float, boundaries: np.ndarray, max_distance_s: float) -> float:
+    """Nearest boundary at or before `t`, else the nearest one within reach."""
+    if boundaries.size == 0:
+        return t
+    index = int(np.searchsorted(boundaries, t, side="right")) - 1
+    if index >= 0 and t - float(boundaries[index]) <= max_distance_s:
+        return float(boundaries[index])
+    # Nothing behind within reach. Moving forward would clip the word we are
+    # sitting inside, so only do it if the word starts almost immediately.
+    ahead = index + 1
+    if ahead < boundaries.size and float(boundaries[ahead]) - t <= max_distance_s:
+        return float(boundaries[ahead])
+    return t
+
+
+def _snap_forward(t: float, boundaries: np.ndarray, max_distance_s: float) -> float:
+    """Nearest boundary at or after `t`, else the nearest one within reach."""
+    if boundaries.size == 0:
+        return t
+    index = int(np.searchsorted(boundaries, t, side="left"))
+    if index < boundaries.size and float(boundaries[index]) - t <= max_distance_s:
+        return float(boundaries[index])
+    behind = index - 1
+    if behind >= 0 and t - float(boundaries[behind]) <= max_distance_s:
+        return float(boundaries[behind])
+    return t
+
+
+# --------------------------------------------------------------------------
 # spacing (§6.6)
 # --------------------------------------------------------------------------
 
