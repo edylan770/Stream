@@ -265,6 +265,19 @@ extract:
     # one keeps the file sane, the token budget keeps Whisper alive.
     max_vocabulary_terms: 160
 
+  # §5.8. Speaker identity is which track has energy -- no model, no HF token.
+  speaker:
+    # NOT IN §17's table, though it belongs there: this one number decides every
+    # speaker label, and therefore every caption colour in §8.3.
+    #
+    # It is a ratio of LINEAR POWERS, not of the stored dB. §5.8's pseudocode
+    # compares dB values directly, which is why extract/speakers.py converts
+    # first -- see its docstring for the measurement.
+    #
+    # Higher = more segments land in `both`. Tune against: whether two-person
+    # crosstalk is being attributed to one person.
+    dominance_ratio: 1.5
+
   rms:
     # Analysis window per sample. Longer is smoother and less responsive; at
     # 2x the hop each sample overlaps its neighbours by half.

@@ -148,6 +148,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="deterministic, via track energy",
         phase=2,
         requires=("whisperx", "audio_features"),
+        module="clipforge.extract.speakers",
     ),
     StageSpec(
         name="phrase_detect",

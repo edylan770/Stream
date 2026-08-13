@@ -12,8 +12,12 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ## Status
 
-**Phase 1 and Phase 0 of §15 are complete.** Nothing from Phase 2+ is implemented,
-deliberately.
+**Phase 1 and Phase 0 of §15 are complete. Phase 2 is in progress** — the transcript and
+speaker labelling are built; phrase detection and embeddings are not.
+
+Phase 2's stages ship **off by default** (`extract.whisperx.enabled`). §15 says to ship
+Phase 1 first, and until the rest of Phase 2 lands a transcript feeds nothing while
+costing a multi-GB download.
 
 **The venv is Python 3.12.** WhisperX declares `python <3.14` in every release from
 3.7.0 on, and on 3.14 pip silently resolves back to whisperx 3.2.0, which pins a
@@ -42,9 +46,10 @@ Phase 2.
 | 16 | `f13d7ac` | Phase 0 capture layer; the file contract, defined once |
 | 17 | `58ba6c5` | setup docs, launchers |
 | 18 | `312783d` | speech fixture (Piper TTS), for Phase 2 |
-| 19 | *this* | `whisperx` stage — transcript + word timestamps (§5.7) |
+| 19 | `aaaf651` | `whisperx` stage — transcript + word timestamps (§5.7) |
+| 20 | *this* | `speaker_assign` — §5.8, in the linear domain |
 
-792 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+814 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no transcript (Phase 2), no dual profiles or preview
 assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision (Phase 7). §15
@@ -251,6 +256,30 @@ looks correct and is not.
   what §5.6 matches against; inventing times corrupts §6.3's snapping.
 - **`params_hash` excludes `device` and `compute_type`**, so moving between machines does
   not invalidate a forty-minute transcription — the same reasoning as `master_identity`.
+
+**Speaker assignment (§5.8)**
+
+- **Energies are compared as linear power, not as the stored dB.** §5.8's pseudocode does
+  `mic_e > party_e * 1.5` on values that commit 10 stores in dBFS — logarithms.
+  Multiplying a negative dB by 1.5 moves the threshold *down*, so the test gets easier
+  the quieter the other track is. MEASURED on the speech fixture's overlapped line: mic
+  −22.72 dBFS, party −21.15 dBFS, so the party track is the louder — and the literal rule
+  returns `operator`. Converting to power first returns `both`, which is what an overlap
+  is. Every other line in the fixture matches its authored speaker exactly.
+- **The mean is taken in the linear domain too.** Averaging dB is the geometric mean of
+  the powers, which understates any window containing a peak — exactly the windows that
+  matter.
+- **`both` is stored**, though §3.2 comments the column as
+  `'operator','party','unknown'`. §5.8's algorithm returns `both` and §8.3 depends on it
+  ("alternate per word by source track"); `unknown` means there was no energy to judge by.
+  No CHECK constraint, so the comment is illustrative rather than binding.
+- **The 1.5 ratio is in config** (`extract.speaker.dominance_ratio`). §17's table forgot
+  it, and it decides every speaker label and therefore every caption colour in §8.3.
+- **No bleed handling, deliberately.** Transcribing mic and party separately would
+  duplicate a line if the party's voice reached the mic — but the operator uses
+  headphones, so there is no acoustic path, and C5 says not to build ahead of the data.
+  **If the audio setup ever changes to speakers, duplicated captions are the symptom**,
+  and `speaker_assign` is where the fix belongs since it holds both text and energies.
 
 **Export (§10.5)**
 
