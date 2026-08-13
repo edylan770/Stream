@@ -70,6 +70,43 @@ def _check_import(module: str, purpose: str) -> Check:
     return Check(label=module, ok=True, detail=f"{version}  ({purpose})")
 
 
+def _check_transcription() -> list[Check]:
+    """Phase 2's optional stack, and whether it can use the GPU.
+
+    Never required — Phase 1 works without any of it. But "it ran, and took
+    forty minutes" is the failure this exists to prevent: §5.7 assumes CUDA, and
+    on CPU `large-v3` is many times slower than realtime against §1.3's 20-40
+    minute budget for ALL unattended processing.
+    """
+    try:
+        import whisperx  # noqa: F401
+    except ImportError:
+        return [Check(
+            label="whisperx", ok=False, required=False,
+            detail='not installed — Phase 2 transcription unavailable. pip install -e ".[asr]"',
+        )]
+
+    checks = [Check(label="whisperx", ok=True, detail="installed (§5.7 transcription)",
+                    required=False)]
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            detail = f"{torch.__version__}, CUDA: {torch.cuda.get_device_name(0)}"
+            ok = True
+        else:
+            detail = (
+                f"{torch.__version__}, NO CUDA — transcription will run on the CPU. "
+                f"Set extract.whisperx.device=cpu and a smaller model in local.yaml."
+            )
+            ok = False
+        checks.append(Check(label="torch", ok=ok, detail=detail, required=False))
+    except ImportError as exc:
+        checks.append(Check(label="torch", ok=False, required=False,
+                            detail=f"import failed: {exc}"))
+    return checks
+
+
 def _check_data_root(root) -> Check:
     """The data root must exist or be creatable, and be writable.
 
@@ -127,6 +164,7 @@ def run_checks(
     checks.append(_check_binary("ffmpeg", ffmpeg_path))
     checks.append(_check_binary("ffprobe", ffprobe_path))
     checks.extend(_check_import(mod, why) for mod, why in REQUIRED_IMPORTS.items())
+    checks.extend(_check_transcription())
 
     if cfg is not None:
         checks.append(_check_data_root(cfg.data_root))

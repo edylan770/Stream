@@ -224,6 +224,21 @@ starting it, not to suggest it exists.
 | Phase | Adds | You will need |
 |---|---|---|
 | **2** Transcript | Word-level transcript, speaker-labelled; speech rate; phrase triggers | `[asr]` (~2 GB), Whisper `large-v3` (~3 GB on first run), a CUDA GPU to be usable |
+
+**Phase 2 is partly built.** The `whisperx` stage works — transcript with
+word-level timestamps, VAD, and vocabulary seeding — but it is **off by
+default**, because until speaker assignment and phrase detection land it
+produces rows nothing reads. To try it:
+
+```powershell
+.venv\Scripts\python -m pip install -e ".[asr]"
+.\clipforge.ps1 doctor          # reports whether CUDA is visible
+```
+
+then set `extract.whisperx.enabled: true` in `local.yaml` (with the CPU block
+from `local.yaml.example` if you have no NVIDIA GPU). Measured on the test
+fixture with the smallest model on CPU: 2.9% word error rate, and vocabulary
+seeding took hero-name accuracy from 7/11 to 11/11.
 | **3** Full signals | Pitch, laughter, silence, input signals, dual profiles, preview assets | Nothing new to download; ~25 MB of preview assets per stream |
 | **4** Auto-finish | Burned-in captions, vertical reframe, loudness normalisation, export presets | Nothing new; re-encode time per clip |
 | **5** Digests | Per-stream structured summaries, video ideation, cross-stream compilations | An API key for a frontier model (~$0.10–0.30 per stream) |
@@ -257,7 +272,8 @@ Safe to run while the app is open.
 .venv\Scripts\python -m pytest -q
 ```
 
-747 tests. The test fixtures are **synthetic** — ffmpeg `testsrc2` video with
+792 tests, plus 3 that load a real Whisper model and need `--asr`. The test
+fixtures are **synthetic** — ffmpeg `testsrc2` video with
 numerically authored audio, colour bars and static, deliberately. Real footage
 cannot validate a detector: nobody can say what the correct mic RMS at t=412 of
 a real recording is. Each fixture's `manifest.json` carries ground truth by

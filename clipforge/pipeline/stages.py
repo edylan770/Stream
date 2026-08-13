@@ -80,6 +80,22 @@ class StageSpec:
                 return False, f"missing output {path.name}"
         return True, ""
 
+    def available(self, ctx: Any) -> tuple[bool, str]:
+        """Whether this stage can run here at all — as opposed to being built.
+
+        `implemented` says the code exists; this says the machine can execute
+        it. They came apart the moment a stage depended on an optional extra:
+        `whisperx` is written, but on a box without the ASR extra installed —
+        or with it installed and no GPU — attempting it fails the whole run
+        before `score` ever gets to produce candidates.
+
+        An unavailable stage is DEFERRED with a reason, exactly like one that a
+        later phase has not built yet. Phase 3's Ollama, Phase 5's API key and
+        Phase 7's OpenCV will each want this.
+        """
+        hook = getattr(self.load(), "available", None)
+        return hook(ctx) if hook else (True, "")
+
 
 #: §5.1, in the spec's order. `phase` is the §15 build phase.
 STAGE_LIST: list[StageSpec] = [
@@ -125,6 +141,7 @@ STAGE_LIST: list[StageSpec] = [
         summary="transcript + word timestamps",
         phase=2,
         requires=("audio_split",),
+        module="clipforge.extract.transcript",
     ),
     StageSpec(
         name="speaker_assign",

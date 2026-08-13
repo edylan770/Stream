@@ -1,0 +1,110 @@
+# §5.7 vocabulary seeding. One term per line; # starts a comment.
+#
+# "Without this the transcript says 'Hawk I' and 'Iron First' permanently, and
+# bad captions read as amateur immediately."
+#
+# Seeded into every transcription pass. Keep it SHORT and specific: the terms
+# share a fixed prompt budget with everything else, so a thousand words of
+# general English crowds out the handful that actually get misheard. Add a term
+# when you see the transcript get it wrong, not in anticipation.
+#
+# NAMES OF REAL PEOPLE GO IN `vocabulary.local.txt` (gitignored, merged
+# automatically). §5.7 asks for "the girlfriend's name and any recurring
+# nicknames"; those should not need a commit.
+
+# --- Marvel Rivals heroes ---------------------------------------------------
+Hawkeye
+Iron Fist
+Iron Man
+Luna Snow
+Mantis
+Namor
+Jeff
+Jeff the Land Shark
+Magik
+Psylocke
+Star-Lord
+Rocket Raccoon
+Groot
+Venom
+Peni Parker
+Scarlet Witch
+Doctor Strange
+Storm
+Hela
+Loki
+Thor
+Winter Soldier
+Black Panther
+Spider-Man
+Squirrel Girl
+Wolverine
+Moon Knight
+Cloak and Dagger
+Adam Warlock
+Invisible Woman
+Mister Fantastic
+The Thing
+Human Torch
+Emma Frost
+
+# --- Marvel Rivals terms ----------------------------------------------------
+Celestial
+Grandmaster
+Eternity
+Team-Up
+MVP
+SVP
+Domination
+Convoy
+Convergence
+
+# --- Valorant ---------------------------------------------------------------
+Valorant
+Jett
+Sage
+Reyna
+Omen
+Sova
+Killjoy
+Cypher
+Chamber
+Neon
+Raze
+Viper
+Breach
+Skye
+Ascent
+Haven
+Icebox
+Bind
+Split
+Lotus
+
+# --- Game slang (§5.7: "ult, ulted, dive, peel, flick, one-shot, ...") ------
+ult
+ulted
+ulting
+dive
+peel
+peeling
+flick
+flicked
+one-shot
+headshot
+wallbang
+whiff
+whiffed
+clutch
+clutched
+ace
+frag
+fragging
+rotate
+rotating
+backline
+frontline
+tilted
+throwing
+gigachad
+diff

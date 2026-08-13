@@ -180,6 +180,91 @@ extract:
   # says "10 Hz (100 ms hop)" -- the same fact, not two.
   signal_hz: 10.0
 
+  # §5.7. Phase 2. Defaults are the spec's, which are right for the streaming PC
+  # and impossible on a machine with no NVIDIA GPU -- see local.yaml.example for
+  # the CPU block.
+  whisperx:
+    # OFF by default, and that is not timidity. §15 puts the transcript in
+    # Phase 2 and is emphatic about shipping Phase 1 first; until
+    # speaker_assign, speech_rate and phrase_detect exist, a transcript feeds
+    # nothing. Leaving it on would mean every `clipforge run` pulls a 3 GB model
+    # and, on a machine without a GPU, spends hours producing rows that nothing
+    # reads. Turn it on when the rest of Phase 2 lands, or to experiment.
+    #
+    # When off, the stage reports as deferred and the run continues to `score`.
+    enabled: false
+
+    model: large-v3
+    device: cuda
+
+    # NOT IN §5.7, which hardcodes float16 because it assumes CUDA. CTranslate2
+    # REJECTS float16 on CPU outright, so the spec's literal value fails with an
+    # error naming neither the setting nor the cause. `auto` resolves per device;
+    # an explicit value still wins.
+    compute_type: auto
+
+    # NOT IN §5.7 either, which sets no language and so detects one per chunk.
+    # A chunk of near-silence or game noise is exactly where Whisper decides the
+    # language is Welsh and hallucinates to match. null = auto-detect.
+    language: en
+
+    # §5.8: run separately on the mic and party tracks, then merge. The game
+    # track is deliberately absent -- it is game audio, and transcribing it
+    # produces confident nonsense that would then be scored and shown. A
+    # single-track recording transcribes just mic.
+    roles: [mic, party]
+
+    batch_size: 16
+
+    # A4: "VAD filtering must be enabled. Without it, Whisper hallucinates
+    # phantom text over silence and music."
+    #
+    # silero rather than pyannote: whisperx's pyannote path fetches
+    # pyannote/segmentation-3.0, which needs a HuggingFace account and licence
+    # acceptance -- contradicting §5.8's own reason for avoiding pyannote ("no
+    # Hugging Face token, no license acceptance, and no model"). MEASURED on the
+    # build machine: pyannote's audio IO also fails here outright, because
+    # torchcodec cannot load against torch 2.8+cpu.
+    vad_method: silero
+    vad_options:
+      # §5.7's values. VERIFIED they apply to both methods in whisperx 3.8;
+      # chunk_size is required by silero, whose binarization happens before the
+      # chunks are merged.
+      chunk_size: 30
+      vad_onset: 0.5
+      vad_offset: 0.363
+
+    # §5.7: "run whisperx.align() for word-level timestamps. These drive
+    # captions, cut-point snapping, and speech-rate calculation." Downloads a
+    # wav2vec2 model (~360 MB) on first use. Turning this off leaves segments
+    # with no words, which disables §6.3's boundary snapping.
+    align: true
+
+    # §5.7's vocabulary seeding. Resolved against this directory. A sibling
+    # `vocabulary.local.txt` is merged when present and is gitignored -- §5.7
+    # says to include "the girlfriend's name and any recurring nicknames", and
+    # names of real people should not need a commit.
+    vocabulary_file: vocabulary.txt
+
+    # hotwords | prompt | both | none.
+    #
+    # §5.7 passes BOTH an initial_prompt and a hotwords list, and MEASURED that
+    # is a trap. They are not exclusive -- faster-whisper's get_prompt
+    # concatenates hotwords then the prompt into one sot_prev section -- but it
+    # truncates each to `max_length // 2 - 1` = 223 tokens, and Whisper only has
+    # positional encodings for 448. Framing tokens push the total to 451, so
+    # seeding both at any real length fails with
+    #   RuntimeError: No position encodings are defined for positions >= 448
+    # raised from inside CTranslate2, with nothing pointing at the vocabulary.
+    #
+    # `hotwords` alone is also the more targeted mechanism: it is a term list,
+    # where initial_prompt is meant to be a style-setting sentence. `both` still
+    # works, with the term list trimmed to half the budget.
+    vocabulary_mode: hotwords
+    # Upper bound before the token budget trims further. Both limits exist: this
+    # one keeps the file sane, the token budget keeps Whisper alive.
+    max_vocabulary_terms: 160
+
   rms:
     # Analysis window per sample. Longer is smoother and less responsive; at
     # 2x the hop each sample overlaps its neighbours by half.

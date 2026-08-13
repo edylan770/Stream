@@ -41,9 +41,10 @@ Phase 2.
 | 15 | `86ee9e9` | FCPXML export (§10.5) |
 | 16 | `f13d7ac` | Phase 0 capture layer; the file contract, defined once |
 | 17 | `58ba6c5` | setup docs, launchers |
-| 18 | *this* | speech fixture (Piper TTS), for Phase 2 |
+| 18 | `312783d` | speech fixture (Piper TTS), for Phase 2 |
+| 19 | *this* | `whisperx` stage — transcript + word timestamps (§5.7) |
 
-747 tests pass. `.venv\Scripts\python.exe -m pytest -q`.
+792 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no transcript (Phase 2), no dual profiles or preview
 assets (Phase 3), no renderer (Phase 4), no digests (Phase 5), no vision (Phase 7). §15
@@ -209,6 +210,47 @@ looks correct and is not.
 - **Wall clock for timestamps, monotonic for cadence.** A8 wants epoch ms in the files;
   the 10 Hz aggregation window must be monotonic or an NTP step mid-stream stretches a
   bucket and puts a spurious spike in the one signal meant to detect spikes.
+
+**Transcript (Phase 2, §5.7)**
+
+- **Stages can now be *unavailable* as well as unbuilt.** `StageSpec.available(ctx)`
+  returns a reason and the runner defers rather than fails. Marking `whisperx`
+  implemented without this put it in the default plan, so `clipforge run` began trying
+  to pull a 3 GB CUDA model on every machine — and since `execute` stops at the first
+  failure, `score` never ran and streams produced no candidates. Phase 3's Ollama,
+  Phase 5's API key and Phase 7's OpenCV will each want the same hook.
+- **`extract.whisperx.enabled` is false by default.** §15 says to ship Phase 1 first,
+  and until `speaker_assign`, `speech_rate` and `phrase_detect` exist the transcript
+  feeds nothing.
+- **`compute_type: auto`.** §5.7 hardcodes `float16`, which CTranslate2 *rejects* on CPU
+  with an error naming neither the setting nor the cause. `auto` picks per device.
+- **`language: en` by default.** §5.7 sets none, so Whisper detects per chunk — and a
+  chunk of near-silence is exactly where it decides the language is Welsh.
+- **`vocabulary_mode: hotwords`, not §5.7's both.** MEASURED: Whisper has positional
+  encodings for 448 prompt tokens; faster-whisper truncates hotwords to 223 *and* the
+  initial prompt to 223, and the framing pushes the total to 451. Seeding both raised
+  `RuntimeError: No position encodings are defined for positions >= 448` from inside
+  CTranslate2, with nothing pointing at the vocabulary. Terms are now trimmed to a token
+  budget *before* the model sees them, and the trim is logged.
+- **Seeding works, and by a lot.** MEASURED on `tiny`/CPU against the speech fixture:
+  unseeded 16.3% WER and 7 of 11 hero-name occurrences ("How could I" for Hawkeye,
+  "Numbers'" for "Namor's"); with hotwords 2.9% and 11 of 11. `both` came out at 5.8%
+  and 10 of 11 — worse than hotwords alone, as the budget arithmetic predicts.
+- **VAD is silero, not §5.7's pyannote.** whisperx's pyannote path fetches
+  `pyannote/segmentation-3.0`, which needs a HuggingFace account and licence acceptance —
+  contradicting §5.8's own reason for avoiding pyannote. On this machine pyannote's audio
+  IO also fails outright: torchcodec cannot load against torch 2.8+cpu. §5.7's
+  `vad_onset`/`vad_offset` apply to silero too (verified).
+- **A4 verified, not trusted.** With VAD on, the fixture's 19.4 s silence produces zero
+  segments.
+- **Overlapping segments from two tracks are both kept.** §5.8's "merge by timestamp" is
+  undefined when both tracks have speech at once; two people talking over each other are
+  two segments, not one. `segments.seq` is assigned after the merge because §12.1 makes
+  it the LLM-facing identifier.
+- **Unaligned words keep their text and lose their timestamps.** Dropping them corrupts
+  what §5.6 matches against; inventing times corrupts §6.3's snapping.
+- **`params_hash` excludes `device` and `compute_type`**, so moving between machines does
+  not invalidate a forty-minute transcription — the same reasoning as `master_identity`.
 
 **Export (§10.5)**
 

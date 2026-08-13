@@ -20,6 +20,35 @@ from tests.fixtures.make_fixture import (
 )
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--asr", action="store_true", default=False,
+        help="run the tests that load a real Whisper model (minutes, and "
+             "downloads ~500 MB the first time)",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "asr: needs a real Whisper model; opt in with --asr"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip real-ASR tests unless asked for.
+
+    A marker alone is not enough: once whisperx is installed a bare `pytest -q`
+    would transcribe the fixture on every run, which is minutes. The gate has to
+    be a positive opt-in, not a filter someone might forget.
+    """
+    if config.getoption("--asr"):
+        return
+    skip = pytest.mark.skip(reason="needs --asr (loads a real Whisper model)")
+    for item in items:
+        if "asr" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def hermetic_config(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LOCAL_FILE", tmp_path / "no-such-local.yaml")

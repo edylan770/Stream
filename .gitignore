@@ -11,6 +11,11 @@ dist/
 # The build machine and the streaming PC must never fight over these.
 clipforge/config/local.yaml
 
+# §5.7 asks for "the girlfriend's name and any recurring nicknames" in the
+# vocabulary. Names of real people should not need a commit; this file is
+# merged into vocabulary.txt automatically when present.
+clipforge/config/vocabulary.local.txt
+
 # Data root default. Masters, proxies, WAVs, previews, exports, and the DB.
 data/
 *.db

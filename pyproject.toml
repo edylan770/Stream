@@ -46,6 +46,12 @@ capture = [
 # same on any machine that regenerates it.
 fixtures = ["piper-tts>=1.6"]
 
+# §5.7's transcription. Large: ~100 packages and 2-3 GB of wheels (torch,
+# torchaudio, transformers), then ~3 GB for large-v3 on first run. Its own extra
+# because the review UI, the capture layer and every Phase 1 stage work without
+# it, and a fresh clone must not have to download torch to run the tests.
+asr = ["whisperx>=3.8"]
+
 [project.scripts]
 clipforge = "clipforge.cli:main"
 

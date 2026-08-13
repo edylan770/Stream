@@ -240,6 +240,14 @@ class Runner:
         if not spec.implemented:
             return Decision(spec.name, DEFERRED, f"not built (phase {spec.phase})", spec.phase)
 
+        # Built, but this machine cannot run it — a missing optional extra, or
+        # a stage switched off in config. Deferred rather than failed: a Phase 1
+        # user without the ASR extra must still get candidates, and failing here
+        # would stop `score` from ever running.
+        usable, why = spec.available(self.ctx)
+        if not usable:
+            return Decision(spec.name, DEFERRED, why or "unavailable here", spec.phase)
+
         if spec.name in self.force:
             return Decision(spec.name, RUN, "forced", spec.phase)
 
