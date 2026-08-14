@@ -61,9 +61,10 @@ Phase 2.
 | 23 | `968fdd0` | ASS captions (§8.3): word timeline, per-track colouring, `render:` config |
 | 24 | `0a95ba6` | crop templates + `clipforge render` — the first postable file |
 | 25a | `806d7af` | UI: design system, one shell bar, space for what is not built |
-| 25b | *this* | §7.3's transcript beside the window; Render from the browser |
+| 25b | `e843722` | §7.3's transcript beside the window; Render from the browser |
+| 26 | *this* | loudness normalisation (two-pass, measured) and export presets |
 
-1079 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1120 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
@@ -321,6 +322,55 @@ looks correct and is not.
   review link is: rendering needs approved moments, and nothing can be approved
   before there are candidates. Otherwise the operator's first render is an
   error message.
+
+**Loudness and export presets (§8.2/§8.3)**
+
+- **Two passes, not §8.3's one — and the numbers are in the module.** MEASURED
+  by encoding six windows of the fixture both ways and reading each file on its
+  own: one-pass 1.45 LU mean error, two-pass 0.42. Over nine jittered windows
+  the worst case is 3.00 against 1.70. Better on both statistics, which is why
+  it ships.
+- **But it is not reliably better on any ONE clip.** Shifting a window by 0.2 s
+  moved a two-pass result 1.9 LU, because pass 1's gated measurement over eight
+  seconds is sensitive to which blocks clear the gate. So the finished file is
+  measured with `ebur128` and warned about rather than assumed, and
+  `verify_tolerance_lu` is set *outside* that measured spread (2.0) instead of
+  at a round 1.0 that would fire on ordinary clips.
+- **The silence guard reads `ebur128`, not `loudnorm`'s own number.** THE
+  finding of this commit, and it was a failing test that produced it. Two-pass
+  over the fixture's authored silence lands at −32.0 LUFS against a −14 target,
+  eighteen LU off, because pass 1's measurements are meaningless and pass 2
+  believes them. The obvious guard does not work: `loudnorm` reports that
+  window at **−17.75 LUFS**, indistinguishable from quiet speech, where a
+  standalone `ebur128` reports −36.2. Its gate sits above the noise floor, so
+  it averages the loudest fragments and reports a level the content lacks.
+- **The guard is a gain limit, not a floor.** `max_gain_db`, because gain is
+  what does the damage — lifting a noise floor twenty dB is what makes hiss
+  audible — and because a limit expressed that way keeps its meaning if
+  `target_lufs` moves, where a fixed floor would silently become stricter.
+- **`ebur128` is run in its own pass, never chained with `loudnorm`.**
+  MEASURED: the same window reads −36.2 alone and −17.8 with `ebur128` chained
+  ahead of `loudnorm` in one graph, regardless of how the seek is done. Two
+  decodes cost about two seconds; a guard reading the wrong number costs a clip.
+- **`loudnorm` outputs 192 kHz.** MEASURED: without an `aresample` the encoder
+  is handed `192000 Hz` and AAC-LC tops out at 96. Pinned in the same chain.
+- **`linear=true` is requested and, on this material, never granted.** Every
+  run came back `normalization_type: dynamic` — linear is refused when the
+  required gain would breach the true-peak ceiling, and here it always does.
+  The flag stays for quieter sources; nothing claims the result is transparent.
+- **`clips.audio_filters()` is a seam, empty today.** §8.6's muting and §8.2's
+  filler removal go there, and pass 1 applies the same chain — measuring
+  un-muted audio and then normalising muted audio would be wrong by however
+  much the muting removed, and nothing downstream could tell.
+- **A preset carries encode settings, not a resolution.** §8.4 owns `output`
+  and the template's `dst` rectangles are expressed in that space; two owners
+  for one number is how they drift. `presets.load` refuses a preset that sets
+  one.
+- **The three presets are near-identical and the config says so.** They differ
+  only by `max_duration_s` today. Those caps are guesses that were not verified
+  from here, are marked **arbitrary** in GUESSES, and **warn without ever
+  truncating** — silently cutting an approved clip loses the moment it was
+  approved for (C2).
 
 **Capture (Phase 0, §4)**
 

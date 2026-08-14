@@ -38,6 +38,11 @@ def add_arguments(parser) -> None:
         "--template",
         help="crop template name (default: render.crop.template)",
     )
+    parser.add_argument(
+        "--preset",
+        help="encode preset (default: render.presets.default). They are nearly "
+             "identical today -- see the config",
+    )
     parser.add_argument("--out", help="output directory (default: the stream's exports/)")
     parser.add_argument(
         "--limit", type=int,
@@ -82,6 +87,7 @@ def _render(cfg, conn: sqlite3.Connection, args) -> int:
         stills=args.stills,
         dry_run=args.dry_run,
         allow_vfr=args.allow_vfr,
+        preset=args.preset,
     )
 
     print(f"rendering {args.stream_id}")
@@ -112,6 +118,16 @@ def _report(result: clips.Result, args) -> None:
     if result.template:
         print(f"  template  {result.template.name} "
               f"-> {result.template.output[0]}x{result.template.output[1]}")
+    if result.preset:
+        print(f"  preset    {result.preset.name}")
+
+    measured = [c.loudness_lufs for c in result.clips if c.loudness_lufs is not None]
+    if measured:
+        print(f"  loudness  {', '.join(f'{v:.1f}' for v in measured)} LUFS")
+
+    for clip in result.clips:
+        for warning in clip.warnings:
+            print(f"  WARNING   {clip.destination.name}: {warning}")
 
     interpolated = sum(clip.interpolated for clip in result.clips)
     if interpolated:

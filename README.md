@@ -166,7 +166,10 @@ Then, in the app:
 4. **Export** — `.\clipforge.ps1 export <stream_id>` writes an FCPXML.
    In Resolve: *File → Import → Timeline*.
 5. **Render** — `.\clipforge.ps1 render <stream_id>` writes a finished vertical
-   clip per approved moment, captions burned in, into the stream's `exports/`.
+   clip per approved moment, captions burned in and audio normalised to
+   −14 LUFS, into the stream's `exports/`. `--preset shorts|tiktok|reels`
+   picks the encode settings; they are nearly identical today and differ only
+   by a duration cap, which warns and never truncates.
 
 The two are different jobs: an FCPXML is a timeline for an editor to conform
 against, a render is the postable file. §10.5 says never to extract clip files

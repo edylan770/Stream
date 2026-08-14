@@ -40,7 +40,15 @@ from clipforge.render import RenderError
 from clipforge.ingest import probe as probe_stage
 from clipforge.ingest import proxy as proxy_stage
 from clipforge.pipeline.atomic import atomic_output
-from clipforge.render import ass, crop, selection, timeline, words
+from clipforge.render import (
+    ass,
+    crop,
+    loudness,
+    presets,
+    selection,
+    timeline,
+    words,
+)
 from clipforge.render.crop import Template
 from clipforge.render.selection import Moment
 from clipforge.render.timeline import EditPlan
@@ -66,6 +74,7 @@ class Options:
     stills: bool = False
     dry_run: bool = False
     allow_vfr: bool = False
+    preset: str | None = None
 
 
 @dataclass
@@ -81,6 +90,9 @@ class Clip:
     interpolated: int = 0
     duration_s: float = 0.0
     size_bytes: int = 0
+    #: Integrated loudness of the finished file, per EBU R128. None when it was
+    #: not measured (a still, or verification turned off).
+    loudness_lufs: float | None = None
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -93,6 +105,7 @@ class Result:
     clips: list[Clip] = field(default_factory=list)
     template: Template | None = None
     check: crop.Check | None = None
+    preset: presets.Preset | None = None
     graph: str = ""
     skipped: int = 0
 
@@ -186,6 +199,19 @@ def caption_script(cfg, conn, stream_id: str, stream, plan: EditPlan,
 # --------------------------------------------------------------------------
 
 
+def audio_filters(cfg, plan: EditPlan) -> str:
+    """Everything that happens to the audio BEFORE loudness normalisation.
+
+    Empty today. §8.6's profanity muting and §8.2's filler removal go here, and
+    this exists now so that they slot in rather than being retrofitted: pass 1
+    of the loudness measurement applies this same chain, so the measurement
+    describes the audio that is actually encoded. Measuring un-muted audio and
+    then normalising muted audio would be wrong by however much the muting
+    removed, and nothing downstream could tell.
+    """
+    return ""
+
+
 def build_command(
     ffmpeg_bin: str,
     source: Path,
@@ -196,6 +222,8 @@ def build_command(
     graph: str,
     audio_index: int | None,
     still: bool = False,
+    audio_chain: str | None = None,
+    preset: presets.Preset | None = None,
 ) -> list[str]:
     """The whole encode, as a list. Pure -- no I/O, so it is testable.
 
@@ -218,20 +246,25 @@ def build_command(
         argv += ["-frames:v", "1", "-an", str(destination)]
         return argv
 
+    def setting(key, fallback):
+        return presets.setting(cfg, preset, key, fallback)
+
     if audio_index is None:
         argv += ["-an"]
     else:
+        argv += ["-map", f"0:a:{audio_index}"]
+        if audio_chain:
+            argv += ["-af", audio_chain]
         argv += [
-            "-map", f"0:a:{audio_index}",
-            "-c:a", str(cfg.get("render.video.audio_codec", "aac")),
-            "-b:a", str(cfg.get("render.video.audio_bitrate", "192k")),
+            "-c:a", str(setting("audio_codec", "aac")),
+            "-b:a", str(setting("audio_bitrate", "192k")),
         ]
 
     argv += [
-        "-c:v", str(cfg.get("render.video.codec", "libx264")),
-        "-crf", str(cfg.get("render.video.crf", 18)),
-        "-preset", str(cfg.get("render.video.preset", "slow")),
-        "-pix_fmt", str(cfg.get("render.video.pix_fmt", "yuv420p")),
+        "-c:v", str(setting("codec", "libx264")),
+        "-crf", str(setting("crf", 18)),
+        "-preset", str(setting("preset", "slow")),
+        "-pix_fmt", str(setting("pix_fmt", "yuv420p")),
         # Short-form players seek from the first byte; without this the moov
         # atom lands at the end and the first play stalls while it downloads.
         "-movflags", "+faststart",
@@ -366,9 +399,13 @@ def render_stream(
         upscale_warn_factor=float(cfg.get("render.crop.upscale_warn_factor", 2.0)),
     )
 
-    result = Result(template=template, check=check)
+    preset = None if options.stills else presets.load(cfg, options.preset)
+    result = Result(template=template, check=check, preset=preset)
     for line in crop.describe(template, check):
         log(f"  {line}")
+    if preset is not None:
+        log(f"  preset    {preset.name}"
+            + (f"  ({preset.note})" if preset.note else ""))
 
     audio_index = None if options.stills else audio_stream_index(cfg, stream)
     if audio_index is None and not options.stills:
@@ -376,7 +413,7 @@ def render_stream(
 
     out_dir = options.out_dir or stream_paths.exports_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = ".png" if options.stills else f".{cfg.get('render.video.container', 'mp4')}"
+    suffix = ".png" if options.stills else         f".{presets.setting(cfg, preset, 'container', 'mp4')}"
 
     ffmpeg_bin = ffmpeg.require("ffmpeg", cfg.ffmpeg_override)
     ffprobe_bin = ffmpeg.require("ffprobe", cfg.ffprobe_override)
@@ -409,6 +446,11 @@ def render_stream(
         )
         result.graph = graph
 
+        long = presets.too_long(preset, plan.duration)
+        if long:
+            clip.warnings.append(long)
+            log(f"  WARNING  {long}")
+
         if options.dry_run:
             log(f"  [{index + 1}] {destination.name}  "
                 f"{plan.clip_start:.2f}-{plan.clip_end:.2f}s "
@@ -416,15 +458,25 @@ def render_stream(
             result.clips.append(clip)
             continue
 
+        audio_chain = _audio_chain(
+            ffmpeg_bin, source, cfg=cfg, plan=plan, audio_index=audio_index,
+            log=log) if not options.stills else None
+
         _encode(ffmpeg_bin, source, destination, cfg=cfg, plan=plan, graph=graph,
                 audio_index=audio_index, script=script, still=options.stills,
-                log=log)
+                audio_chain=audio_chain, preset=preset, log=log)
 
         if not options.stills:
             found = inspect(destination, ffprobe_bin)
             assert_sound(found, template=template, plan=plan,
                          want_audio=audio_index is not None, cfg=cfg)
             clip.duration_s = found.duration_s
+            if audio_index is not None:
+                clip.loudness_lufs = loudness.integrated(ffmpeg_bin, destination)
+                missed = loudness.off_target(cfg, clip.loudness_lufs)
+                if missed:
+                    clip.warnings.append(missed)
+                    log(f"  WARNING  {missed}")
         clip.size_bytes = destination.stat().st_size
         result.clips.append(clip)
         log(f"  [{index + 1}/{len(moments)}] {destination.name}  "
@@ -434,8 +486,52 @@ def render_stream(
     return result
 
 
+def _audio_chain(ffmpeg_bin, source: Path, *, cfg, plan, audio_index, log):
+    """The audio filter chain, including §8.3's loudness normalisation.
+
+    Pass 1 runs here, over the same pre-loudnorm chain pass 2 will use, so the
+    measurement describes the audio that actually gets encoded.
+    """
+    if audio_index is None:
+        return None
+
+    before = audio_filters(cfg, plan)
+    if not bool(cfg.get("render.loudness.enabled", True)):
+        return before or None
+
+    # The silence gate first, and from a STANDALONE ebur128 -- loudnorm's own
+    # `input_i` reports the fixture's silent opening at -17.75 LUFS, which no
+    # floor test could tell from quiet speech. See render/loudness.py.
+    source_lufs = loudness.source_loudness(
+        ffmpeg_bin, source, clip_start=plan.clip_start,
+        duration=plan.source_duration, audio_index=audio_index, before=before,
+    )
+    allowed, why = loudness.should_normalise(cfg, source_lufs)
+    if not allowed:
+        log(f"  loudness  not normalised -- {why}")
+        return before or None
+
+    measured = None
+    if bool(cfg.get("render.loudness.two_pass", True)):
+        measured = loudness.measure(
+            ffmpeg_bin, source, cfg=cfg, clip_start=plan.clip_start,
+            duration=plan.source_duration, audio_index=audio_index,
+            before=before,
+        )
+        if measured is None:
+            # An ffmpeg whose JSON could not be read. §8.3's single pass still
+            # works and is close enough to be worth shipping over refusing.
+            log("  WARNING  could not read loudnorm's measurement; "
+                "falling back to §8.3's single pass")
+
+    if source_lufs is not None:
+        log(f"  loudness  source {source_lufs:.1f} LUFS -> target "
+            f"{cfg.get('render.loudness.target_lufs')}")
+    return loudness.chain(cfg, measured, before, source_lufs=source_lufs)
+
+
 def _encode(ffmpeg_bin, source: Path, destination: Path, *, cfg, plan, graph,
-            audio_index, script, still, log) -> None:
+            audio_index, script, still, log, audio_chain=None, preset=None) -> None:
     """One file, written to a temp path and atomically renamed (A10).
 
     The ASS file lives in a scratch directory and ffmpeg is run from it, so the
@@ -454,6 +550,7 @@ def _encode(ffmpeg_bin, source: Path, destination: Path, *, cfg, plan, graph,
             argv = build_command(
                 ffmpeg_bin, source, temp, cfg=cfg, plan=plan, graph=graph,
                 audio_index=audio_index, still=still,
+                audio_chain=audio_chain, preset=preset,
             )
             reporter = None if still else progress.reporter(
                 _LogOnly(log), plan.duration)

@@ -138,6 +138,36 @@ exists for exactly that loop: a still costs a second, an encode costs a minute.
 | `render.verify.max_duration_delta_s` | `0.5` | **plausible** | Mirrors `ingest.proxy.verify.max_duration_delta_s`; a clip that came out the wrong length is worth catching before upload | A legitimate encode failing verification |
 | `render.audio.source` | `auto` | **grounded** | §8's burn-in has a bare `-af`, so ffmpeg takes stream 0 — the mix only by luck of the OBS layout. `auto` reuses `proxy.audio_map_index`, which §5.2 already needed for the same reason | A clip carrying game audio and no voice |
 
+## Render — loudness and presets (Phase 4, §8.2/§8.3)
+
+Unusually for this file, most of these are **grounded** — the whole point of
+loudness normalisation is that the result is measurable, so it was measured
+rather than reasoned about. Every number below comes from encoding a window of
+the speech fixture and reading the resulting file on its own.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `render.loudness.target_lufs` | `-14.0` | **grounded** | §8.3 states it, and it is where the platforms normalise to — arriving there means they leave the audio alone | A platform changing its target, or clips sounding quiet against others in a feed |
+| `render.loudness.true_peak_db` / `lra` | `-1.5` / `11` | **grounded** | §8.3 states both | Inter-sample clipping on a lossy re-encode (TP too high) |
+| `render.loudness.two_pass` | `true` | **grounded** | MEASURED over six windows, encoded and measured standalone: one-pass 1.45 LU mean error, two-pass 0.42. Over nine jittered windows: worst case 3.00 vs 1.70. Better on both statistics | One-pass coming out closer on real footage — `test_two_pass_beats_one_pass_on_real_windows` reruns the comparison and fails if so |
+| `render.loudness.max_gain_db` | `20.0` | **plausible** | MEASURED: the fixture's authored silence reads −36.2 LUFS and would need +22.2 dB, where its quiet speech needs 4–10. 20 sits between them. The *shape* of the knob is grounded (gain, not an absolute floor, so it tracks `target_lufs`); the number is not | A quiet-but-real clip being skipped, or a silent one still being lifted |
+| `render.loudness.verify_tolerance_lu` | `2.0` | **grounded** | Set outside measured variance rather than inside it: two-pass came out 0.63 LU off on average and 1.70 at worst, and a 0.2 s window shift moved one result 1.9 LU. A tighter tolerance would fire on ordinary clips and stop being read | Warnings never firing (too loose), or firing on clips that sound fine (too tight) |
+| `render.loudness.sample_rate_hz` | `48000` | **grounded** | MEASURED: `loudnorm` hands the encoder 192 kHz unless something pins the rate, and AAC-LC tops out at 96 | — |
+| `render.presets.*.max_duration_s` | `180` / `600` / `90` | **arbitrary** | Best guess at each platform's current limit. **These change, and were not verified from here.** Warned about, never enforced by truncation | An upload rejected for length, or a clip warned about that the platform accepted |
+| `render.presets.default` | `shorts` | **arbitrary** | Something had to be first. The three are otherwise identical today | Nothing — pick whichever you post to most |
+
+**Two things measured that are not parameters**, recorded so nobody re-derives
+them the hard way:
+
+- **`loudnorm`'s own `input_i` cannot detect a silent window.** Over the
+  fixture's authored silence it reports −17.75 LUFS where a standalone
+  `ebur128` reports −36.2, because its gate sits above the noise floor. The
+  silence guard therefore reads `ebur128`, in its own pass.
+- **`linear=true` was never granted on this material** — every run came back
+  `normalization_type: dynamic`, because the gain needed would push true peak
+  past the ceiling. The flag is still set for quieter sources, but nothing here
+  may claim the normalisation is a transparent linear gain.
+
 **Not a guess, but recorded because it looks like one:** the ASS file is
 referenced from the filter graph by bare filename with ffmpeg run from its
 directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg's
