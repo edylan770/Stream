@@ -93,6 +93,12 @@ def create_app(cfg) -> FastAPI:
             return JSONResponse({
                 "stream": detail,
                 "candidates": [c.to_json() for c in found],
+                # §8.3's speaker palette, so the transcript beside the video is
+                # coloured the same way the burned-in captions will be. Sent
+                # rather than duplicated in CSS: if the two disagreed, the
+                # operator would rate a moment believing one person said it and
+                # watch the export attribute it to the other.
+                "role_colours": queries.role_colours(cfg),
             })
         finally:
             conn.close()
@@ -246,6 +252,19 @@ def create_app(cfg) -> FastAPI:
 
     @app.post("/api/streams/{stream_id}/run")
     def api_run(stream_id: str) -> JSONResponse:
+        return _start_job(stream_id, jobs.KIND_RUN)
+
+    @app.post("/api/streams/{stream_id}/render")
+    def api_render(stream_id: str) -> JSONResponse:
+        """§8's auto-finish, started from the browser.
+
+        Same machinery as a run, and deliberately the same one-job-per-stream
+        rule: rendering reads the master while a pipeline run may be rewriting
+        artifacts beside it, and the log UI can only follow one job.
+        """
+        return _start_job(stream_id, jobs.KIND_RENDER)
+
+    def _start_job(stream_id: str, kind: str) -> JSONResponse:
         conn = connect()
         try:
             require_stream(conn, stream_id)
@@ -253,7 +272,7 @@ def create_app(cfg) -> FastAPI:
             conn.close()
 
         try:
-            job = app.state.jobs.start(cfg, stream_id)
+            job = app.state.jobs.start(cfg, stream_id, kind)
         except jobs.JobBusy as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return JSONResponse(job.snapshot())

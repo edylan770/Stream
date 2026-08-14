@@ -38,7 +38,12 @@ let jobId = null;
 let cursor = 0;
 let timer = null;
 
-export async function enter(id) {
+/* `arg` is a stream id, or `{id, render: true}` when the review summary hands
+ * off — that screen has the Render button, this screen has the log. */
+export async function enter(arg) {
+  const wantsRender = typeof arg === "object" && arg !== null && arg.render;
+  const id = typeof arg === "object" && arg !== null ? arg.id : arg;
+
   streamId = id;
   jobId = null;
   cursor = 0;
@@ -46,6 +51,16 @@ export async function enter(id) {
   $("run-name").textContent = id;
   history.replaceState(null, "", `?view=run&stream=${encodeURIComponent(id)}`);
   await refreshPlan();
+  if (!wantsRender) return;
+  // Say why nothing happened rather than landing the operator on a screen
+  // that looks like it ignored the button they just pressed.
+  if (plan.job_live) {
+    append("  something is already running this stream; render not started");
+  } else if ($("run-render").disabled) {
+    append(`  ${$("run-render-hint").textContent}`);
+  } else {
+    await start("render");
+  }
 }
 
 export function leave() {
@@ -85,19 +100,32 @@ function renderPlan() {
 
   const scored = plan.stages.find((s) => s.stage === "score");
   $("run-review").hidden = !(scored && scored.status === "done");
+
+  // Render needs approved moments, and nothing can be approved before `score`
+  // has produced candidates to approve. Offering the button first would mean
+  // the operator's first render is an error message.
+  const renderable = Boolean(scored && scored.status === "done");
+  $("run-render").disabled = plan.job_live || !renderable;
+  $("run-render-hint").textContent = renderable
+    ? "everything rated ‘clip it’, with the configured crop template"
+    : "review the stream first — render needs approved moments";
 }
 
-async function start() {
+/* `kind` is "run" (§5.1's pipeline) or "render" (§8's auto-finish). Both are
+ * the same thing from here: something long is happening and the log is how you
+ * watch it, so they share the buffer, the cursor and the one-writer guard. */
+async function start(kind = "run") {
   $("run-start").disabled = true;
+  $("run-render").disabled = true;
   try {
-    const job = await post(`/api/streams/${encodeURIComponent(streamId)}/run`);
+    const job = await post(`/api/streams/${encodeURIComponent(streamId)}/${kind}`);
     jobId = job.id;
     cursor = 0;
     $("run-log").textContent = "";
     poll();
   } catch (error) {
     append(`  ${error.message}`);
-    $("run-start").disabled = false;
+    renderPlan();
   }
 }
 
@@ -116,8 +144,12 @@ async function poll() {
   cursor = snapshot.next_cursor;
 
   $("run-elapsed").textContent = `${snapshot.elapsed_s.toFixed(0)}s`;
-  $("run-state").textContent = snapshot.state;
+  // Both kinds share this screen, so the pill has to say which one is live —
+  // otherwise "running" beside a stage table implies the pipeline.
+  $("run-state").textContent = snapshot.kind === "render"
+    ? `render ${snapshot.state}` : snapshot.state;
   $("run-state").className = `pill ${snapshot.state}`;
+  $("run-state").hidden = false;
 
   if (snapshot.state === "running") {
     timer = setTimeout(poll, POLL_MS);
@@ -145,5 +177,6 @@ export function onKey(event) {
 }
 
 $("run-back").onclick = () => router.show("library");
-$("run-start").onclick = () => start();
+$("run-start").onclick = () => start("run");
+$("run-render").onclick = () => start("render");
 $("run-review").onclick = () => router.show("review", streamId);

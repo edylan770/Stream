@@ -60,9 +60,10 @@ Phase 2.
 | 22 | `a109847` | `embeddings` (§5.10, Ollama) — Phase 2 complete |
 | 23 | `968fdd0` | ASS captions (§8.3): word timeline, per-track colouring, `render:` config |
 | 24 | `0a95ba6` | crop templates + `clipforge render` — the first postable file |
-| 25a | *this* | UI: design system, one shell bar, space for what is not built |
+| 25a | `806d7af` | UI: design system, one shell bar, space for what is not built |
+| 25b | *this* | §7.3's transcript beside the window; Render from the browser |
 
-1059 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1079 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
@@ -274,6 +275,52 @@ looks correct and is not.
 - **`static/` stays flat.** `pyproject.toml` ships `review/static/*` — a
   **non-recursive** glob, so a `static/css/` would not be packaged in a
   non-editable install.
+
+**The transcript panel and Render in the browser (commit 25b)**
+
+- **§7.3's transcript is built, and the column is conditional.** "Transcript
+  text for the window displayed alongside" had **zero** references to
+  `transcript` or `segments` anywhere in `review/` — Phase 2 put the data in
+  the database and nothing read it. But Phase 2 also ships
+  `extract.whisperx.enabled: false`, so a stream processed with defaults has no
+  segments at all; a permanently-visible third column would have been empty on
+  every stream that exists today, costing ~320px of video width to show
+  nothing. `stream_detail.has_transcript` decides, and the detail strip says
+  what turning it on costs when there is nothing to show.
+- **Lines, not words.** The operator is reading to decide whether the moment is
+  worth clipping. Word-level timing would multiply the payload for a highlight
+  nobody asked for — and `render/words.py` already exists if that changes.
+- **A line is included when it OVERLAPS the window, not when it is inside it.**
+  A segment starting before the window still puts speech in the clip, and
+  hiding it would misreport what the clip contains.
+- **Roles come from `render/words.py`'s `track_roles`/`role_for`** — the same
+  provenance rule the captions use — and the colours come from
+  `render.captions.styles`, sent with the payload rather than duplicated in
+  CSS. If review and the export disagreed about who spoke, the operator would
+  rate a moment believing one thing and watch the clip say another, and nothing
+  would report it.
+- **One segment query per stream, not one per candidate.** `load_candidates`
+  exists to put everything in one response because a round trip per `j` press
+  would spend most of C4's four seconds on latency; loading segments per window
+  would have reintroduced that cost server-side. Asserted with sqlite's own
+  trace hook, which also catches a query issued further down the call tree.
+- **Render is a job kind, not a second mechanism.** `Job.kind` is `run` or
+  `render`; `JobRegistry.start` dispatches through `_RUNNERS`, so an unknown
+  kind fails before a thread starts rather than starting one that does nothing.
+  Still **one job per stream**, not one per kind: a stream is being worked on
+  or it is not, which is the same single-writer rule `live_elsewhere` enforces
+  against other processes, and two live jobs would mean the run view following
+  two logs on one screen.
+- **The review summary's Render button navigates to the run view and starts it
+  there.** That screen already polls the job and paints the log; a second copy
+  of that machinery inside the review screen would be a second place to keep
+  correct. When the hand-off cannot start — something already running, or
+  nothing approved yet — it says so in the log rather than landing the operator
+  on a screen that looks like it ignored the button.
+- **Render is offered only once `score` is done**, for the same reason the
+  review link is: rendering needs approved moments, and nothing can be approved
+  before there are candidates. Otherwise the operator's first render is an
+  error message.
 
 **Capture (Phase 0, §4)**
 

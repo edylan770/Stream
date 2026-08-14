@@ -27,6 +27,7 @@ const state = {
   cursor: 0,
   markersOnly: false,
   showSignals: false,
+  roleColours: {},
   focusedAt: 0,
   sessionStart: 0,
   reviewed: 0,
@@ -41,6 +42,7 @@ export async function enter(id) {
   state.streamId = id;
   state.stream = data.stream;
   state.all = data.candidates;
+  state.roleColours = data.role_colours || {};
   state.cursor = 0;
   state.markersOnly = false;
   state.sessionStart = performance.now();
@@ -64,8 +66,30 @@ export async function enter(id) {
   const video = $("video");
   video.src = `/media/${encodeURIComponent(id)}/proxy`;
 
+  setUpTranscript(data.stream);
   applyFilter();
   history.replaceState(null, "", `?stream=${encodeURIComponent(id)}`);
+}
+
+/* §7.3 wants the transcript beside the window. Phase 2 ships
+ * `extract.whisperx.enabled: false`, so a stream processed with defaults has
+ * no segments at all — and a third column that is empty on every stream would
+ * cost ~320px of video width to show nothing. The column appears only when
+ * there is something to put in it; otherwise the detail strip says what
+ * turning it on costs. */
+function setUpTranscript(stream) {
+  const has = Boolean(stream.has_transcript);
+  document.querySelector(".layout").classList.toggle("with-transcript", has);
+  $("transcript-pane").hidden = !has;
+
+  const note = $("no-transcript");
+  note.hidden = has;
+  if (!has) {
+    note.innerHTML =
+      "No transcript. §7.3 shows one beside the window; it needs " +
+      "<code>extract.whisperx.enabled: true</code> and a Whisper model " +
+      "(a multi-GB download), then a re-run.";
+  }
 }
 
 export function leave() {
@@ -153,6 +177,7 @@ function focusCandidate(index) {
   $("score").textContent = c.score.toFixed(3);
 
   drawSpark(c);
+  renderTranscript(c);
   renderSignals(c);
   renderVerdict(c);
 
@@ -219,6 +244,39 @@ function addRule(svg, fraction, W, H, colour, width) {
   rule.setAttribute("stroke-width", width);
   rule.setAttribute("stroke-dasharray", "3 3");
   svg.appendChild(rule);
+}
+
+/* §7.3: "Transcript text for the window displayed alongside."
+ *
+ * Lines, not words. The operator is reading to decide whether the moment is
+ * worth clipping, and a word-level highlight would multiply the payload for
+ * something nobody asked for.
+ *
+ * A line's colour is its §8.3 speaker colour, sent by the server from
+ * `render.captions.styles` — so what is read here and what is burned into the
+ * export cannot disagree about who spoke. */
+function renderTranscript(c) {
+  const list = $("transcript");
+  if (!list || $("transcript-pane").hidden) return;
+
+  const lines = c.transcript || [];
+  $("transcript-count").textContent = lines.length
+    ? `${lines.length} line${lines.length > 1 ? "s" : ""}` : "";
+
+  if (!lines.length) {
+    list.innerHTML =
+      `<li><span class="empty-note">Nothing said in this window.</span></li>`;
+    return;
+  }
+
+  list.innerHTML = lines.map((line) => {
+    const colour = state.roleColours[line.role] || state.roleColours.default;
+    return `<li>` +
+      `<span class="at">${escape(fmt(line.t))}</span>` +
+      `<span class="said"${colour ? ` style="color:${escape(colour)}"` : ""}>` +
+      `${escape(line.text)}</span></li>`;
+  }).join("");
+  list.scrollTop = 0;
 }
 
 function renderSignals(c) {
@@ -395,6 +453,11 @@ export function onKey(event) {
 $("filter-toggle").onclick = () => { state.markersOnly = !state.markersOnly; applyFilter(); };
 $("back").onclick = () => router.show("library");
 $("summary-back").onclick = () => router.show("library");
+
+/* The run view already polls the job and paints the log. Handing off to it
+ * beats a second copy of that machinery living in here. */
+$("summary-render").onclick = () =>
+  router.show("run", { id: state.streamId, render: true });
 
 setInterval(() => {
   if (router.activeName() !== "review" || !state.sessionStart) return;

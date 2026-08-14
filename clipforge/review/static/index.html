@@ -141,14 +141,12 @@
   <pre id="run-log" class="log" aria-live="polite"></pre>
 
   <div class="actions">
-    <button class="btn soon" disabled
-            title="Phase 4 — clipforge render works from the command line; the button lands in commit 25b">
-      Render approved clips
-    </button>
+    <button id="run-render" class="btn">Render approved clips</button>
     <button class="btn soon" disabled
             title="Phase 5 — digest generation is not built">
       Generate digest
     </button>
+    <span id="run-render-hint" class="hint"></span>
   </div>
 </section>
 
@@ -214,8 +212,23 @@
           <div id="signals" class="signals" hidden></div>
 
           <div id="verdict" class="verdict"></div>
+          <!-- Only when the stream has no segments. §7.3 wants the transcript
+               beside the window; Phase 2 ships off, so most streams have none
+               and this says what turning it on costs. -->
+          <p id="no-transcript" class="note" hidden></p>
         </div>
       </section>
+
+      <!-- §7.3: "Transcript text for the window displayed alongside."
+           Present only when the stream actually has segments — see
+           stream_detail.has_transcript. -->
+      <aside class="transcript" id="transcript-pane" hidden>
+        <div class="rail-head">
+          <span>Transcript</span>
+          <span id="transcript-count" class="faint"></span>
+        </div>
+        <ol id="transcript" class="lines"></ol>
+      </aside>
     </div>
 
     <footer class="keys">
@@ -260,10 +273,12 @@
     <div id="summary-body"></div>
     <div class="actions">
       <button id="summary-back" class="btn btn--primary">Back to streams</button>
-      <button class="btn soon" disabled
-              title="Phase 4 — clipforge render works from the command line; the button lands in commit 25b">
-        Render approved clips
-      </button>
+      <!-- Hands off to the run view rather than rendering here: that screen
+           already polls the job and paints the log, and two places doing it
+           would be two places to keep correct. -->
+      <button id="summary-render" class="btn">Render approved clips</button>
+      <span class="hint">everything rated <b>clip it</b>, with the configured
+        crop template</span>
     </div>
   </section>
 </main>

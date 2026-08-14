@@ -13,6 +13,7 @@ import statistics
 from dataclasses import dataclass, field
 
 from clipforge import signals
+from clipforge.render import words
 
 #: Signals the sparkline can draw, in preference order. mic_rms is the one that
 #: matters in Phase 1; the others exist so the panel keeps working when Phase 3
@@ -84,7 +85,85 @@ def stream_detail(conn: sqlite3.Connection, stream_id: str) -> dict | None:
         "profile_used": row["profile_used"],
         "warnings": track_map.get("warnings", []),
         "roles": track_map.get("roles", {}),
+        # §7.3 wants the transcript beside the window. Phase 2 ships
+        # `extract.whisperx.enabled: false`, so a stream processed with defaults
+        # has no segments at all — and a review screen that always reserved a
+        # third of its width for an empty panel would be worse than one that
+        # does not. The client uses this to decide.
+        "has_transcript": bool(conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM segments WHERE stream_id = ?)",
+            (stream_id,),
+        ).fetchone()[0]),
     }
+
+
+# --------------------------------------------------------------------------
+# transcript (§7.3)
+# --------------------------------------------------------------------------
+
+
+def role_colours(cfg) -> dict[str, str]:
+    """The caption palette, so review and the finished clip agree.
+
+    Read from `render.captions.styles` rather than duplicated in CSS. If the
+    two ever disagreed, the operator would rate a moment believing one person
+    said it and then watch the export attribute it to the other — and nothing
+    would report the mismatch.
+    """
+    styles = cfg.get("render.captions.styles", {}) or {}
+    fallback = cfg.get("render.captions.colour", "#FFFFFF")
+    return {
+        name: (settings or {}).get("colour", fallback)
+        for name, settings in styles.items()
+    }
+
+
+def load_transcript(conn: sqlite3.Connection, stream_id: str) -> list[dict]:
+    """Every segment of a stream, once, with its §8.3 role resolved.
+
+    Loaded whole and sliced per candidate in Python rather than queried per
+    window: `load_candidates` exists to put everything the screen needs in one
+    response, because a round trip per `j` press would spend most of C4's four
+    seconds on latency. 120 windows would otherwise be 120 queries.
+
+    The role comes from `segments.track`, not `segments.speaker` — the same
+    provenance rule `render/words.py` uses for caption colour, and for the same
+    reason: `speaker` is an energy comparison over the segment's span and can
+    disagree with which track actually produced the words.
+    """
+    row = conn.execute(
+        "SELECT audio_track_map FROM streams WHERE id = ?", (stream_id,)
+    ).fetchone()
+    roles = words.track_roles(row["audio_track_map"] if row else None)
+
+    return [
+        {
+            "seq": int(segment["seq"]),
+            "t": round(float(segment["t_start"]), 2),
+            "t_end": round(float(segment["t_end"]), 2),
+            "role": words.role_for(segment["track"], segment["speaker"], roles),
+            "speaker": segment["speaker"],
+            "text": segment["text"],
+        }
+        for segment in conn.execute(
+            "SELECT seq, t_start, t_end, text, speaker, track FROM segments "
+            "WHERE stream_id = ? ORDER BY t_start, seq",
+            (stream_id,),
+        )
+    ]
+
+
+def lines_in(transcript: list[dict], t_start: float, t_end: float) -> list[dict]:
+    """The lines a clip of this window would contain.
+
+    OVERLAP, not containment. A segment that starts before the window still
+    puts speech inside it, and the clip will carry that speech — hiding it
+    would misreport what is in the clip.
+    """
+    return [
+        line for line in transcript
+        if line["t_end"] >= t_start and line["t"] <= t_end
+    ]
 
 
 @dataclass
@@ -110,6 +189,9 @@ class CandidateView:
     rating: int | None = None
     rating_source: str | None = None
     note: str | None = None
+    #: §7.3's "transcript text for the window displayed alongside". Empty when
+    #: the stream has no segments — see `stream_detail`'s `has_transcript`.
+    transcript: list[dict] = field(default_factory=list)
 
     def to_json(self) -> dict:
         return {
@@ -133,6 +215,7 @@ class CandidateView:
             "rating": self.rating,
             "rating_source": self.rating_source,
             "note": self.note,
+            "transcript": self.transcript,
         }
 
 
@@ -163,6 +246,8 @@ def load_candidates(conn: sqlite3.Connection, stream_id: str) -> list[CandidateV
         )
     ]
     series = _sparkline_series(conn, stream_id)
+    # ONE query for the whole stream, sliced per window below.
+    transcript = load_transcript(conn, stream_id)
 
     out = []
     for index, row in enumerate(rows):
@@ -187,6 +272,7 @@ def load_candidates(conn: sqlite3.Connection, stream_id: str) -> list[CandidateV
             sparkline=spark, sparkline_kind=series[0] if series else None,
             sparkline_range=low_high,
             rating=row["rating"], rating_source=row["rating_source"], note=row["note"],
+            transcript=lines_in(transcript, row["t_start"], row["t_end"]),
         ))
     return out
 

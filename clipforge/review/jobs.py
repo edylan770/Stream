@@ -34,7 +34,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from clipforge import db
+from clipforge import db, paths
 from clipforge.config import Config
 from clipforge.pipeline import runner
 from clipforge.pipeline.context import running_process_is_us
@@ -42,6 +42,15 @@ from clipforge.pipeline.context import running_process_is_us
 RUNNING = "running"
 DONE = "done"
 FAILED = "failed"
+
+#: What a job is doing. `run` is §5.1's pipeline; `render` is §8's auto-finish.
+#:
+#: There is still only ONE job per stream, not one per kind. A stream is being
+#: worked on or it is not — the same single-writer rule `live_elsewhere`
+#: enforces against other processes — and two concurrent jobs would mean the
+#: run view tracking two logs and two cursors for one screen.
+KIND_RUN = "run"
+KIND_RENDER = "render"
 
 #: Log lines kept per job. A full run emits a few hundred; the cap exists so a
 #: pathological stage cannot grow the buffer without bound. Dropped lines are
@@ -58,6 +67,7 @@ class JobBusy(RuntimeError):
 class Job:
     id: str
     stream_id: str
+    kind: str = KIND_RUN
     state: str = RUNNING
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
@@ -105,6 +115,7 @@ class Job:
             return {
                 "id": self.id,
                 "stream_id": self.stream_id,
+                "kind": self.kind,
                 "state": self.state,
                 "error": self.error,
                 "started_at": self.started_at,
@@ -175,7 +186,7 @@ class JobRegistry:
             job_id = self._by_stream.get(stream_id)
             return self._jobs.get(job_id) if job_id else None
 
-    def start(self, cfg: Config, stream_id: str) -> Job:
+    def start(self, cfg: Config, stream_id: str, kind: str = KIND_RUN) -> Job:
         with self._lock:
             existing = self._jobs.get(self._by_stream.get(stream_id, ""))
             if existing is not None and existing.live:
@@ -197,12 +208,16 @@ class JobRegistry:
                     f"mark that stage dead and re-run it on top of the file it is writing."
                 )
 
-            job = Job(id=uuid.uuid4().hex[:12], stream_id=stream_id)
+            job = Job(id=uuid.uuid4().hex[:12], stream_id=stream_id, kind=kind)
             self._jobs[job.id] = job
             self._by_stream[stream_id] = job.id
 
+        work = _RUNNERS.get(kind)
+        if work is None:
+            raise ValueError(f"unknown job kind {kind!r}")
         thread = threading.Thread(
-            target=_run_job, args=(job, cfg), name=f"clipforge-run-{stream_id}", daemon=True
+            target=work, args=(job, cfg),
+            name=f"clipforge-{kind}-{stream_id}", daemon=True,
         )
         thread.start()
         return job
@@ -256,3 +271,50 @@ def _run_job(job: Job, cfg: Config) -> None:
     finally:
         if conn is not None:
             conn.close()
+
+
+def _render_job(job: Job, cfg: Config) -> None:
+    """§8's auto-finish, in the background.
+
+    Deliberately the same machinery as a pipeline run — buffer, absolute
+    cursor, one-writer guard — because from the browser's point of view they
+    are the same thing: something long is happening and the log is how you
+    watch it. The run view's polling reads this with no change.
+
+    Defaults only. `clipforge render` has `--template`, `--stills` and
+    `--dry-run`, and those belong on the command line: they are the loop for
+    fitting crop coordinates to a real layout, which is iteration, not a
+    one-click action.
+    """
+    from clipforge.render import clips
+
+    conn = None
+    try:
+        conn = db.open_db(cfg.db_path, migrate_to_latest=False)
+        options = clips.Options()
+        job.append(f"  rendering {job.stream_id} (rating >= {options.min_rating})")
+
+        result = clips.render_stream(cfg, conn, job.stream_id, options,
+                                     log=job.append)
+        stream_paths = paths.StreamPaths(cfg.data_root, job.stream_id)
+        clips.record(conn, cfg, job.stream_id, result, stream_paths, options)
+
+        total = sum(clip.size_bytes for clip in result.clips)
+        job.append(
+            f"  {len(result.clips)} clip(s), {total / 1_000_000:.1f} MB, "
+            f"template {result.template.name if result.template else '?'}"
+        )
+        if result.clips:
+            job.append(f"  in {result.clips[0].destination.parent}")
+        job.finish(DONE)
+    except BaseException as exc:  # noqa: BLE001 — a job thread must never die silently
+        job.append(f"  {type(exc).__name__}: {exc}")
+        job.finish(FAILED, f"{type(exc).__name__}: {exc}")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+#: Kind -> the function that does the work. Consulted in `start`, so an unknown
+#: kind fails there rather than starting a thread that does nothing.
+_RUNNERS = {KIND_RUN: _run_job, KIND_RENDER: _render_job}

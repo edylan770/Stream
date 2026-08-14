@@ -550,6 +550,47 @@ code {
   grid-template-columns: 280px 1fr;
   min-height: 0;
 }
+/* Three columns only when the stream actually has a transcript. Phase 2 ships
+ * `extract.whisperx.enabled: false`, so most streams have no segments at all —
+ * and reserving a third of the width for an empty panel on every one of them
+ * would be worse than not having the panel. */
+.layout.with-transcript { grid-template-columns: 280px 1fr 320px; }
+
+.transcript {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.lines {
+  list-style: none;
+  margin: 0;
+  padding: var(--s3);
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.lines li {
+  display: grid;
+  grid-template-columns: 46px 1fr;
+  gap: var(--s3);
+  font-size: var(--tmd);
+  line-height: 1.5;
+}
+.lines .at {
+  font-family: var(--mono);
+  font-size: var(--txs);
+  color: var(--faint);
+  padding-top: 2px;
+}
+/* Colour comes from the server, which reads render.captions.styles — the same
+ * palette the burned-in captions use, so the two cannot drift apart. */
+.lines .said { color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.lines .empty-note { color: var(--faint); font-size: var(--tsm); display: block; }
 
 .rail {
   border-right: 1px solid var(--line);
