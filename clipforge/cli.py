@@ -20,6 +20,7 @@ from clipforge import __version__
 #: command name -> (module path, one-line help)
 #: Later phases register here; the dispatcher itself never changes.
 COMMANDS: dict[str, tuple[str, str]] = {
+    "backup": ("clipforge.db.cmd_backup", "back up the database, and verify one (§13.2)"),
     "config": ("clipforge.config", "show the merged configuration and its version hash"),
     "db": ("clipforge.db.commands", "init, inspect, or relink the database"),
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),

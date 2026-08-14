@@ -301,15 +301,51 @@ builds video tooling rather than a person who makes videos."*
 
 ## Backups
 
-**There are none yet, and the database is the irreplaceable tier.** §13.2 is
-explicit: signals can be re-extracted from footage, your ratings and judgment
-calls cannot. Until the nightly backup is built, copy it yourself:
+**The database is the irreplaceable tier.** §13.2 is explicit: signals can be
+re-extracted from footage, your ratings and judgment calls cannot. Take one now:
 
 ```powershell
-.venv\Scripts\python -c "import sqlite3; sqlite3.connect(r'data\clipforge.db').execute(\"VACUUM INTO 'data\backup.db'\")"
+.\clipforge.ps1 backup
 ```
 
-Safe to run while the app is open.
+Safe to run while the app is open — it opens the database read-only and takes a
+compacted copy, so nothing is locked and nothing is modified. On this database
+that is 408 KiB down to 88 KiB in about 30 ms.
+
+Set the nightly job up once. This prints the command; it does not run it,
+because a scheduled task is a permanent change to your machine:
+
+```powershell
+.\clipforge.ps1 backup --schedule
+```
+
+Then check what you have, and prove one of them actually restores:
+
+```powershell
+.\clipforge.ps1 backup --list
+.\clipforge.ps1 backup --verify
+```
+
+`--verify` is §13.3 — *"an untested backup is not a backup"*. It decompresses
+the newest backup into a scratch directory, opens it with ClipForge itself, and
+checks every table against the row counts recorded when the copy was taken. Run
+it once after setting up the schedule, and again any time you are about to rely
+on it.
+
+**Backups go to `data/backups/`, which is on the same disk as the database.**
+That covers a bad migration, a mistaken delete, and a corrupted file. It does
+not cover the disk dying. Point `backup.mirror_dir` at a second drive — or at a
+folder OneDrive or Dropbox already syncs — and every backup is copied there too:
+
+```yaml
+# clipforge/config/local.yaml
+backup:
+  mirror_dir: 'D:/ClipForgeBackups'
+```
+
+An unplugged drive warns and never fails the backup. Retention is §13.2's 30
+daily plus 12 monthly, applied automatically; the newest backup is never
+deleted, whatever the settings say.
 
 ---
 
@@ -319,7 +355,7 @@ Safe to run while the app is open.
 .venv\Scripts\python -m pytest -q
 ```
 
-792 tests, plus 3 that load a real Whisper model and need `--asr`. The test
+1223 tests, plus 3 that load a real Whisper model and need `--asr`. The test
 fixtures are **synthetic** — ffmpeg `testsrc2` video with
 numerically authored audio, colour bars and static, deliberately. Real footage
 cannot validate a detector: nobody can say what the correct mic RMS at t=412 of

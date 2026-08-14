@@ -793,6 +793,44 @@ render:
         colour: '#FFFFFF'
         margin_v: 220
 
+# ---------------------------------------------------------------------------
+# BACKUP -- §13.2. The database is "THE IRREPLACEABLE TIER": signals can be
+# re-extracted from footage, the operator's judgment calls cannot.
+#
+# `clipforge backup` takes one; `clipforge backup --schedule` prints the
+# schtasks line for the nightly run; `clipforge backup --verify` is §13.3's
+# "an untested backup is not a backup".
+# ---------------------------------------------------------------------------
+backup:
+  # Resolved against the project root like every other path. Under data_root by
+  # default so one directory holds everything the app owns -- but see
+  # mirror_dir: that also means it is on the same disk as the database.
+  dir: ./data/backups
+
+  # §13.2's gzip step. MEASURED on this database: 408 KiB -> 88 KiB, 78%
+  # smaller, and the whole backup takes about 30 ms.
+  compress: true
+
+  # §13.2 states both numbers. The RULE is not in the spec: keep the newest
+  # `keep_daily` backups, then the newest one in each of the `keep_monthly` most
+  # recent months, and delete the rest. The newest backup is never deletable
+  # whatever these say, so a typo here cannot empty the directory.
+  keep_daily: 30
+  keep_monthly: 12
+
+  # NOT IN §13.2, which says "upload to B2/S3". There is no account and C5 says
+  # not to build ahead of the data -- but a .gz sitting beside its source is not
+  # protection against the disk dying, only against a bad migration or a
+  # mistaken delete. This is the version available with no credentials: a second
+  # plain directory. An external drive, or a folder OneDrive/Dropbox already
+  # syncs. A failed mirror WARNS and never fails the backup -- an unplugged
+  # drive must not mean no backup at all.
+  mirror_dir: null
+
+  # Only used to fill in the printed schtasks line. Arbitrary: late enough that
+  # a stream is over, early enough to be before the next one.
+  schedule_time: '04:00'
+
 export:
   fcpxml_version: '1.10'
   # master | proxy. The master is the quality source; the proxy is the fallback

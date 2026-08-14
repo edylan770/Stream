@@ -146,6 +146,40 @@ def _check_data_root(root) -> Check:
     return Check(label="data_root", ok=True, detail=str(root))
 
 
+def _check_backups(cfg) -> Check:
+    """How old the newest backup is (§13.2).
+
+    A backup job that silently stopped running looks exactly like one that is
+    working, right up until the moment it matters. §13.2 calls the database the
+    irreplaceable tier, so its age belongs on the same screen as ffmpeg's.
+    """
+    from clipforge.db import backup
+
+    try:
+        entry, age = backup.age_of_newest(cfg)
+    except Exception as exc:  # a misconfigured backup.dir must not break doctor
+        return Check(label="backups", ok=False, required=False, detail=str(exc))
+
+    if entry is None:
+        return Check(
+            label="backups", ok=False, required=False,
+            detail=f"none in {backup.directory(cfg)} — §13.2 calls the database "
+                   f"irreplaceable. Run `clipforge backup`",
+        )
+
+    when = "today" if age == 0 else f"{age} day{'s' if age != 1 else ''} ago"
+    detail = f"{entry.path.name}, {backup.humanise(entry.bytes)}, {when}"
+    # A week is not in the spec either; it is "long enough that a nightly job
+    # has definitely stopped".
+    if age is not None and age > 7:
+        return Check(
+            label="backups", ok=False, required=False,
+            detail=detail + " — the nightly job may have stopped "
+                   "(`clipforge backup --schedule`)",
+        )
+    return Check(label="backups", ok=True, required=False, detail=detail)
+
+
 def _check_encoder(cfg, ffmpeg_path: str | None) -> Check:
     """Which video encoder the proxy stage would use, and how it decided.
 
@@ -191,6 +225,7 @@ def run_checks(
     if cfg is not None:
         checks.append(_check_ollama(cfg))
         checks.append(_check_data_root(cfg.data_root))
+        checks.append(_check_backups(cfg))
         if checks[1].ok:  # ffmpeg present
             checks.append(_check_encoder(cfg, ffmpeg_path))
     return checks

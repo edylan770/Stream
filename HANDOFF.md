@@ -68,9 +68,10 @@ Phase 2.
 | 25b | `e843722` | §7.3's transcript beside the window; Render from the browser |
 | 26 | `7dfcc87` | loudness normalisation (two-pass, measured) and export presets |
 | 27 | `2427dd5` | §8.6 profanity muting, §8.2 filler removal — both toggles, both off |
-| 28 | *this* | §8.5 hook text via a paste round trip — **Phase 4 complete** |
+| 28 | `9a6d852` | §8.5 hook text via a paste round trip — **Phase 4 complete** |
+| 29 | *this* | §13.2's backup + §13.3's restore test — the irreplaceable tier, covered |
 
-1190 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1223 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
@@ -114,11 +115,13 @@ amount of reading the spec.
 
 ### Still missing, and not asked for by any phase
 
-**§13.2's nightly `VACUUM INTO` backup.** The spec calls the database the irreplaceable
-tier — "signals can be re-extracted from footage; the operator's judgment calls cannot" —
-and prescribes a nightly job. Nothing implements it and there is no `data/backups/`.
-README carries a one-liner in the meantime. This is the first thing to build the moment
-there are real ratings to lose.
+**§7.3's `[`/`]`/`{`/`}` nudge keys** — the last measurement gap. §17 tunes
+`min_window_s`/`max_window_s` against "how often the operator nudges boundaries during
+review", and with no keys that number cannot be collected at all (GUESSES gap 1). They
+are greyed in the review footer already, and `ratings.adjusted_start`/`adjusted_end`
+plus `render/selection.py` are waiting for them.
+
+**§13.2's backup is now built** (commit 29) — see the deviations below.
 
 ---
 
@@ -742,6 +745,69 @@ looks correct and is not.
   `--set k=null` still mean null. Found by a test asserting that two different
   caption colours produce two different params hashes.
 
+**Backup (§13.2, §13.3)**
+
+- **No `sqlite3` binary, no cron, no `gzip`.** §13.2's recipe is four lines of bash.
+  Nothing else in this project depends on a `sqlite3` CLI, and requiring one for the job
+  that must never be skipped is a way to have it skipped. MEASURED: the venv is Python
+  3.12.10 with SQLite 3.49.1, past `VACUUM INTO`'s 3.27 floor — which is still checked,
+  so an older interpreter fails with a sentence rather than a syntax error.
+- **The source is opened READ ONLY**, over a `file:...?mode=ro` URI, deliberately not
+  `db.connect`. MEASURED: `db.connect`'s `PRAGMA journal_mode=WAL` rewrites the file
+  header of a database not already in WAL — a write to the one file this module exists
+  to protect. MEASURED that `VACUUM INTO` works fine over a read-only connection, and
+  that the source's SHA-256 is unchanged across a copy. A test asserts the connection
+  *refuses* an INSERT, so the guarantee is structural rather than a habit.
+- **It is safe against a live database, and that was measured rather than trusted.**
+  A5 puts the database in WAL so the review UI writes while the pipeline runs, so a
+  04:00 backup will meet an open connection. MEASURED: with 626 KB of committed,
+  deliberately un-checkpointed WAL outstanding, every one of those rows was in the copy.
+  Had it not been, this would produce a file that looks like a backup and is missing the
+  newest ratings — worse than none.
+- **§13.2's own script fails on its second run of a day.** Its filename is
+  `clipforge_$(date +%F).db`, and MEASURED, `VACUUM INTO` raises `output file already
+  exists` on a non-empty target. So the spec's snippet breaks at the moment someone runs
+  it by hand to be safe. Here that is an explicit refusal naming `--force`. MEASURED and
+  worth knowing: the refusal covers only a *non-empty* target — a zero-byte file is
+  silently accepted and overwritten, which is why every write goes through
+  `atomic_output` (A10), which unlinks first.
+- **Retention is 30 daily + 12 monthly, and the RULE is not in the spec.** Keep the
+  newest `keep_daily`; then the newest file in each of the `keep_monthly` most recent
+  months; delete the rest. **The newest backup is never deletable** whatever the config
+  says, so a `keep_daily: 0` typo cannot empty the directory. **Prune only ever deletes
+  files it can name** — anything not matching `clipforge_YYYY-MM-DD.db[.gz]` exactly is
+  invisible to it, including a date-shaped name that is not a date.
+- **No B2/S3 upload** (C5: no account, zero streams). But a `.gz` beside its source is
+  not protection against the disk dying, and the command **says so on every run** rather
+  than letting the word "backup" imply otherwise. `backup.mirror_dir` is the version
+  available with no credentials: a second plain directory, an external drive or a synced
+  folder. A failed mirror WARNS and never fails the backup — an unplugged drive must not
+  mean no backup at all.
+- **§13.3 is not a one-off.** The spec says to test the restore path "once, early. Then
+  trust it"; trusting it for five months is the failure being prevented. `--verify`
+  decompresses to a scratch directory, runs SQLite's `integrity_check`, opens the copy
+  with the application's own `db.open_db(migrate_to_latest=False)` — which already
+  refuses an unexpected schema version — and compares every table against the manifest
+  written beside the backup.
+- **Verification compares against a manifest, not the live database and not literals.**
+  A month-old backup is legitimately behind the live database, so comparing the two would
+  fail for an honest reason and train the operator to ignore the check; hardcoded counts
+  would pass a backup that had lost rows. The counts are recorded at copy time and
+  checked against themselves — the same rule every numeric test here follows.
+- **The gzip header is stripped of its name and clock** (`filename=''`, `mtime=0`).
+  Otherwise every nightly differs from the last even when the database did not, which
+  defeats any mirror that deduplicates and makes comparing two backups impossible.
+- **The scheduled task is printed, never created**, and it goes through `clipforge.ps1`
+  rather than `clipforge.exe`: that launcher `Push-Location`s to the project root, and
+  `config.find_project_root` walks up from the working directory — a task run from
+  `System32` would otherwise resolve `./data` somewhere else and quietly back up nothing.
+- **`backup_duration_s` is an INVENTED metric name.** §14's table has no backup row.
+  Recorded anyway (C6), after the copy — so it describes a backup the backup does not
+  contain — and never fatally: a database that cannot be written to is a reason to keep
+  the backup, not to throw it away.
+- **`clipforge doctor` reports the newest backup's age.** A nightly job that silently
+  stopped looks exactly like one that is working, right up until it matters.
+
 **Export (§10.5)**
 
 - **Ratings are read across generations, never `is_current`.** Inheritance only carries
@@ -777,6 +843,7 @@ written for someone who has not seen this before. In short:
 ClipForge.cmd                                            # double-click; opens the app
 .\clipforge.ps1 doctor                                   # environment + chosen encoder
 .\clipforge.ps1 export <stream_id>                       # FCPXML for Resolve
+.\clipforge.ps1 backup                                   # §13.2; --schedule for nightly
 ```
 
 Launchers are scripts, not a frozen executable: once Phase 2 lands a PyInstaller build
@@ -785,8 +852,8 @@ dependency change — and would still need ffmpeg and the Whisper models fetched
 separately. It adds a build step without removing a setup step.
 
 Everything the app does is also a command — `register`, `run`, `status`, `score`,
-`signals`, `metrics`, `db`, `config`, `synth-markers`. All take `--set key.path=value`
-to override config for one invocation.
+`signals`, `metrics`, `backup`, `db`, `config`, `synth-markers`. All take
+`--set key.path=value` to override config for one invocation.
 
 **The fixtures are synthetic test data, not footage.** `fixture_short`, `fixture_long`
 and `ntsc` are ffmpeg `testsrc2` video with numerically authored audio — colour bars and
@@ -866,7 +933,9 @@ The remaining phases, in §15's order and with what each will cost:
 
 Two things worth doing before any of them, both small:
 
-- **§13.2's backup job.** The database is the irreplaceable tier and there is none.
+- **§7.3's nudge keys.** The last measurement gap: §17 cannot tune
+  `min_window_s`/`max_window_s` until the operator's boundary nudges are being counted,
+  and every stream reviewed without them is a stream whose nudge data never existed (C6).
 - **Phase 6's n-gram baseline** (`is_baseline_tic`) once ten streams exist, replacing the
   hand-written stopword list in `phrases.yaml` — the one place a guess is currently
   standing in for a measurement the corpus would provide.

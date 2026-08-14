@@ -207,6 +207,41 @@ directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg'
 filter parser once a parent directory contains an apostrophe. See
 `ffmpeg.filter_file`.
 
+## Backup (§13.2)
+
+Unusually, almost nothing here is a guess: §13.2 states the retention numbers and
+the compression step, and the rest was measured on this database. The one
+invented value is the mirror.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `backup.keep_daily` / `keep_monthly` | `30` / `12` | **grounded** | §13.2 states both. The *rule* for applying them is not in the spec and is written down in `db/backup.py` | Wanting a backup from a day that has been pruned. At ~88 KiB each, 42 files is under 4 MB — raising these costs nothing |
+| `backup.compress` | `true` | **grounded** | §13.2's gzip step. MEASURED on this database: 408 KiB → 88 KiB (78% smaller), whole backup ~30 ms | Nothing at this size. A multi-GB database where the CPU time started to matter |
+| `backup.dir` | `./data/backups` | **plausible** | One directory holds everything the app owns. But it is therefore on the same disk as the database, which is exactly why `mirror_dir` exists | Nothing — the placement is a convenience; the protection comes from the mirror |
+| `backup.mirror_dir` | `null` | **arbitrary** | NOT IN §13.2, which says "upload to B2/S3". No account exists (C5), and this is what is available with no credentials. Off by default because there is nowhere to point it yet | Losing the disk. That is the whole falsifier, and it only fires once |
+| `backup.schedule_time` | `04:00` | **arbitrary** | Late enough that a stream is over, early enough to precede the next one. Only fills in the printed `schtasks` line | Streaming past 04:00, in which case the backup runs mid-session — which is safe (MEASURED against an open WAL connection) but pointlessly timed |
+| `doctor` stale-backup threshold | `7` days | **arbitrary** | In `doctor._check_backups`, not config: it is a display heuristic, not a tunable. "Long enough that a nightly has definitely stopped" | Warning while the schedule is healthy, or staying quiet for a fortnight after it broke |
+
+**Three things measured that are not parameters**, recorded so nobody re-derives
+them the hard way:
+
+- **`VACUUM INTO` works over a `file:...?mode=ro` connection**, and the source's
+  SHA-256 is unchanged across a copy. The read-only open is load-bearing:
+  `db.connect`'s `PRAGMA journal_mode=WAL` *does* rewrite the header of a
+  database not already in WAL.
+- **Committed but un-checkpointed WAL frames are captured.** With 626 KB of
+  outstanding WAL and a live writer holding the connection, every row was in the
+  copy. This is what makes a 04:00 backup trustworthy while the app is open.
+- **`VACUUM INTO` refuses a non-empty target and silently accepts a zero-byte
+  one.** So the existence check cannot be delegated to SQLite; every write goes
+  through `atomic_output`, which unlinks first.
+
+**Worth watching once nightlies are running:** `backup_duration_s` in
+`tool_metrics` — an INVENTED name, since §14's table has no backup row. Its
+`meta` carries `source_bytes` and `stored_bytes`, so it doubles as the growth
+curve of §13.1's metadata tier, which is currently an estimate ("~5 MB/stream")
+that nothing has checked.
+
 ## Review and export
 
 | Parameter | Value | Confidence | Rationale | Falsified by |
