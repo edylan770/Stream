@@ -26,6 +26,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "export": ("clipforge.render.cmd_export", "approved moments as an FCPXML timeline (§10.5)"),
     "metrics": ("clipforge.review.cmd_metrics", "is review fast enough? (§7.1's target)"),
     "register": ("clipforge.ingest.register", "register a recording as a stream"),
+    "render": ("clipforge.render.cmd_render", "approved moments as postable clips (§8)"),
     "review": ("clipforge.review.cmd_review", "open the review UI"),
     "run": ("clipforge.pipeline.cmd_run", "run the extraction pipeline for a stream"),
     "score": ("clipforge.score.cmd_score", "re-score a stream without touching extraction"),

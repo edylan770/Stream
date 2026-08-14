@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from clipforge.render import RenderError
+
 #: Times closer than this are the same instant. `candidates.t_start` is SQLite
 #: REAL and word timestamps come back through JSON, so both carry a double's
 #: worth of noise; `render/timebase.py` needed the same epsilon for exactly this
@@ -34,7 +36,7 @@ from dataclasses import dataclass, field
 EPSILON = 1e-9
 
 
-class TimelineError(RuntimeError):
+class TimelineError(RenderError):
     pass
 
 

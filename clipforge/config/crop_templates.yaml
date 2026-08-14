@@ -1,0 +1,109 @@
+# §8.4 -- vertical reframe, one static template per OBS scene.
+#
+# > Gaming has a structural advantage here. Commercial tools perform dynamic
+# > subject tracking because talking-head footage moves. The operator's layout
+# > does not move -- facecam is always in the same corner, gameplay fills the
+# > same rectangle. Therefore: a static crop template per OBS scene. No model,
+# > no tracking, deterministic, instant, identical every time.
+#
+# ===========================================================================
+# EVERY COORDINATE IN THE marvel_rivals_facecam TEMPLATE IS A PLACEHOLDER.
+# ===========================================================================
+#
+# They are §8.4's example numbers, copied verbatim, and §8.4's example was
+# never checked against a real OBS layout -- see below. They are recorded in
+# spec/GUESSES.md as ARBITRARY. Nothing can validate them except looking at a
+# frame of your own stream.
+#
+# HOW TO REPLACE THEM, once you have one recording:
+#
+#   1. clipforge render <stream_id> --stills
+#      One PNG per approved moment, through the identical filter graph. A
+#      still costs about a second; a full encode costs a minute. Iterate on
+#      the stills.
+#   2. Open a frame of the master in any image editor, read off the facecam
+#      and gameplay rectangles in pixels, and put them in `src` below as
+#      [x, y, width, height].
+#   3. Set `source_resolution` to your OBS canvas. If it is not 1920x1080 the
+#      numbers scale automatically -- but a template measured on a DIFFERENT
+#      ASPECT RATIO is refused rather than stretched, because scaling x and y
+#      by different factors moves every region somewhere you did not put it.
+#   4. clipforge render <stream_id> --dry-run  prints the resolved geometry
+#      and the filter graph without encoding anything.
+#
+# WHAT `dst` MEANS. Where the region lands in the output frame, same
+# [x, y, width, height] form. Regions may not overlap -- one would be drawn
+# over the other and part of what you asked to show could not be seen, which
+# is refused. Regions need not cover the whole output; anything uncovered
+# becomes render.crop.pad_color, and the share is reported so a typo is
+# visible rather than silent.
+#
+# WHAT `fit` MEANS, and why §8.4's example needs it. §8.4 gives the gameplay
+# region src 960x800 (aspect 1.200) and dst 1080x1110 (aspect 0.973). Scaling
+# one to the other stretches the picture vertically by 1.233x -- a circle
+# becomes an ellipse. So:
+#
+#   fill     scale to cover dst, centre-crop the overflow. Geometry stays
+#            true, a sliver of edge is lost. THE DEFAULT.
+#   contain  scale to fit inside dst, pad the remainder.
+#   stretch  §8.4 taken literally. Distorts unless the aspects already match.
+#
+# Omit `fit` on a region to use render.crop.fit.
+
+version: 1
+
+templates:
+
+  # -------------------------------------------------------------------------
+  # The one that works today, on any 16:9 source, with nothing measured.
+  #
+  # The whole frame, centre-cropped to 9:16. This is what to render with
+  # before you have looked at your own layout: it is never *wrong*, it just
+  # throws away the sides of the frame. The test fixture uses it, which is why
+  # it is first -- a template that needs no measurement is the only kind a
+  # test can assert against.
+  # -------------------------------------------------------------------------
+  full_frame:
+    source_resolution: [1920, 1080]
+    output: [1080, 1920]
+    regions:
+      - name: frame
+        src: [0, 0, 1920, 1080]
+        dst: [0, 0, 1080, 1920]
+        fit: fill
+
+  # -------------------------------------------------------------------------
+  # §8.4's example, verbatim. PLACEHOLDER COORDINATES -- see the header.
+  #
+  # The shape is right: facecam across the top, gameplay filling the rest.
+  # The numbers are somebody's guess at where those things are on a canvas
+  # nobody has streamed. `fit: fill` is the deviation from §8.4, which would
+  # stretch gameplay by 23%.
+  # -------------------------------------------------------------------------
+  marvel_rivals_facecam:
+    source_resolution: [1920, 1080]
+    output: [1080, 1920]
+    regions:
+      - name: facecam
+        src: [1560, 0, 360, 270]
+        dst: [0, 0, 1080, 810]
+        fit: fill
+      - name: gameplay
+        src: [480, 140, 960, 800]
+        dst: [0, 810, 1080, 1110]
+        fit: fill
+
+  # -------------------------------------------------------------------------
+  # No facecam: gameplay only, centred. For scenes where the camera is off.
+  # Also a placeholder -- the src rectangle is a guess at "the middle of the
+  # action", which is exactly the kind of thing one look at a real frame
+  # settles.
+  # -------------------------------------------------------------------------
+  gameplay_only:
+    source_resolution: [1920, 1080]
+    output: [1080, 1920]
+    regions:
+      - name: gameplay
+        src: [420, 0, 1080, 1080]
+        dst: [0, 0, 1080, 1920]
+        fit: fill

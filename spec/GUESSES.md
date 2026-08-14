@@ -117,6 +117,27 @@ short — which is one more reason the next thing to do is record a stream.
 | `render.captions.wrap_style` | `0` | **grounded** | libass smart wrapping. 2 (no wrap) puts an unusually long group off the side of the frame with no warning | — |
 | `render.handles_s` | `0.25` | **arbitrary** | Distinct from `export.handles_s` because they are different decisions: an editor conforming an FCPXML wants room, a short's first frame is the hook (§8.5) and dead air in front of it is worse than a tight cut | Clips starting mid-word (too small) or opening on silence (too large) |
 
+## Render — crop and encode (Phase 4, §8.4)
+
+**Every coordinate in `crop_templates.yaml` is arbitrary.** They are §8.4's
+example numbers, and §8.4's example was not checked — its gameplay region is
+`src` 960×800 into `dst` 1080×1110, a 23% vertical stretch. Nothing can validate
+them except looking at a frame of a real stream. `clipforge render <id> --stills`
+exists for exactly that loop: a still costs a second, an encode costs a minute.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `crop_templates.yaml: marvel_rivals_facecam` | §8.4's numbers | **arbitrary** | Copied verbatim from a spec example measured on no real canvas | One look at a frame of the operator's own OBS layout |
+| `crop_templates.yaml: gameplay_only` | a guess at "the middle" | **arbitrary** | Something had to be there for a camera-off scene | Same |
+| `crop_templates.yaml: full_frame` | whole frame, centre-cropped | **grounded** | Not a guess at all: it is the identity crop for any 16:9 source, which is why it is the default. It throws away the sides and is never *wrong* | Nothing — it is arithmetic |
+| `render.crop.fit` | `fill` | **plausible** | §8.4's own example distorts by 23% under `stretch`. `fill` keeps geometry true at the cost of a sliver of edge | Faces or HUD elements being clipped at region edges, which would argue for `contain` |
+| `render.crop.upscale_warn_factor` | `2.0` | **arbitrary** | A 16:9 master reframed to 9:16 always enlarges ~1.78×, so warning on *any* enlargement fires on every clip and means nothing. 2.0 is above that floor and below the 3× a small facecam needs | The warning still firing on every render (too low), or a visibly mushy facecam passing silently (too high) |
+| `ASPECT_TOLERANCE` | `0.01` | **grounded** | Covers 1920×1080 against 1280×720 rounding and nothing else; 16:9 against 16:10 is 11% and must not pass | Nothing — it is arithmetic |
+| `render.video.crf` / `preset` | `18` / `slow` | **plausible** | §8.3 states both. Deliberately libx264 rather than `ingest.proxy`'s auto-detected hardware encoder: that detector optimises a three-hour proxy for throughput, and a 45-second deliverable optimises for quality | File sizes too large for a platform, or visible blocking in fast motion |
+| `render.video.audio_bitrate` | `192k` | **plausible** | §8.3 states it | — |
+| `render.verify.max_duration_delta_s` | `0.5` | **plausible** | Mirrors `ingest.proxy.verify.max_duration_delta_s`; a clip that came out the wrong length is worth catching before upload | A legitimate encode failing verification |
+| `render.audio.source` | `auto` | **grounded** | §8's burn-in has a bare `-af`, so ffmpeg takes stream 0 — the mix only by luck of the OBS layout. `auto` reuses `proxy.audio_map_index`, which §5.2 already needed for the same reason | A clip carrying game audio and no voice |
+
 **Not a guess, but recorded because it looks like one:** the ASS file is
 referenced from the filter graph by bare filename with ffmpeg run from its
 directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg's

@@ -46,6 +46,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from clipforge.render import RenderError
 from clipforge.render.timeline import EPSILON, EditPlan
 
 #: §4.2 role for the operator's own microphone, and for the other party. These
@@ -59,7 +60,7 @@ PARTY = "party"
 SPEAKER_ROLE = {"operator": MIC, "party": PARTY}
 
 
-class WordError(RuntimeError):
+class WordError(RenderError):
     pass
 
 

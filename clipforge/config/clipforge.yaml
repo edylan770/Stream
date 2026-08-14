@@ -530,6 +530,59 @@ render:
   # than a tight cut.
   handles_s: 0.25
 
+  crop:                              # §8.4
+    # The sidecar, resolved against clipforge/config/ when relative. Same
+    # arrangement as phrases.yaml: coordinates are data the operator edits,
+    # not settings, and they do not belong in this file.
+    file: crop_templates.yaml
+    # Which template to use when --template is not given. `full_frame` is a
+    # centre crop of any 16:9 source and needs nothing measured, which is the
+    # only honest default before a real layout exists.
+    template: full_frame
+    # Per-region default. `stretch` reproduces §8.4 literally and distorts its
+    # own example by 23%; `fill` keeps geometry true and loses a sliver of
+    # edge. A region may override this with its own `fit`.
+    fit: fill
+    # Shown wherever no region covers the output, and behind `contain`.
+    pad_color: '#000000'
+    # Warn when a region has to be enlarged more than this to fill its place
+    # in the output. SOME upscaling is inherent -- a 16:9 master reframed to
+    # 9:16 always enlarges by about 1.78x -- so warning on any enlargement at
+    # all would fire on every clip and mean nothing. 2.0 is above that floor
+    # and below the 3x a small facecam would need.
+    upscale_warn_factor: 2.0
+
+  audio:
+    # Which §4.2 track becomes the clip's audio. §8.3's burn-in has a bare
+    # -af, so ffmpeg takes the first audio stream -- which is the mix only by
+    # luck of the OBS layout. A short carrying game audio and no voice is a
+    # silent failure that survives all the way to upload.
+    #
+    # `auto` uses the probed track map: the `mixed` role if there is one, else
+    # the lowest-indexed role found. Set an integer to force a stream index.
+    source: auto
+
+  video:
+    # §8.3's encode settings. Deliberately NOT ingest.proxy's auto-detected
+    # hardware encoder: that detector exists to push a three-hour proxy
+    # through a throughput bottleneck, while a 45-second deliverable optimises
+    # for quality, and NVENC/QSV at equal bitrate is visibly worse than x264.
+    codec: libx264
+    crf: 18
+    preset: slow
+    # A 10-bit or 4:2:2 master otherwise yields a clip half the platforms
+    # cannot decode -- the same reason ingest.proxy forces it.
+    pix_fmt: yuv420p
+    audio_codec: aac
+    audio_bitrate: 192k
+    container: mp4
+
+  verify:
+    # Checked by ffprobe after every encode, the same way the proxy checks
+    # itself. A clip that came out the wrong size or short is worth catching
+    # here rather than on the upload page.
+    max_duration_delta_s: 0.5
+
   captions:                          # §8.3
     enabled: true
 

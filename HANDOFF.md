@@ -58,13 +58,15 @@ Phase 2.
 | 20 | `a552654` | `speaker_assign` — §5.8, in the linear domain |
 | 21 | `e37273c` | `phrase_detect`, speech_rate, swear_density, word snapping |
 | 22 | `a109847` | `embeddings` (§5.10, Ollama) — Phase 2 complete |
-| 23 | *this* | ASS captions (§8.3): word timeline, per-track colouring, `render:` config |
+| 23 | `968fdd0` | ASS captions (§8.3): word timeline, per-track colouring, `render:` config |
+| 24 | *this* | crop templates + `clipforge render` — the first postable file |
 
-973 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1056 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
-preview assets (Phase 3); no renderer (Phase 4); no digests (Phase 5); no trends
-(Phase 6); no vision (Phase 7).
+preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
+(Phase 7). Phase 4 is partly built — captions, crop and `render` are in; loudness
+normalization, export presets, filler removal, profanity muting and hook text are not.
 
 ---
 
@@ -441,6 +443,62 @@ looks correct and is not.
   feed `config_version`. Changing a caption colour must not invalidate a
   candidate or force a re-score — nothing under `render` can change which
   moments were detected, only how an approved one is finished.
+
+**Vertical reframe and the render command (Phase 4, §8.4)**
+
+- **`fit` is per-region config, and the default is not `stretch`.** §8.4's own
+  example gives gameplay `src` 960×800 (aspect 1.200) and `dst` 1080×1110
+  (0.973) — a literal crop-then-scale stretches it vertically by 1.233×. `fill`
+  covers the destination and centre-crops the overflow; `contain` fits and pads;
+  `stretch` reproduces §8.4 exactly for anyone who wants it.
+- **A template declares the resolution it was measured on, and a different
+  aspect is refused.** Scaling x and y by different factors moves every region
+  somewhere the operator did not put it, and the result is a plausible-looking
+  frame that is quietly wrong. Same-shape sources scale (the 640×360 fixture
+  against a 1920×1080 template).
+- **Overlapping `dst` regions are refused; gaps are reported.** They are not the
+  same mistake. An overlap hides part of what the template says to show, and
+  there is no layout where that is intended. A gap is a band of `pad_color` —
+  a legitimate letterbox, and also exactly what a typo looks like, so it is
+  logged with its share of the frame rather than decided.
+- **Not `vstack`.** §8.4 says "crop + scale + vstack", which only works for
+  full-width regions stacked in source order. `dst` gives arbitrary rectangles,
+  so the first region is `pad`ded to the full output at its own offset and the
+  rest are `overlay`ed at theirs. General, and it needs no `color` source —
+  which would be an infinite stream requiring a duration bound.
+- **The upscale warning has a threshold, because some upscaling is inherent.**
+  A 16:9 master reframed to 9:16 always enlarges by ~1.78×. Warning on any
+  enlargement fires on every clip and therefore means nothing;
+  `render.crop.upscale_warn_factor` (2.0) is above that floor.
+- **libx264, deliberately not `encoders.select`.** That detector exists to push
+  a three-hour proxy through a throughput bottleneck, and was measured doing so
+  (libx264 333 s vs h264_qsv 139.5 s). A 45-second deliverable has the opposite
+  priority — encoded once, watched many times — and a hardware encoder at equal
+  bitrate is visibly worse. §8.3 asks for x264 by name.
+- **Which audio track becomes the clip is explicit.** §8.3's burn-in has a bare
+  `-af`, so ffmpeg takes stream 0, which is the mix only by luck of the OBS
+  layout. `render.audio.source: auto` reuses `proxy.audio_map_index` — §5.2
+  needed the same rule for the same reason. A short carrying game audio and no
+  voice is a failure that survives all the way to upload.
+- **`--stills` and `--dry-run` exist because the coordinates are placeholders.**
+  The loop "edit numbers → wait for an encode → look" is the slow way to measure
+  a layout. `--dry-run` prints the resolved geometry and the filter graph;
+  `--stills` writes one PNG per moment through the identical graph. Stills are
+  deliberately **un-captioned**: they exist to show where the rectangles are,
+  and seeking to a representative frame would put the output clock out of step
+  with the caption times.
+- **`render.source` is separate from `export.source`.** An FCPXML references the
+  master for an editor to conform against and may legitimately be pointed at a
+  proxy; a burned-in short *is* the deliverable and wants the quality source.
+- **Every render module raises from one `RenderError` base** (`render/__init__`).
+  Without it the first failure a new operator meets — a mistyped template name —
+  arrived as a traceback, since the command only caught its own exception type.
+- **`--set key=#RRGGBB` used to become `None`.** `#` starts a YAML comment, so
+  `parse_override` reduced every hex colour to an empty document and the caption
+  rendered in the fallback colour with no error. A value the parser reduced to
+  `None` that was not *written* as a null now keeps its raw text; `--set k=` and
+  `--set k=null` still mean null. Found by a test asserting that two different
+  caption colours produce two different params hashes.
 
 **Export (§10.5)**
 

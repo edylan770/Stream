@@ -127,11 +127,27 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return loaded
 
 
+#: The only spellings that may legitimately arrive as `None` from `--set`.
+#: Anything else the YAML scalar parser reduces to None was a comment, not a
+#: null — see `parse_override`.
+_YAML_NULLS = frozenset({"", "~", "null", "Null", "NULL"})
+
+
 def parse_override(text: str) -> tuple[str, Any]:
     """Parse ``key.path=value`` from a ``--set`` flag.
 
     Values go through the YAML scalar parser, so `true`, `12`, `1.5`, `null`,
     and `[1, 2]` all arrive with the type you would get from the config file.
+
+    **Except that a `#` starts a YAML comment.** `--set
+    render.captions.styles.mic.colour=#FF0000` parses as an empty document and
+    comes back as `None`, so the colour silently becomes null and the caption
+    renders in whatever the fallback is. Every colour in `render:` is
+    `#RRGGBB`, so this is not a corner case — it is the first thing anyone
+    overriding a colour would hit, and it fails without an error.
+
+    So: a value the parser reduced to `None` that was not *written* as a null
+    is kept as its raw text. `--set k=` and `--set k=null` still mean null.
     """
     if "=" not in text:
         raise ConfigError(f"--set expects key.path=value, got {text!r}")
@@ -142,7 +158,9 @@ def parse_override(text: str) -> tuple[str, Any]:
     try:
         value = yaml.safe_load(raw)
     except yaml.YAMLError:
-        value = raw
+        return key, raw
+    if value is None and raw.strip() not in _YAML_NULLS:
+        return key, raw.strip()
     return key, value
 
 

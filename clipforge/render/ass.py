@@ -46,6 +46,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from clipforge.render import RenderError
 from clipforge.render.words import RenderWord, by_role
 
 #: The style used when a word has no role — §4.2 found a single track, or the
@@ -74,7 +75,7 @@ SENTENCE_END = ".?!"
 _TRAILING = "\"')]}»”’"
 
 
-class AssError(RuntimeError):
+class AssError(RenderError):
     pass
 
 

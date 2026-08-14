@@ -153,6 +153,33 @@ def test_override_without_equals_is_rejected():
         config.parse_override("nonsense")
 
 
+@pytest.mark.parametrize("colour", ["#FF0000", "#000000", "#7fe7ff"])
+def test_a_hex_colour_survives_the_yaml_scalar_parser(colour):
+    """`#` starts a YAML comment, so `--set ...colour=#FF0000` parsed as an
+    empty document and came back None — the colour silently became null and
+    the caption rendered in the fallback. Every colour under `render:` is
+    #RRGGBB, so this is the first thing anyone overriding one would hit."""
+    assert config.parse_override(f"a.b={colour}") == ("a.b", colour)
+
+
+def test_a_hex_colour_override_reaches_the_config():
+    cfg = config.load(overrides=["render.captions.styles.mic.colour=#FF0000"])
+
+    assert cfg.get("render.captions.styles.mic.colour") == "#FF0000"
+
+
+@pytest.mark.parametrize("text", ["a.b=", "a.b=null", "a.b=~", "a.b=NULL"])
+def test_written_nulls_are_still_null(text):
+    """The fix must not make it impossible to set something to null."""
+    assert config.parse_override(text)[1] is None
+
+
+def test_a_trailing_comment_still_leaves_the_value():
+    """`#` after a value is a real YAML comment, and yaml handles it. The
+    guard only fires when the parser found nothing at all."""
+    assert config.parse_override("a.b=12  # twelve") == ("a.b", 12)
+
+
 # --------------------------------------------------------------------------
 # config_version
 # --------------------------------------------------------------------------
