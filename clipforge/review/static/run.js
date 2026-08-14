@@ -68,7 +68,7 @@ function renderPlan() {
   for (const stage of plan.stages) {
     const [label, cls] = MARKERS[stage.action] || [stage.action, ""];
     const item = document.createElement("li");
-    item.className = `stage ${cls} ${stage.status === "failed" ? "failed" : ""}`;
+    item.className = `stage-row ${cls} ${stage.status === "failed" ? "failed" : ""}`;
     item.innerHTML =
       `<span class="marker">${escape(label)}</span>` +
       `<span class="nm mono">${escape(stage.stage)}</span>` +

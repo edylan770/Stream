@@ -101,7 +101,11 @@ def create_app(cfg) -> FastAPI:
     def api_metrics(stream_id: str) -> JSONResponse:
         conn = connect()
         try:
-            return JSONResponse(queries.review_metrics(conn, stream_id))
+            return JSONResponse(queries.review_metrics(
+                conn, stream_id,
+                target_ms=int(cfg.get("review.target_ms_per_candidate",
+                                      queries.DEFAULT_TARGET_MS)),
+            ))
         finally:
             conn.close()
 

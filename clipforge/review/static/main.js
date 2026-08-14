@@ -5,6 +5,7 @@
  * four-hour proxy encode does not lose the screen you were watching. */
 
 import * as router from "./router.js";
+import * as shell from "./shell.js";
 import * as library from "./library.js";
 import * as add from "./add.js";
 import * as run from "./run.js";
@@ -15,6 +16,8 @@ router.register("library", library);
 router.register("add", add);
 router.register("run", run);
 router.register("review", review);
+router.register("error", shell);
+shell.useRouter(router);
 router.startKeyboard();
 
 async function boot() {
@@ -33,7 +36,11 @@ async function boot() {
   return router.show("library");
 }
 
-boot().catch((error) => {
+/* A failure here is before any view exists, so it cannot go through the
+ * router's own fallback — but it no longer destroys the DOM to say so. */
+boot().catch((error) => router.show("error", { error }).catch(() => {
   document.body.innerHTML =
-    `<section class="pane"><h1>ClipForge</h1><p class="empty">${error.message}</p></section>`;
-});
+    `<section class="pane"><h1>ClipForge</h1>` +
+    `<div class="state state--error"><h2>Could not start</h2>` +
+    `<p>${String(error && error.message ? error.message : error)}</p></div></section>`;
+}));

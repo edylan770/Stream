@@ -106,6 +106,34 @@ def test_every_module_is_served_and_local(client):
             "/static/review.js"} <= seen
 
 
+def test_every_element_the_js_reaches_for_exists(client):
+    """The one coupling a redesign can break silently.
+
+    The views address the DOM as `$("some-id")` and a missing element is
+    `null`, so a renamed or dropped id fails at the moment the operator presses
+    a key — not at load, and never in a way the JSON route tests would see.
+    The ids are read out of the modules rather than listed here, so this covers
+    ids added later without anyone remembering to update it.
+    """
+    page = client.get("/").text
+    wanted: dict[str, set[str]] = {}
+    for name in ("main.js", "api.js", "router.js", "shell.js", "library.js",
+                 "add.js", "run.js", "review.js"):
+        source = client.get(f"/static/{name}").text
+        for element_id in re.findall(r'\$\("([a-z0-9-]+)"\)', source):
+            wanted.setdefault(element_id, set()).add(name)
+
+    missing = {
+        element_id: sorted(files)
+        for element_id, files in wanted.items()
+        if f'id="{element_id}"' not in page
+    }
+    assert not missing, f"the page has no element for: {missing}"
+    # A guard on the guard: if the regex ever stops matching, this test would
+    # pass by checking nothing.
+    assert len(wanted) > 20
+
+
 # --------------------------------------------------------------------------
 # the candidate payload
 # --------------------------------------------------------------------------
@@ -287,6 +315,26 @@ def test_metrics_include_the_approval_rate(conn):
     metrics = queries.review_metrics(conn, "fx")
     assert 0.0 <= metrics["approval_rate"] <= 1.0
     assert metrics["candidates"] > 0
+
+
+def test_metrics_carry_the_target_so_the_browser_does_not_guess_it(conn):
+    """The summary screen used to grade the session against a hardcoded 4000
+    while `clipforge metrics` read `review.target_ms_per_candidate`. Changing
+    the config moved one and not the other, silently."""
+    assert queries.review_metrics(conn, "fx", target_ms=2500)["target_ms"] == 2500
+
+
+def test_the_metrics_route_serves_the_configured_target(processed):
+    cfg, _ = processed
+    tweaked = config.load(overrides=[
+        f"paths.data_root={cfg.data_root.as_posix()}",
+        "review.target_ms_per_candidate=2500",
+    ])
+    with TestClient(review_app.create_app(tweaked), base_url="http://127.0.0.1",
+                    headers={"X-ClipForge": "1"}) as tweaked_client:
+        payload = tweaked_client.get("/api/streams/fx/metrics").json()
+
+    assert payload["target_ms"] == 2500
 
 
 # --------------------------------------------------------------------------

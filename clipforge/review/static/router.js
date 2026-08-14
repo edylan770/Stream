@@ -11,6 +11,7 @@
  * whether their own section is hidden is how that goes wrong. */
 
 import { $ } from "./api.js";
+import * as shell from "./shell.js";
 
 const views = new Map();
 let current = null;
@@ -23,6 +24,15 @@ export function activeName() {
   return current;
 }
 
+function swap(name) {
+  for (const [key, module] of views) {
+    const element = $(module.root);
+    if (element) element.hidden = key !== name;
+  }
+  current = name;
+  shell.setBar(name);
+}
+
 export async function show(name, arg) {
   const next = views.get(name);
   if (!next) throw new Error(`no view ${name}`);
@@ -32,12 +42,18 @@ export async function show(name, arg) {
     if (previous?.leave) previous.leave();
   }
 
-  for (const [key, module] of views) {
-    const element = $(module.root);
-    if (element) element.hidden = key !== name;
+  swap(name);
+
+  // Every view's enter() awaits a fetch. Three of the four had no catch, so a
+  // server that had stopped left a blank pane and an unhandled rejection in
+  // the console — the operator's only signal that anything had happened.
+  try {
+    await next.enter(arg);
+  } catch (error) {
+    if (name === "error") throw error;      // nowhere left to fall back to
+    swap("error");
+    await views.get("error").enter({ error, view: name, arg });
   }
-  current = name;
-  await next.enter(arg);
 }
 
 export function startKeyboard() {

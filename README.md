@@ -165,6 +165,27 @@ Then, in the app:
    `?` for why it scored. Target is 4 seconds a candidate.
 4. **Export** — `.\clipforge.ps1 export <stream_id>` writes an FCPXML.
    In Resolve: *File → Import → Timeline*.
+5. **Render** — `.\clipforge.ps1 render <stream_id>` writes a finished vertical
+   clip per approved moment, captions burned in, into the stream's `exports/`.
+
+The two are different jobs: an FCPXML is a timeline for an editor to conform
+against, a render is the postable file. §10.5 says never to extract clip files
+for YouTube assembly, and to extract them only for short-form — which is what
+`render` is for.
+
+**Before your first render, check the crop.** Every coordinate in
+`clipforge/config/crop_templates.yaml` is a placeholder copied from the spec's
+example, and the spec's example was never measured against a real OBS layout.
+The default template, `full_frame`, is a centre crop of any 16:9 source — never
+wrong, but it throws away the sides of the frame. To fit your own layout:
+
+```powershell
+.\clipforge.ps1 render <stream_id> --stills      # one PNG per clip, seconds each
+.\clipforge.ps1 render <stream_id> --dry-run     # the geometry and filter graph
+```
+
+Edit the numbers, look at the stills, repeat. A still costs about a second; a
+full encode costs a minute, which is the wrong loop to iterate in.
 
 Everything the app does is also a command:
 
@@ -175,6 +196,7 @@ Everything the app does is also a command:
 .\clipforge.ps1 status <stream_id>
 .\clipforge.ps1 metrics <stream_id>          # is review actually fast enough?
 .\clipforge.ps1 export <stream_id> --min-rating 1
+.\clipforge.ps1 render <stream_id> --limit 3
 ```
 
 `clipforge --help` lists them all. Every command takes

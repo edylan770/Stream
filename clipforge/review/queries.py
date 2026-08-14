@@ -23,6 +23,11 @@ SPARKLINE_KINDS = ("mic_rms", "party_rms", "game_rms")
 #: few enough that the payload for 150 candidates stays small.
 SPARKLINE_POINTS = 120
 
+#: §7.1's target, in ms per candidate: "120 candidates in under 8 minutes".
+#: A fallback only — the caller passes `review.target_ms_per_candidate`. It
+#: exists so this module can be called without a config object in a test.
+DEFAULT_TARGET_MS = 4000
+
 
 def list_streams(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
@@ -273,13 +278,21 @@ def record_session(
     )
 
 
-def review_metrics(conn: sqlite3.Connection, stream_id: str) -> dict:
+def review_metrics(
+    conn: sqlite3.Connection, stream_id: str, target_ms: int = DEFAULT_TARGET_MS
+) -> dict:
     """§7.1's target, measured.
 
     Reported as a **median**. Leave the tab open over lunch and one candidate
     reads forty minutes; a mean would be swamped by it and the four-second
     target would become unmeasurable. The raw values stay in the database
     because they are the honest observation.
+
+    `target_ms` is returned rather than left to the caller because the browser
+    used to carry its own copy of it: `review.js` graded the session against a
+    hardcoded 4000 while `clipforge metrics` read
+    `review.target_ms_per_candidate` from config. Changing the config moved one
+    and not the other, and nothing said so.
     """
     times = [
         int(r["review_ms"]) for r in conn.execute(
@@ -324,5 +337,6 @@ def review_metrics(conn: sqlite3.Connection, stream_id: str) -> dict:
         "approval_rate": round(by_rating.get(2, 0) / total, 4) if total else None,
         "median_review_ms": int(statistics.median(times)) if times else None,
         "mean_review_ms": int(statistics.fmean(times)) if times else None,
+        "target_ms": int(target_ms),
         "sessions": sessions,
     }

@@ -8,36 +8,94 @@
 </head>
 <body>
 
+<div id="app">
+
+<!-- ONE bar for the whole app, with a block per view swapped in and out.
+     A global bar stacked *above* each view would have cost the review screen
+     ~44px of video height, on the one screen where vertical space is the
+     constraint. This gives consistent chrome for nothing. -->
+<header id="topbar" class="topbar">
+
+  <div class="bar" id="bar-library" hidden>
+    <div class="bar-left">
+      <span class="brand"><span class="brand-mark">▮</span>ClipForge</span>
+      <span class="crumb">streams</span>
+    </div>
+    <div class="bar-right">
+      <button id="add-recording" class="btn btn--primary">Add a recording <kbd>a</kbd></button>
+    </div>
+  </div>
+
+  <div class="bar" id="bar-add" hidden>
+    <div class="bar-left">
+      <button id="add-back" class="btn btn--quiet" title="Back to the library" aria-label="Back">&larr;</button>
+      <span class="brand">Add a recording</span>
+    </div>
+  </div>
+
+  <div class="bar" id="bar-run" hidden>
+    <div class="bar-left">
+      <button id="run-back" class="btn btn--quiet" title="Back to the library" aria-label="Back">&larr;</button>
+      <span id="run-name" class="brand mono truncate"></span>
+      <span id="run-summary" class="crumb truncate"></span>
+    </div>
+    <div class="bar-right run-actions">
+      <span id="run-elapsed" class="muted mono small"></span>
+      <span id="run-state" class="pill" hidden></span>
+      <button id="run-start" class="btn btn--primary">Run</button>
+      <button id="run-review" class="btn" hidden>Review <kbd>r</kbd></button>
+    </div>
+  </div>
+
+  <div class="bar" id="bar-review" hidden>
+    <div class="bar-left">
+      <button id="back" class="btn btn--quiet" title="Back to the library" aria-label="Back">&larr;</button>
+      <strong id="stream-name" class="truncate"></strong>
+      <span id="stream-meta" class="crumb truncate"></span>
+    </div>
+    <div class="bar-right">
+      <span id="filter-state" class="pill" hidden>markers only</span>
+      <span id="progress" class="muted small"></span>
+      <span id="clock" class="muted mono small"
+            title="Session length — §7.1 targets 8 min per 120"></span>
+    </div>
+  </div>
+
+</header>
+
+<div id="views">
+
+<!-- ERROR — shown when a view's enter() throws. Before this, three of the four
+     views awaited a fetch with no catch, so any failure after boot was an
+     unhandled promise rejection and a blank pane with nothing to click. -->
+<section id="view-error" class="pane" hidden>
+  <div class="state state--error" role="alert">
+    <h2>That did not work</h2>
+    <p id="error-detail" class="mono"></p>
+    <p class="muted small">
+      If the server is still starting, give it a moment and try again. If it has
+      stopped, the terminal that ran <code>clipforge review</code> will say why.
+    </p>
+  </div>
+  <div class="actions">
+    <button id="error-retry" class="btn btn--primary">Try again</button>
+    <button id="error-home" class="btn">Back to streams</button>
+  </div>
+</section>
+
 <!-- LIBRARY — every registered stream, not only the reviewable ones. The one
      that needs an action is the one that is not ready yet. -->
 <section id="view-library" class="pane" hidden>
-  <header class="pane-head">
-    <div>
-      <h1>ClipForge</h1>
-      <p class="muted">Pick a stream, or add a recording.</p>
-    </div>
-    <button id="add-recording" class="primary">Add a recording <kbd>a</kbd></button>
-  </header>
   <ul id="stream-list" class="stream-list"></ul>
-  <p id="library-empty" class="empty" hidden>
-    Nothing registered yet. <b>Add a recording</b> to point ClipForge at an OBS
-    capture — it stays where it is; only a path is stored.
-  </p>
+  <div id="library-state"></div>
 </section>
 
 <!-- ADD — the server-side file browser. A browser will not hand a page a
      filesystem path, so the listing comes from the server (review/browse.py). -->
 <section id="view-add" class="pane" hidden>
-  <header class="pane-head">
-    <div>
-      <button id="add-back" class="link" title="Back to the library">&larr;</button>
-      <h1>Add a recording</h1>
-    </div>
-  </header>
-
   <div class="browse">
     <div class="browse-bar">
-      <input id="add-path" class="path mono" spellcheck="false"
+      <input id="add-path" class="path" spellcheck="false"
              aria-label="Path — type or paste one and press Enter">
       <span id="add-roots" class="roots"></span>
     </div>
@@ -54,70 +112,71 @@
   </div>
 
   <div class="add-form">
-    <label>Title <input id="add-title" placeholder="optional"></label>
-    <label>Games <input id="add-games" placeholder="comma-separated, optional"></label>
+    <label>Title <input id="add-title" class="field" placeholder="optional"></label>
+    <label>Games <input id="add-games" class="field" placeholder="comma-separated, optional"></label>
   </div>
 
   <!-- Nothing is written until Register. §4.1 makes the anchor the entire sync
        solution; learning it was missing after the row exists is too late. -->
   <div id="add-choice" class="choice" hidden></div>
-  <p>
-    <button id="add-register" class="primary" disabled>Register <kbd>enter</kbd></button>
-    <span class="muted small">
+
+  <div class="actions">
+    <button id="add-register" class="btn btn--primary" disabled>Register <kbd>enter</kbd></button>
+    <span class="hint">
       <kbd>j</kbd><kbd>k</kbd> move · <kbd>enter</kbd> open or pick ·
       <kbd>backspace</kbd> up · <kbd>esc</kbd> back
     </span>
-  </p>
+  </div>
 </section>
 
 <!-- RUN — §5.1's decision table, then the log. -->
 <section id="view-run" class="pane" hidden>
-  <header class="pane-head">
-    <div>
-      <button id="run-back" class="link" title="Back to the library">&larr;</button>
-      <h1 id="run-name" class="mono"></h1>
-      <p id="run-summary" class="muted"></p>
-    </div>
-    <div class="run-actions">
-      <span id="run-state" class="pill" hidden></span>
-      <span id="run-elapsed" class="muted mono"></span>
-      <button id="run-start" class="primary">Run</button>
-      <button id="run-review" class="chip" hidden>Review this stream <kbd>r</kbd></button>
-    </div>
-  </header>
-
+  <div id="run-state-block"></div>
   <ol id="run-stages" class="stages"></ol>
-  <pre id="run-log" class="log mono" aria-live="polite"></pre>
+
+  <div class="section-head">
+    <span>Log</span>
+    <span class="soon-legend">dashed = not built yet</span>
+  </div>
+  <pre id="run-log" class="log" aria-live="polite"></pre>
+
+  <div class="actions">
+    <button class="btn soon" disabled
+            title="Phase 4 — clipforge render works from the command line; the button lands in commit 25b">
+      Render approved clips
+    </button>
+    <button class="btn soon" disabled
+            title="Phase 5 — digest generation is not built">
+      Generate digest
+    </button>
+  </div>
 </section>
 
-<!-- REVIEW — commit 13's screen, unchanged. -->
+<!-- REVIEW — §7.3's keyboard loop. -->
 <main id="view-review" hidden>
   <div id="review-main">
-    <header class="bar">
-      <div class="bar-left">
-        <button id="back" class="link" title="Back to the library">&larr;</button>
-        <strong id="stream-name"></strong>
-        <span id="stream-meta" class="muted"></span>
-      </div>
-      <div class="bar-right">
-        <span id="filter-state" class="pill" hidden>markers only</span>
-        <span id="progress" class="muted"></span>
-        <span id="clock" class="muted mono" title="Session length — §7.1 targets 8 min per 120"></span>
-      </div>
-    </header>
 
     <div id="warnings" class="warnings" hidden></div>
 
     <div class="layout">
-      <aside class="list" id="list-pane">
-        <div class="list-head">
+      <aside class="rail" id="list-pane">
+        <div class="rail-head">
           <span>Candidates</span>
-          <button id="filter-toggle" class="chip" title="Show only marker-anchored (m)">m</button>
+          <button id="filter-toggle" class="btn btn--ghost"
+                  title="Show only marker-anchored (m)">m</button>
         </div>
+        <!-- §7.4 asks for four sections: combined winners, entertainment,
+             gameplay, then marker-anchored as a safety net. Phase 1 has ONE
+             profile, so the list is genuinely flat and rendering four headers
+             would be a lie about what the numbers mean. -->
+        <p class="rail-note note">
+          One ranked list — §7.4's four sections need Phase 3's dual profiles.
+          <kbd>m</kbd> filters to marker-anchored.
+        </p>
         <ol id="candidates" class="candidates"></ol>
       </aside>
 
-      <section class="stage">
+      <section class="stage-pane">
         <div class="video-wrap">
           <video id="video" preload="auto" playsinline></video>
           <div id="playing" class="playing" hidden>playing window…</div>
@@ -127,7 +186,7 @@
           <div class="detail-head">
             <div>
               <div id="window" class="window mono"></div>
-              <div id="position" class="muted"></div>
+              <div id="position" class="muted small"></div>
             </div>
             <div class="score-block">
               <div id="score" class="score mono"></div>
@@ -142,6 +201,15 @@
                  role="img" aria-label="signal level across the window"></svg>
             <figcaption id="spark-caption" class="muted"></figcaption>
           </figure>
+
+          <!-- §7.2's precomputed assets. Drawn empty rather than omitted, so
+               the panel is the height it will always be and nothing shifts the
+               day they land. -->
+          <div class="assets" aria-hidden="true">
+            <div class="asset-slot soon" title="Phase 3 — §7.2's 5-frame thumb strip">thumb strip</div>
+            <div class="asset-slot soon" title="Phase 3 — §7.2's mic + party waveform">waveform</div>
+            <div class="asset-slot soon" title="Phase 3 — §7.2's 2 s looping preview">preview clip</div>
+          </div>
 
           <div id="signals" class="signals" hidden></div>
 
@@ -159,16 +227,49 @@
       <span><kbd>?</kbd> signals</span>
       <span><kbd>m</kbd> markers only</span>
       <span><kbd>q</kbd> finish</span>
+
+      <span class="sep"></span>
+
+      <!-- §7.3 defines these and no phase has built them. They are shown
+           greyed rather than omitted because their absence is a MEASUREMENT
+           GAP, not just a missing convenience: §17 tunes min_window_s/
+           max_window_s against "how often the operator nudges boundaries
+           during review", and with no nudge keys that number cannot be
+           collected at all (spec/GUESSES.md, gap 1). -->
+      <span class="soon" title="§7.3, not built — and until it is, §17 cannot tune min_window_s/max_window_s">
+        <kbd>[</kbd><kbd>]</kbd> nudge start</span>
+      <span class="soon" title="§7.3, not built — and until it is, §17 cannot tune min_window_s/max_window_s">
+        <kbd>{</kbd><kbd>}</kbd> nudge end</span>
+      <span class="soon" title="§7.3, not built — the ratings.tags column exists and nothing writes it">
+        <kbd>t</kbd> tag</span>
+      <span class="soon" title="§7.3, not built — the server accepts a note and no client sends one">
+        <kbd>n</kbd> note</span>
+      <span class="soon" title="§7.3, not built — export is `clipforge export` for now">
+        <kbd>e</kbd> export queue</span>
     </footer>
   </div>
 
   <!-- Shown after `q`. Reports against §7.1's target. -->
   <section id="summary" class="pane" hidden>
-    <h1>Session finished</h1>
+    <div class="pane-head">
+      <div>
+        <h1>Session finished</h1>
+        <p class="muted">§7.1's target is 120 candidates in under 8 minutes.</p>
+      </div>
+    </div>
     <div id="summary-body"></div>
-    <p><button id="summary-back" class="chip">Back to streams</button></p>
+    <div class="actions">
+      <button id="summary-back" class="btn btn--primary">Back to streams</button>
+      <button class="btn soon" disabled
+              title="Phase 4 — clipforge render works from the command line; the button lands in commit 25b">
+        Render approved clips
+      </button>
+    </div>
   </section>
 </main>
+
+</div><!-- /#views -->
+</div><!-- /#app -->
 
 <script type="module" src="/static/main.js"></script>
 </body>

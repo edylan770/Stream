@@ -59,9 +59,10 @@ Phase 2.
 | 21 | `e37273c` | `phrase_detect`, speech_rate, swear_density, word snapping |
 | 22 | `a109847` | `embeddings` (§5.10, Ollama) — Phase 2 complete |
 | 23 | `968fdd0` | ASS captions (§8.3): word timeline, per-track colouring, `render:` config |
-| 24 | *this* | crop templates + `clipforge render` — the first postable file |
+| 24 | `0a95ba6` | crop templates + `clipforge render` — the first postable file |
+| 25a | *this* | UI: design system, one shell bar, space for what is not built |
 
-1056 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1059 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
@@ -232,6 +233,47 @@ looks correct and is not.
 - **`clipforge review` no longer requires a reviewable stream.** It used to refuse to
   start unless something had candidates and a proxy — the exact state the shell exists
   to get you out of.
+
+**The UI's second pass (commit 25a)**
+
+- **One `#topbar` with a block per view, not a global bar above the views.** A
+  bar stacked on top would have cost the review screen ~44px of video height,
+  on the one screen where vertical space is the constraint (C4). Swapping the
+  bar's contents gives the four screens the same chrome for nothing — and keeps
+  every element id where the view modules already expect it.
+- **`.soon` is a treatment, not a TODO comment.** Everything §7 asks for that
+  no phase has built sits in its real position, greyed, with `title` naming the
+  phase: §7.3's `[`/`]`/`{`/`}`/`t`/`n`/`e` keys, §7.2's three preview assets,
+  Phase 4's render button, Phase 5's digest. The layout therefore does not jump
+  the day one lands. The nudge keys matter most: their absence is a
+  **measurement gap**, not a missing convenience — §17 tunes
+  `min_window_s`/`max_window_s` against "how often the operator nudges
+  boundaries during review", and with no keys that number cannot be collected
+  at all (GUESSES gap 1). Greyed in the footer, it is visible instead of buried.
+- **§7.4's four sections are a sentence, not four headers.** Phase 1 has one
+  profile, so the list genuinely is flat; rendering "Combined / Entertainment /
+  Gameplay / Marker-anchored" over one ranking would be a lie about what the
+  numbers mean. The rail says what the sections need instead.
+- **`review_metrics` now returns `target_ms`.** The summary screen carried its
+  own hardcoded `4000` while `clipforge metrics` read
+  `review.target_ms_per_candidate` from config — change the config and the two
+  graded against different numbers, silently. The browser no longer knows the
+  target; it is told.
+- **`.stage` meant two different things** — a run-view row (a grid) and the
+  review-view video column (a flex column), kept apart only by selector
+  specificity. The review one is `.stage-pane` and the run one `.stage-row`.
+- **A failed `enter()` shows an error view.** Three of the four views awaited a
+  fetch with no `catch`, so a server that had stopped left a blank pane and an
+  unhandled rejection — the operator's only signal. `router.show` catches, and
+  the error view offers Try again / Back to streams.
+- **A test reads the element ids out of the JS and asserts the page has them.**
+  The views address the DOM as `$("some-id")`; a missing element is `null` and
+  fails at the moment a key is pressed, never in a way the JSON route tests
+  would see. Ids are extracted rather than listed, so ones added later are
+  covered without anyone remembering.
+- **`static/` stays flat.** `pyproject.toml` ships `review/static/*` — a
+  **non-recursive** glob, so a `static/css/` would not be packaged in a
+  non-editable install.
 
 **Capture (Phase 0, §4)**
 

@@ -89,6 +89,22 @@ function applyFilter() {
 function renderList() {
   const list = $("candidates");
   list.innerHTML = "";
+
+  if (!state.view.length) {
+    // `clipforge review` no longer refuses to open a stream with nothing in
+    // it (commit 14c), so this is reachable — and a rail with nothing in it
+    // and no explanation reads as a broken screen.
+    const note = document.createElement("li");
+    note.className = "note";
+    note.style.display = "block";
+    note.textContent = state.markersOnly
+      ? "No marker-anchored candidates. Press m to see all of them."
+      : "No candidates. Run the pipeline for this stream first.";
+    list.appendChild(note);
+    updateProgress();
+    return;
+  }
+
   state.view.forEach((c, i) => {
     const li = document.createElement("li");
     li.className = [
@@ -316,24 +332,35 @@ async function finish() {
 
   const m = await get(`/api/streams/${encodeURIComponent(state.streamId)}/metrics`);
 
-  // §7.1: 120 candidates in under 8 minutes, i.e. ~4 s each.
-  const target = 4000;
+  // §7.1: 120 candidates in under 8 minutes. The target comes from the server
+  // now — it used to be the literal 4000 here, so changing
+  // `review.target_ms_per_candidate` moved what `clipforge metrics` graded
+  // against and left this screen quietly measuring something else.
+  const target = m.target_ms;
+  const seconds_target = (target / 1000).toFixed(1);
   const median = m.median_review_ms;
-  const verdict = median === null ? ""
+  const verdict = median === null
+    ? `<span class="muted">nothing rated this session, so there is no pace to report.</span>`
     : median <= target
-      ? `<span class="target-hit">within the 4.0 s target (§7.1)</span>`
-      : `<span class="target-miss">over the 4.0 s target (§7.1) — fix the UI before adding features</span>`;
+      ? `<span class="target-hit">within the ${seconds_target} s target (§7.1)</span>`
+      : `<span class="target-miss">over the ${seconds_target} s target (§7.1) —
+         §7.1 says fix the UI before adding a feature anywhere</span>`;
+
+  const stat = (value, label) =>
+    `<div class="stat"><div class="v">${value}</div><span class="k">${label}</span></div>`;
 
   $("summary-body").innerHTML = `
-    <table>
-      <tr><td>reviewed this session</td><td>${state.reviewed}</td></tr>
-      <tr><td>session length</td><td>${fmt(seconds)}</td></tr>
-      <tr><td>median per candidate</td><td>${median === null ? "—" : (median / 1000).toFixed(2) + " s"}</td></tr>
-      <tr><td>rated overall</td><td>${m.rated} / ${m.candidates}</td></tr>
-      <tr><td>clip it</td><td>${m.by_rating["2"] || 0}</td></tr>
-      <tr><td>maybe</td><td>${m.by_rating["1"] || 0}</td></tr>
-      <tr><td>skip</td><td>${m.by_rating["0"] || 0}</td></tr>
-    </table>
+    <div class="summary-grid">
+      ${stat(state.reviewed, "reviewed now")}
+      ${stat(fmt(seconds), "session length")}
+      ${stat(median === null ? "—" : (median / 1000).toFixed(2) + " s", "median each")}
+      ${stat(`${m.rated} / ${m.candidates}`, "rated overall")}
+    </div>
+    <div class="summary-grid">
+      ${stat(`<span class="target-hit">${m.by_rating["2"] || 0}</span>`, "clip it")}
+      ${stat(`<span class="target-miss">${m.by_rating["1"] || 0}</span>`, "maybe")}
+      ${stat(`<span class="muted">${m.by_rating["0"] || 0}</span>`, "skip")}
+    </div>
     <p>${verdict}</p>`;
 
   stopPlayback();

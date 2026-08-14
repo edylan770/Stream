@@ -60,7 +60,7 @@ function render() {
   roots.innerHTML = "";
   for (const drive of listing.roots) {
     const button = document.createElement("button");
-    button.className = "chip";
+    button.className = "btn btn--ghost";
     button.textContent = drive;
     button.onclick = () => browse(drive);
     roots.appendChild(button);

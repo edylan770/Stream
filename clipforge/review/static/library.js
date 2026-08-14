@@ -7,6 +7,7 @@
 
 import { $, escape, fmt, get } from "./api.js";
 import * as router from "./router.js";
+import * as shell from "./shell.js";
 
 export const root = "view-library";
 
@@ -15,6 +16,7 @@ let cursor = 0;
 
 export async function enter() {
   history.replaceState(null, "", location.pathname);
+  shell.loading("library-state", "Reading the library");
   const data = await get("/api/streams");
   streams = data.streams;
   cursor = Math.min(cursor, Math.max(streams.length - 1, 0));
@@ -35,7 +37,17 @@ function status(stream) {
 function render() {
   const list = $("stream-list");
   list.innerHTML = "";
-  $("library-empty").hidden = streams.length > 0;
+
+  if (!streams.length) {
+    shell.empty(
+      "library-state",
+      "No recordings yet",
+      "<b>Add a recording</b> to point ClipForge at an OBS capture. " +
+      "The file stays where it is — only a path is stored.",
+    );
+    return;
+  }
+  shell.clear("library-state");
 
   streams.forEach((stream, index) => {
     const item = document.createElement("li");
@@ -44,13 +56,14 @@ function render() {
     button.onclick = () => open(index);
     button.innerHTML = `
       <span class="grow">
-        <span class="name">${escape(stream.title || stream.id)}</span><br>
-        <span class="muted">${escape(stream.date)} ·
+        <span class="name truncate">${escape(stream.title || stream.id)}</span>
+        <span class="sub">${escape(stream.date)} ·
         ${stream.duration_s ? fmt(stream.duration_s) : "not probed"} ·
         ${escape(stream.resolution || "")}</span>
       </span>
-      <span class="count">${ready(stream) ? stream.candidates : ""}</span>
-      <span class="muted state">${escape(status(stream))}</span>`;
+      <span class="count">${ready(stream) ? stream.candidates : ""}${
+        ready(stream) ? '<span class="count-label">candidates</span>' : ""}</span>
+      <span class="state-text">${escape(status(stream))}</span>`;
     if (stream.warnings?.length) {
       const warn = document.createElement("span");
       warn.className = "pill warn";
