@@ -17,10 +17,14 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ## Status
 
-**Phases 0, 1 and 2 of §15 are complete. Phase 4 is in progress.** Phase 3 is
-skipped for now by choice — §8's renderer is what turns an approved moment into
-something postable, and Phase 3 adds signals that only change *which* moments
-surface. Phases 3, 5, 6 and 7 are not started.
+**Phases 0, 1, 2 and 4 of §15 are complete.** Phase 3 was skipped by choice —
+§8's renderer is what turns an approved moment into something postable, and
+Phase 3 adds signals that only change *which* moments surface. Phases 3, 5, 6
+and 7 are not started.
+
+**A recording can now go all the way**: register → run → review → render →
+hook, ending in a 1080×1920 MP4 with burned-in captions, normalised audio and
+a hook line chosen by the operator.
 
 Phase 2 ships **off by default** (`extract.whisperx.enabled: false`). §15 says to ship
 Phase 1 and stream ten times before adding anything, and a transcript costs a multi-GB
@@ -63,14 +67,14 @@ Phase 2.
 | 25a | `806d7af` | UI: design system, one shell bar, space for what is not built |
 | 25b | `e843722` | §7.3's transcript beside the window; Render from the browser |
 | 26 | `7dfcc87` | loudness normalisation (two-pass, measured) and export presets |
-| 27 | *this* | §8.6 profanity muting, §8.2 filler removal — both toggles, both off |
+| 27 | `2427dd5` | §8.6 profanity muting, §8.2 filler removal — both toggles, both off |
+| 28 | *this* | §8.5 hook text via a paste round trip — **Phase 4 complete** |
 
-1149 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1190 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
-(Phase 7). Phase 4 is partly built — captions, crop and `render` are in; loudness
-normalization, export presets, filler removal, profanity muting and hook text are not.
+(Phase 7).
 
 ---
 
@@ -425,6 +429,51 @@ looks correct and is not.
   is a visible jump. The word list is general English rather than this
   operator's speech, marked **arbitrary** in GUESSES with the same falsifier as
   the profanity list — ten streams of transcript settles it.
+
+**Hook text (§8.5, §12)**
+
+- **No API key, so the round trip IS the product.** §2.2 puts reasoning through
+  a frontier model and §12.4 prices it at cents per stream, but the operator
+  does not want a paid key yet and nothing here can drive a chat website on
+  their behalf. `clipforge hook` writes a prompt, the operator pastes it into
+  claude.ai, and the reply is validated on the way back. That turns out to
+  satisfy §12 **more** strictly than an API call would, because every check
+  runs against a reply nobody controlled.
+- **Real database ids in the prompt, not 1–5.** §12.2 wants a hallucinated id
+  to be *detectable*, and if five clips are numbered 1 to 5 then any number a
+  model invents inside that range looks valid. Export ids give a fabrication
+  somewhere to fail.
+- **The unit is a rendered clip.** §8.5 stores the result in
+  `exports.hook_text` and that row exists only after a render. It also matches
+  §8.1's loop — render the batch, watch it, pick hooks for what you will post.
+- **Only the newest export per moment is offered.** `exports` is append-only,
+  so re-rendering three times leaves three rows for every moment; asking a
+  model about the same clip three times spends its attention and the
+  operator's on nothing. Found by running it: a scratch database offered
+  **fourteen** clips where three existed.
+- **`--apply` stores nothing.** It validates, writes the metric, and prints the
+  options with a ready-to-paste `--pick` line. §8.5 calls the hook the
+  single highest-leverage decision in short-form and says it stays manual;
+  storing the model's first option would be the model deciding.
+- **The options are never persisted either**, which is why `--pick <id> <n>`
+  needs the reply file it came from. Storing four hooks nobody chose is how
+  `hook_text` stops meaning "the hook". `--pick <id> "text"` needs nothing.
+- **The reply parser is tolerant** — the last balanced JSON object in the text.
+  What comes out of a chat window has prose wrapped around it, and asking the
+  operator to trim that by hand is the friction that makes a tool go unused.
+  Same tactic `loudness.parse` needed against ffmpeg's diagnostics.
+- **`llm_invalid_id_rate` is §14's own name for the metric**, checked rather
+  than invented — a different name here means whatever reads it later finds
+  nothing. The bad-quote drops are reported but deliberately **not** in that
+  rate: §12.2 defines it over ids.
+- **Drops are silent to the model, not to the operator.** §12.2 says
+  non-existent ids are dropped silently; a person who cannot see that two of
+  three entries were discarded has no way to tell a bad reply from clips that
+  are genuinely unhookable.
+- **`HookSource` has `available(cfg)`** so an API-backed source drops in beside
+  `ManualHookSource` without changing anything else — the `StageSpec.available`
+  and Ollama pattern. `ManualHookSource` is always available: it needs a person
+  and a browser, not a credential.
 
 **Capture (Phase 0, §4)**
 

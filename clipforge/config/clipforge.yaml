@@ -704,6 +704,21 @@ render:
     # approved moment is the failure worth stopping for.
     max_share: 0.25
 
+  # -------------------------------------------------------------------------
+  # §8.5 -- hook text. "The hook [...] is the single highest-leverage decision
+  # in short-form. It stays manual, but generating candidate options is a
+  # genuine time save."
+  #
+  # `manual` is the paste round trip: `clipforge hook` writes a prompt, you
+  # paste it into a frontier model, and the reply is validated against §12's
+  # rules on the way back in. An API-backed source would slot in beside it --
+  # §12.4 prices one at roughly $0.10-0.30 per stream -- but needs a key.
+  # -------------------------------------------------------------------------
+  hooks:
+    source: manual
+    # §8.5 says five variants.
+    options: 5
+
   verify:
     # Checked by ffprobe after every encode, the same way the proxy checks
     # itself. A clip that came out the wrong size or short is worth catching

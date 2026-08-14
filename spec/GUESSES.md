@@ -189,6 +189,18 @@ They are here because turning one on makes every number below live.
 all. Cutting a word cuts the video, and on gameplay that is a visible jump.
 The mechanism is deterministic and tested; the taste question needs footage.
 
+## Render — hook text (Phase 4, §8.5)
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `render.hooks.source` | `manual` | **grounded** | The only one built. An API-backed source needs a key the operator does not want yet; §12.4 prices one at roughly $0.10–0.30 per stream | — |
+| `render.hooks.options` | `5` | **grounded** | §8.5 says "propose 5 hook variants" | Five being more than you ever read, or fewer than you need to find a good one |
+
+**Worth watching once real replies exist:** `llm_invalid_id_rate` in
+`tool_metrics`. §14 calls it hallucination monitoring, and it is now being
+written on every `--apply`. A rate that climbs means the prompt has stopped
+being clear, not that the model got worse.
+
 **Not a guess, but recorded because it looks like one:** the ASS file is
 referenced from the filter graph by bare filename with ffmpeg run from its
 directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg's

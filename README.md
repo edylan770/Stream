@@ -183,6 +183,13 @@ against, a render is the postable file. §10.5 says never to extract clip files
 for YouTube assembly, and to extract them only for short-form — which is what
 `render` is for.
 
+**Hook text (§8.5).** `clipforge hook <stream_id>` writes one prompt covering
+every rendered clip; paste it into a frontier model, save the reply, and
+`--apply` it. Nothing is chosen for you — it prints the options and a `--pick`
+line. Every reply is validated: ids that do not exist are dropped and counted,
+and each entry must quote its own clip verbatim, so a model answering about a
+clip it never read is caught rather than believed.
+
 Two optional edits, **both off by default**:
 `--set render.mute.enabled=true` silences profanity from the word list in
 `phrases.yaml` (§8.6), and `--set render.filler.enabled=true` cuts filler words

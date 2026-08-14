@@ -24,6 +24,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "db": ("clipforge.db.commands", "init, inspect, or relink the database"),
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),
     "export": ("clipforge.render.cmd_export", "approved moments as an FCPXML timeline (§10.5)"),
+    "hook": ("clipforge.render.cmd_hook", "hook text options for rendered clips (§8.5)"),
     "metrics": ("clipforge.review.cmd_metrics", "is review fast enough? (§7.1's target)"),
     "register": ("clipforge.ingest.register", "register a recording as a stream"),
     "render": ("clipforge.render.cmd_render", "approved moments as postable clips (§8)"),
