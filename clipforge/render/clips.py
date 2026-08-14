@@ -43,6 +43,7 @@ from clipforge.pipeline.atomic import atomic_output
 from clipforge.render import (
     ass,
     crop,
+    edits,
     loudness,
     presets,
     selection,
@@ -75,6 +76,11 @@ class Options:
     dry_run: bool = False
     allow_vfr: bool = False
     preset: str | None = None
+    #: §8.6: "produce a dual export -- clean version for platforms that require
+    #: it, unmuted version elsewhere." Only meaningful with muting on.
+    dual: bool = False
+    #: Set by the dual pass to force muting off for the second file.
+    mute_override: bool | None = None
 
 
 @dataclass
@@ -199,17 +205,20 @@ def caption_script(cfg, conn, stream_id: str, stream, plan: EditPlan,
 # --------------------------------------------------------------------------
 
 
-def audio_filters(cfg, plan: EditPlan) -> str:
+def audio_filters(cfg, plan: EditPlan,
+                  mute: list[tuple[float, float]] | None = None) -> str:
     """Everything that happens to the audio BEFORE loudness normalisation.
 
-    Empty today. §8.6's profanity muting and §8.2's filler removal go here, and
-    this exists now so that they slot in rather than being retrofitted: pass 1
-    of the loudness measurement applies this same chain, so the measurement
-    describes the audio that is actually encoded. Measuring un-muted audio and
-    then normalising muted audio would be wrong by however much the muting
-    removed, and nothing downstream could tell.
+    Cuts first, then muting: the mute ranges are already in output time, which
+    is the clock that exists AFTER the cuts, so muting first would place them
+    against a timeline that no longer exists by the time audio is written.
+
+    Commit 26 built this seam and applies the same chain in loudness pass 1, so
+    the measurement describes the audio that is actually encoded. Measuring
+    un-muted audio and normalising muted audio would be wrong by however much
+    the muting removed, and nothing downstream could tell.
     """
-    return ""
+    return edits.audio_chain(plan, mute or [])
 
 
 def build_command(
@@ -343,9 +352,11 @@ def assert_sound(check: ClipCheck, *, template: Template, plan: EditPlan,
 # --------------------------------------------------------------------------
 
 
-def _filename(stream_id: str, index: int, moment: Moment, suffix: str) -> str:
+def _filename(stream_id: str, index: int, moment: Moment, suffix: str,
+              tag: str = "") -> str:
     total = int(moment.t_start)
-    return f"{stream_id}_{index + 1:02d}_{total // 60}m{total % 60:02d}s{suffix}"
+    return (f"{stream_id}_{index + 1:02d}_{total // 60}m{total % 60:02d}s"
+            f"{tag}{suffix}")
 
 
 def render_stream(
@@ -421,7 +432,17 @@ def render_stream(
 
     for index, moment in enumerate(moments):
         plan = clip_window(cfg, moment, duration_s)
-        destination = out_dir / _filename(stream_id, index, moment, suffix)
+
+        # §8.2's cuts FIRST, because everything after them lives on the clock
+        # they create: the caption times, the mute ranges, and the loudness
+        # measurement all have to describe the clip that actually gets written.
+        cut_plan, mute = _plan_edits(cfg, conn, stream_id, stream, plan,
+                                     options, log)
+        if cut_plan.cuts:
+            plan = timeline.build(plan.clip_start, plan.clip_end, cut_plan.cuts)
+
+        destination = out_dir / _filename(
+            stream_id, index, moment, suffix, _dual_tag(cfg, options))
         clip = Clip(index=index, moment=moment, plan=plan, destination=destination)
 
         script, load = caption_script(
@@ -443,6 +464,7 @@ def render_stream(
             pad_color=str(cfg.get("render.crop.pad_color", "#000000")),
             captions=CAPTIONS_NAME if script is not None else None,
             label=VIDEO_LABEL,
+            trim=edits.trim_chain(plan, audio=False, entry="[0:v]", label="vcut"),
         )
         result.graph = graph
 
@@ -460,7 +482,7 @@ def render_stream(
 
         audio_chain = _audio_chain(
             ffmpeg_bin, source, cfg=cfg, plan=plan, audio_index=audio_index,
-            log=log) if not options.stills else None
+            mute=mute, log=log) if not options.stills else None
 
         _encode(ffmpeg_bin, source, destination, cfg=cfg, plan=plan, graph=graph,
                 audio_index=audio_index, script=script, still=options.stills,
@@ -486,7 +508,42 @@ def render_stream(
     return result
 
 
-def _audio_chain(ffmpeg_bin, source: Path, *, cfg, plan, audio_index, log):
+def _dual_tag(cfg, options: Options) -> str:
+    """§8.6's "dual export": the pair has to be tellable apart on disk.
+
+    Only when --dual is in play. A single render keeps the name it always had,
+    so turning muting on does not rename every file the operator already has.
+    """
+    if not options.dual:
+        return ""
+    muted = cfg.get("render.mute.enabled", False)         if options.mute_override is None else options.mute_override
+    return "_clean" if muted else "_unmuted"
+
+
+def _plan_edits(cfg, conn, stream_id, stream, plan, options, log):
+    """§8.2's cuts and §8.6's mute ranges, both off unless asked for."""
+    track_map = stream["audio_track_map"]
+    spans = None
+    if bool(cfg.get("render.filler.enabled", False)) or             bool(cfg.get("render.mute.enabled", False)):
+        spans = edits.spans_in(conn, stream_id, plan, track_map)
+
+    cut_plan = edits.filler_cuts(cfg, conn, stream_id, plan, track_map, spans)
+
+    # The dual export's second file is the unmuted one (§8.6), so muting is
+    # forced off for it rather than the config being rewritten mid-run.
+    muted = cfg.get("render.mute.enabled", False)         if options.mute_override is None else options.mute_override
+    mute: list[tuple[float, float]] = []
+    if muted:
+        after_cuts = timeline.build(plan.clip_start, plan.clip_end, cut_plan.cuts)             if cut_plan.cuts else plan
+        mute = edits.mute_ranges(cfg, conn, stream_id, after_cuts, track_map, spans)
+
+    for line in edits.describe(cut_plan, mute):
+        log(f"  {line}")
+    return cut_plan, mute
+
+
+def _audio_chain(ffmpeg_bin, source: Path, *, cfg, plan, audio_index, log,
+                 mute=None):
     """The audio filter chain, including §8.3's loudness normalisation.
 
     Pass 1 runs here, over the same pre-loudnorm chain pass 2 will use, so the
@@ -495,7 +552,7 @@ def _audio_chain(ffmpeg_bin, source: Path, *, cfg, plan, audio_index, log):
     if audio_index is None:
         return None
 
-    before = audio_filters(cfg, plan)
+    before = audio_filters(cfg, plan, mute)
     if not bool(cfg.get("render.loudness.enabled", True)):
         return before or None
 

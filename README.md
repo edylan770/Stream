@@ -8,9 +8,16 @@ Built to [`spec/CLIPFORGE-SPEC.md`](spec/CLIPFORGE-SPEC.md). See
 deliberately departs from the spec — several of those fix silent-failure bugs
 and should not be reverted without reading why.
 
-**Status: Phase 1 and the capture layer are built and working. Phases 2–7 are
-not.** The [roadmap](#roadmap--what-later-phases-will-cost-you) says what each
-later phase will need you to install; nothing there works yet.
+**Status: the capture layer, Phase 1, Phase 2 and most of Phase 4 are built and
+working.** That means you can take a recording all the way to a finished
+vertical clip with burned-in captions. Phase 3 (extra signals), Phase 5
+(digests), Phase 6 (trends) and Phase 7 (vision) are not started — the
+[roadmap](#roadmap--what-later-phases-will-cost-you) says what each will need
+you to install.
+
+Phase 2's transcription ships **off** (`extract.whisperx.enabled`), because it
+costs a multi-GB download to feed signals nothing weights yet. Captions and the
+review screen's transcript panel need it on.
 
 ---
 
@@ -175,6 +182,14 @@ The two are different jobs: an FCPXML is a timeline for an editor to conform
 against, a render is the postable file. §10.5 says never to extract clip files
 for YouTube assembly, and to extract them only for short-form — which is what
 `render` is for.
+
+Two optional edits, **both off by default**:
+`--set render.mute.enabled=true` silences profanity from the word list in
+`phrases.yaml` (§8.6), and `--set render.filler.enabled=true` cuts filler words
+out of the mic track (§8.2). Filler removal cuts the **video** too, so on
+gameplay it is a visible jump — try it with `--dry-run` first, which prints
+what it would cut without encoding. `--dual` writes a muted and an unmuted copy
+of each clip.
 
 **Before your first render, check the crop.** Every coordinate in
 `clipforge/config/crop_templates.yaml` is a placeholder copied from the spec's

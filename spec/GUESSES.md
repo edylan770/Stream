@@ -168,6 +168,27 @@ them the hard way:
   past the ceiling. The flag is still set for quieter sources, but nothing here
   may claim the normalisation is a transparent linear gain.
 
+## Render — muting and filler removal (Phase 4, §8.6/§8.2)
+
+**Both features are off by default**, so none of these affects a normal render.
+They are here because turning one on makes every number below live.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `render.mute.enabled` | `false` | **grounded** | §16 lists "profanity muting by default" among the explicitly rejected features | — |
+| `render.mute.pad_s` | `0.08` | **plausible** | MEASURED that the boundary leaks: muting exactly 2.0–4.0 s left the edges audible, and a mute that starts late leaves the consonant. C2 — expand rather than contract. The *need* for padding is grounded; 80 ms is not | A swear word still audible at its start or end (too small), or a syllable of the surrounding words lost (too large) |
+| `render.mute.words` | `null` → `phrases.yaml` | **grounded** | The profanity list already exists for §5.6's `swear_density`. One list, one place to edit | — |
+| `render.filler.enabled` | `false` | **grounded** | Your instruction, and §15's "ship, then stream ten times" | — |
+| `render.filler.words` | 9 general-English fillers | **arbitrary** | Exactly the status of `phrases.yaml`'s profanity list: assembled from general English, not from this operator's speech. **Ten streams of transcript would settle it in minutes** | The list cutting words you meant to say, or missing the ones you actually fill with |
+| `render.filler.roles` | `[mic]` | **grounded** | Cutting the other person's speech because the operator said "um" is not a thing anyone wants | — |
+| `render.filler.min_duration_s` | `0.12` | **arbitrary** | Below this a cut is a glitch rather than an edit. No evidence for the exact number | Audible clicks at cut points (too small), or real fillers left in (too large) |
+| `render.filler.merge_gap_s` | `0.35` | **arbitrary** | Two removals closer than this leave an island of audio that reads as a stutter. Picked as "shorter than a beat" | Stuttery cuts surviving, or unrelated speech between two fillers being swallowed |
+| `render.filler.max_share` | `0.25` | **arbitrary** | A plan removing more than a quarter of a clip means the word list is matching something it should not, rather than the clip being full of filler. Refusing the whole plan is the honest response to that | The refusal firing on a clip that genuinely is a quarter filler |
+
+**The thing no parameter can settle:** whether cutting filler improves a clip at
+all. Cutting a word cuts the video, and on gameplay that is a visible jump.
+The mechanism is deterministic and tested; the taste question needs footage.
+
 **Not a guess, but recorded because it looks like one:** the ASS file is
 referenced from the filter graph by bare filename with ffmpeg run from its
 directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg's

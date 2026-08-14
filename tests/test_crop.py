@@ -275,7 +275,9 @@ def test_two_regions_split_the_input_once():
 
     graph = crop.filter_complex(spec)
 
-    assert "[0:v]split=2[s0][s1]" in graph
+    # `r_` because commit 27's filler cuts add their own `[k*]` pads ahead of
+    # this; two graphs sharing a label name is a silent mis-wire.
+    assert "[0:v]split=2[r_s0][r_s1]" in graph
     assert graph.count("crop=") >= 2
 
 

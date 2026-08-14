@@ -431,6 +431,7 @@ def filter_complex(
     pad_color: str = "#000000",
     captions: str | None = None,
     label: str = "vout",
+    trim: str = "",
 ) -> str:
     """The whole video graph: regions, composition, then captions.
 
@@ -445,13 +446,23 @@ def filter_complex(
     output = template.output_rect
     steps: list[str] = []
 
+    # §8.2's filler removal, when there is any: the cuts happen BEFORE the crop
+    # so everything after works on one continuous clip, and so `ass` still
+    # comes last (finding 7). `edits.trim_chain` builds this already labelled
+    # `[0:v]` -> `[vcut]`, and returns "" when nothing was cut -- which keeps
+    # the no-cut graph exactly as it was.
+    entry = "[0:v]"
+    if trim:
+        steps.append(trim)
+        entry = "[vcut]"
+
     count = len(template.regions)
     if count > 1:
-        outputs = "".join(f"[s{index}]" for index in range(count))
-        steps.append(f"[0:v]split={count}{outputs}")
+        outputs = "".join(f"[r_s{index}]" for index in range(count))
+        steps.append(f"{entry}split={count}{outputs}")
 
     for index, region in enumerate(template.regions):
-        source = f"[s{index}]" if count > 1 else "[0:v]"
+        source = f"[r_s{index}]" if count > 1 else entry
         chain = region_chain(region, region.fit_or(default_fit), pad)
         steps.append(f"{source}{chain}[r{index}]")
 

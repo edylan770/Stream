@@ -21,6 +21,7 @@ way to fix that:
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from clipforge import config, db, paths
@@ -51,6 +52,11 @@ def add_arguments(parser) -> None:
     parser.add_argument(
         "--stills", action="store_true",
         help="one PNG per moment instead of a clip, to check the crop fast",
+    )
+    parser.add_argument(
+        "--dual", action="store_true",
+        help="§8.6's dual export: a muted and an unmuted copy of each clip. "
+             "Needs render.mute.enabled",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -88,10 +94,22 @@ def _render(cfg, conn: sqlite3.Connection, args) -> int:
         dry_run=args.dry_run,
         allow_vfr=args.allow_vfr,
         preset=args.preset,
+        dual=args.dual,
     )
 
     print(f"rendering {args.stream_id}")
     result = clips.render_stream(cfg, conn, args.stream_id, options, log=print)
+
+    if args.dual and not args.dry_run:
+        if not cfg.get("render.mute.enabled", False):
+            print("  --dual with muting off would write the same file twice; "
+                  "set render.mute.enabled=true")
+        else:
+            print("\nrendering the unmuted copy (§8.6)")
+            unmuted = clips.render_stream(
+                cfg, conn, args.stream_id,
+                replace(options, mute_override=False), log=print)
+            result.clips.extend(unmuted.clips)
 
     if args.dry_run:
         print("\nfilter graph:")

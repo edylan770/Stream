@@ -62,9 +62,10 @@ Phase 2.
 | 24 | `0a95ba6` | crop templates + `clipforge render` — the first postable file |
 | 25a | `806d7af` | UI: design system, one shell bar, space for what is not built |
 | 25b | `e843722` | §7.3's transcript beside the window; Render from the browser |
-| 26 | *this* | loudness normalisation (two-pass, measured) and export presets |
+| 26 | `7dfcc87` | loudness normalisation (two-pass, measured) and export presets |
+| 27 | *this* | §8.6 profanity muting, §8.2 filler removal — both toggles, both off |
 
-1120 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1149 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
@@ -371,6 +372,59 @@ looks correct and is not.
   from here, are marked **arbitrary** in GUESSES, and **warn without ever
   truncating** — silently cutting an approved clip loses the moment it was
   approved for (C2).
+
+**Muting and filler removal (§8.6, §8.2)**
+
+- **Both off by default, and a default render is byte-identical to commit 26's.**
+  §16 lists "profanity muting by default" among the explicitly rejected
+  features. `trim_chain` returns `""` when nothing was cut rather than a trim
+  spanning the whole window — an empty string makes "unchanged" true, where a
+  full-span trim would only make it *probably* true.
+- **Three mechanisms were measured before they were built**, because any of
+  them failing would have forced a restructure:
+  - `-af` accepts a branching graph (`asplit`/`atrim`/`concat` is a simple
+    filtergraph), so audio cuts do **not** force audio into `-filter_complex`.
+    That matters because commit 26's loudness pass 1 also uses `-af`: had it
+    gone the other way, pass 1 would have measured un-cut audio while pass 2
+    normalised cut audio, wrong by however much was removed and undetectable.
+  - Video and audio stay in sync through cuts — MEASURED 9.000 s / 270 frames
+    at 30 fps against 9.000 s of audio, on a 10 s window with a 1 s cut.
+  - One `volume` filter covers several ranges, `+` being logical OR in ffmpeg's
+    expression language.
+- **Mute ranges are computed in source time and mapped through
+  `EditPlan.map_span`**, so a mute after a cut lands where the word actually
+  ended up rather than where it used to be. A word *inside* a cut is not muted
+  at all — it is gone, and muting its old position would silence whatever moved
+  into the gap.
+- **Order is cuts → mute → loudnorm**, and it is not interchangeable: the mute
+  ranges are already on the post-cut clock.
+- **Cuts are planned before captions.** `render_stream` builds the cut plan,
+  rebuilds the `EditPlan` with it, and only then generates the ASS — which
+  drops words inside a cut automatically. The seam was built in commit 23 for
+  exactly this.
+- **The filler planner is mostly refusals**, and each one is a thing §8.2's
+  one-line description does not mention: whole aligned words only (an
+  interpolated timestamp would cut audio at a time nobody measured); only from
+  `render.filler.roles`; never across another track's speech; nothing shorter
+  than `min_duration_s`; cuts closer than `merge_gap_s` merged so no island of
+  audio is left stuttering between them; and **the whole plan refused** if it
+  would remove more than `max_share` of the clip, because that is a word-list
+  problem rather than a clip full of filler.
+- **Filter-graph pads are namespaced.** The trim chain uses `[k*]`/`[kt*]` and
+  the crop graph's split became `[r_s*]`; two graphs sharing a pad name is a
+  silent mis-wire, and they are now concatenated into one `-filter_complex`.
+- **VERIFIED END TO END, not just in a filter string.** On the fixture's
+  "Namor's turrets are melting me, holy shit." at 26.5–28.83 s: the mute
+  interior measured **−19.0 → −43.5 dB** while 2.0–3.0 s and 4.0–4.5 s were
+  untouched (−15.13 → −15.11, −27.29 → −27.50).
+- **`--dual`** renders the muted and unmuted pair (§8.6), tagging the filenames
+  `_clean` and `_unmuted` — but only when `--dual` is used, so turning muting on
+  does not rename files the operator already has.
+- **What the fixture cannot answer, and this ships anyway**: whether cutting
+  filler improves a clip. Cutting a word cuts the video, and on gameplay that
+  is a visible jump. The word list is general English rather than this
+  operator's speech, marked **arbitrary** in GUESSES with the same falsifier as
+  the profanity list — ten streams of transcript settles it.
 
 **Capture (Phase 0, §4)**
 

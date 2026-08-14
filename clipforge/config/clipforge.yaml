@@ -649,6 +649,61 @@ render:
       note: identical to shorts today except the cap
       max_duration_s: 90
 
+  # -------------------------------------------------------------------------
+  # §8.6 -- profanity muting. OFF BY DEFAULT, and §16 lists "profanity muting
+  # by default" among the explicitly rejected features, so this is a toggle and
+  # stays one. A render with no flags is byte-identical to one from before this
+  # existed.
+  #
+  # Mute ranges are derived from word timestamps at export time, never stored:
+  # §8.6 says "store mute ranges as data ... apply only at export time", and
+  # the word timestamps ARE that data.
+  # -------------------------------------------------------------------------
+  mute:
+    enabled: false
+
+    # Padding either side of the word, in seconds. MEASURED: the boundary
+    # leaks -- muting exactly 2.0-4.0s left the edges audible -- so a mute that
+    # starts late leaves the consonant, which defeats the whole point. C2:
+    # expand rather than contract.
+    pad_s: 0.08
+
+    # null -> phrases.yaml's `profanity` list, which already exists for §5.6's
+    # swear_density signal. One list, one place to edit.
+    words: null
+
+  # -------------------------------------------------------------------------
+  # §8.2 -- filler-word removal. OFF BY DEFAULT.
+  #
+  # § 8.2 describes this in one line ("word timestamps + concat filter") and
+  # what that hides is that cutting a word cuts the VIDEO too. On a talking
+  # head a jump cut is the house style; on gameplay the character teleports.
+  # Whether it improves a clip is a taste question no fixture can answer --
+  # turn it on, watch the result, and decide.
+  # -------------------------------------------------------------------------
+  filler:
+    enabled: false
+
+    # ARBITRARY, and general English rather than this operator's speech --
+    # exactly the status of phrases.yaml's profanity list, and with the same
+    # falsifier: ten streams of transcript would settle it in minutes.
+    words: [um, uh, erm, uhm, hmm, like, basically, literally, honestly]
+
+    # §4.2 roles this may cut from. Cutting the OTHER person's speech because
+    # the operator said "um" is not a thing anyone wants.
+    roles: [mic]
+
+    # Below this a cut is a glitch rather than an edit.
+    min_duration_s: 0.12
+    # Two removals closer than this leave an island of audio between them that
+    # reads as a stutter. Merging takes the island with them.
+    merge_gap_s: 0.35
+    # Refuse the WHOLE plan if it would remove more than this share of the
+    # clip. That is not "the clip was full of filler", it is a word list
+    # matching something it should not -- and silently deleting a third of an
+    # approved moment is the failure worth stopping for.
+    max_share: 0.25
+
   verify:
     # Checked by ffprobe after every encode, the same way the proxy checks
     # itself. A clip that came out the wrong size or short is worth catching
