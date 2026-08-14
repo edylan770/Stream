@@ -149,11 +149,20 @@ def vacuum_into(source: Path, destination: Path) -> int:
 
 
 def manifest(conn: sqlite3.Connection, source: Path) -> dict:
-    """What the backup should contain, recorded at the moment it is taken.
+    """What the backup contains. `conn` is the COPY; `source` names the original.
 
     Row counts per table plus the schema version. `verify` checks the restored
     copy against this rather than against the live database, which has legitimately
     moved on, or against literals, which would pass a broken backup.
+
+    **Read from the copy, not from the source.** A5 puts the database in WAL so
+    the review UI can write while other things run, so anything committed between
+    a source-side count and the `VACUUM INTO` would be in the backup and not in
+    the manifest — and `--verify` would report a problem on a backup that is
+    perfectly good. A nightly check that cries wolf stops being read, which is
+    the failure §13.3 exists to prevent. Reading the copy makes the manifest true
+    by construction instead of by winning a race. It cannot be closed with a
+    transaction either: SQLite refuses to VACUUM from inside one.
     """
     tables = db.table_names(conn)
     return {
@@ -170,6 +179,21 @@ def manifest(conn: sqlite3.Connection, source: Path) -> dict:
             for name in tables
         },
     }
+
+
+def manifest_of(db_file: Path, source: Path) -> dict:
+    """`manifest`, reading a database file that is already a copy.
+
+    Opened with a plain connection rather than `db.connect`: this is a private
+    scratch file, and setting `journal_mode=WAL` on it would leave `-wal`/`-shm`
+    siblings beside a file that is about to be compressed and renamed.
+    """
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    try:
+        return manifest(conn, source)
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------
@@ -311,9 +335,13 @@ def take(
     final = where / filename(day, compress)
     warnings: list[str] = []
 
+    # Opened and closed before anything else so a missing database reports
+    # itself as one, rather than as whatever the collision check says next.
+    # The real manifest is read from the COPY further down; this one exists
+    # only for --dry-run, which has no copy to read.
     conn = open_source(source)
     try:
-        recorded = manifest(conn, source)
+        recorded = manifest(conn, source) if dry_run else {}
     finally:
         conn.close()
 
@@ -348,6 +376,9 @@ def take(
 
     try:
         vacuumed = vacuum_into(source, scratch)
+        # From the copy, so the manifest describes what was actually captured
+        # rather than what the source held a moment earlier.
+        recorded = manifest_of(scratch, source)
 
         with atomic.atomic_output(final) as tmp:
             if compress:

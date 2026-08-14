@@ -794,6 +794,15 @@ looks correct and is not.
   fail for an honest reason and train the operator to ignore the check; hardcoded counts
   would pass a backup that had lost rows. The counts are recorded at copy time and
   checked against themselves — the same rule every numeric test here follows.
+- **…and the manifest is read from the COPY, not from the source** (fixed in 29a; the
+  first cut read it from the source and shipped a race). A5 puts the database in WAL so
+  the review UI writes while other things run, so anything committed between a
+  source-side count and the `VACUUM INTO` is in the backup and not in the manifest —
+  and `--verify` then reports a problem on a backup that is perfectly good. A nightly
+  check that cries wolf stops being read, which is the failure §13.3 exists to prevent.
+  It cannot be closed with a transaction: SQLite refuses to VACUUM from inside one.
+  Reading the copy makes the manifest true by construction. The test drives a writer
+  straight into the gap and fails without the fix.
 - **The gzip header is stripped of its name and clock** (`filename=''`, `mtime=0`).
   Otherwise every nightly differs from the last even when the database did not, which
   defeats any mirror that deduplicates and makes comparing two backups impossible.

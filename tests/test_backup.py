@@ -168,6 +168,40 @@ def test_committed_but_uncheckpointed_wal_rows_are_in_the_copy(cfg):
     assert check.tables["tool_metrics"] >= 40
 
 
+def test_the_manifest_describes_the_copy_not_the_source(cfg, monkeypatch):
+    """A5 puts the database in WAL so the review UI writes while other things run.
+
+    Reading the row counts from the source and then making the copy leaves a gap:
+    anything committed in between is in the copy and not in the manifest, and
+    `--verify` then reports a problem on a backup that is perfectly good. A 04:00
+    job that cries wolf is a check that stops being read, which is the whole
+    failure §13.3 exists to prevent.
+
+    It cannot be closed with a transaction — SQLite refuses to VACUUM inside one
+    — so the manifest is read from the copy instead, where it is true by
+    construction. This test drives a writer straight into the gap.
+    """
+    real = backup.vacuum_into
+
+    def racing(source, destination):
+        writer = db.open_db(source, migrate_to_latest=False)
+        try:
+            with db.transaction(writer):
+                writer.execute(
+                    "INSERT INTO tool_metrics (metric, value) VALUES ('raced', 1)"
+                )
+        finally:
+            writer.close()
+        return real(source, destination)
+
+    monkeypatch.setattr(backup, "vacuum_into", racing)
+    result = backup.take(cfg)
+
+    check = backup.verify(result.path)
+    assert check.ok, check.problems
+    assert check.tables == result.manifest["tables"]
+
+
 def test_a_second_backup_on_the_same_day_is_refused_and_force_replaces_it(cfg):
     """§13.2's own script fails here.
 
