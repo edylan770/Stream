@@ -843,9 +843,11 @@ Worth continuing, because it has caught real bugs:
 
 ## Starting a fresh session
 
-Read [`CLAUDE.md`](CLAUDE.md) for the standing rules, this file for state, and
-[`spec/GUESSES.md`](spec/GUESSES.md) before touching any number. Then open with
-something like:
+[`NEXT-SESSION.md`](NEXT-SESSION.md) is the short version — state, what a first
+real stream would settle, and what is worth building if you are not streaming
+yet. Read that, then [`CLAUDE.md`](CLAUDE.md) for the standing rules, this file
+for the deviations, and [`spec/GUESSES.md`](spec/GUESSES.md) before touching any
+number. Then open with something like:
 
 > Read CLAUDE.md, HANDOFF.md and spec/CLIPFORGE-SPEC.md §<the sections you are
 > touching>. Phases 0–2 are done. <What you want built.> Same as before: tell me
