@@ -106,6 +106,118 @@ def test_every_module_is_served_and_local(client):
             "/static/review.js"} <= seen
 
 
+MODULES = ("main.js", "api.js", "router.js", "shell.js", "library.js",
+           "add.js", "run.js", "review.js")
+
+
+def _strip_literals(source: str) -> str:
+    """Blank out comments and string bodies, keeping length and newlines.
+
+    Enough to scan declarations without a JavaScript parser. Regex literals are
+    left alone — one containing the word `const` would be a false positive, and
+    none does.
+    """
+    out = []
+    i, n = 0, len(source)
+    while i < n:
+        ch = source[i]
+        pair = source[i:i + 2]
+        if pair == "//":
+            while i < n and source[i] != "\n":
+                out.append(" ")
+                i += 1
+        elif pair == "/*":
+            while i < n and source[i:i + 2] != "*/":
+                out.append("\n" if source[i] == "\n" else " ")
+                i += 1
+            out.append("  ")
+            i += 2
+        elif ch in "\"'`":
+            quote = ch
+            out.append(" ")
+            i += 1
+            while i < n and source[i] != quote:
+                if source[i] == "\\":
+                    out.append(" ")
+                    i += 1
+                out.append("\n" if source[i] == "\n" else " ")
+                i += 1
+            out.append(" ")
+            i += 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def test_no_module_declares_the_same_name_twice_in_one_scope(client):
+    """MEASURED THE HARD WAY, in commit 30.
+
+    A second `const span` inside `drawSpark` — the name was already the
+    sparkline's dB range — is a SyntaxError, and an ES module that does not
+    parse does not load *at all*. The entire review screen went blank while
+    every test in this file still passed, because none of them execute the JS;
+    the route tests only prove the server is right. C4 makes that screen the
+    critical path, so the gap is worth closing.
+
+    Written in Python rather than shelling out to node, because there is no node
+    on the machine this project is built on and a check that always skips is not
+    a check. Deliberately conservative: same brace depth only, so it reports the
+    failure that happened and cannot fire on legitimate shadowing.
+    """
+    for name in MODULES:
+        source = _strip_literals(client.get(f"/static/{name}").text)
+
+        depth = 0
+        seen: dict[int, set[str]] = {}
+        for token in re.finditer(r"[{}]|\b(?:const|let)\s+([A-Za-z_$][\w$]*)", source):
+            if token.group(0) == "{":
+                depth += 1
+            elif token.group(0) == "}":
+                seen.pop(depth, None)
+                depth -= 1
+            else:
+                names = seen.setdefault(depth, set())
+                assert token.group(1) not in names, (
+                    f"{name} declares {token.group(1)!r} twice at the same brace "
+                    f"depth — that is a SyntaxError and the module will not load"
+                )
+                names.add(token.group(1))
+
+
+def test_the_scope_checker_actually_catches_the_bug_it_was_written_for():
+    """A guard on the guard: the checker above is only worth having if a
+    re-declaration really does trip it."""
+    broken = "function f() {\n  const span = 1;\n  const span = 2;\n}"
+    depth, seen, caught = 0, {}, False
+    for token in re.finditer(r"[{}]|\b(?:const|let)\s+([A-Za-z_$][\w$]*)",
+                             _strip_literals(broken)):
+        if token.group(0) == "{":
+            depth += 1
+        elif token.group(0) == "}":
+            seen.pop(depth, None)
+            depth -= 1
+        elif token.group(1) in seen.setdefault(depth, set()):
+            caught = True
+        else:
+            seen[depth].add(token.group(1))
+    assert caught
+
+    # ...and does not fire on the same name in two different functions.
+    fine = "function a() {\n const x = 1;\n}\nfunction b() {\n const x = 2;\n}"
+    depth, seen = 0, {}
+    for token in re.finditer(r"[{}]|\b(?:const|let)\s+([A-Za-z_$][\w$]*)",
+                             _strip_literals(fine)):
+        if token.group(0) == "{":
+            depth += 1
+        elif token.group(0) == "}":
+            seen.pop(depth, None)
+            depth -= 1
+        else:
+            assert token.group(1) not in seen.setdefault(depth, set())
+            seen[depth].add(token.group(1))
+
+
 def test_every_element_the_js_reaches_for_exists(client):
     """The one coupling a redesign can break silently.
 
@@ -275,6 +387,271 @@ def test_ratings_show_up_on_the_next_load(client):
     client.post(f"/api/candidates/{candidate['id']}/rating", json={"rating": 1})
     reloaded = client.get("/api/streams/fx/candidates").json()["candidates"]
     assert next(c for c in reloaded if c["id"] == candidate["id"])["rating"] == 1
+
+
+# --------------------------------------------------------------------------
+# §7.3's nudge keys — GUESSES gap 1
+# --------------------------------------------------------------------------
+
+
+def _unrated(client, conn, index: int = 0):
+    """A candidate with no rating row, so nudge tests start from a clean slate.
+
+    The index wraps: how many candidates the fixture produces is decided by
+    `score.peak.target_candidates_per_hour` against the fixture's duration, so a
+    literal index would be an assertion about a config value in disguise.
+    Wrapping is safe because the ratings row is deleted, which clears any
+    adjusted window a previous test left.
+    """
+    found = client.get("/api/streams/fx/candidates").json()["candidates"]
+    assert found, "the fixture stream should have candidates"
+    candidate = found[index % len(found)]
+    conn.execute("DELETE FROM ratings WHERE candidate_id = ?", (candidate["id"],))
+    return candidate
+
+
+def test_the_payload_carries_the_nudge_step_from_config(client):
+    """The browser used to hold its own copy of `target_ms` and drift from the
+    config silently. The step size is told, not guessed."""
+    cfg = config.load()
+    data = client.get("/api/streams/fx/candidates").json()
+    assert data["nudge_step_s"] == float(cfg.get("review.nudge_step_s"))
+
+
+def test_a_rating_carries_the_nudged_window(client, conn):
+    candidate = _unrated(client, conn)
+    start, end = candidate["t_start"] + 1.5, candidate["t_end"] - 2.0
+
+    assert client.post(
+        f"/api/candidates/{candidate['id']}/rating",
+        json={"rating": 2, "adjusted_start": start, "adjusted_end": end},
+    ).status_code == 200
+
+    row = conn.execute(
+        "SELECT adjusted_start, adjusted_end FROM ratings WHERE candidate_id = ?",
+        (candidate["id"],),
+    ).fetchone()
+    assert (row["adjusted_start"], row["adjusted_end"]) == (start, end)
+
+
+def test_the_stored_window_comes_back_in_the_payload(client, conn):
+    """Otherwise reopening a stream shows the detector's window and silently
+    hides the operator's own trim — and `space` would play the wrong bounds."""
+    candidate = _unrated(client, conn, 1)
+    start, end = candidate["t_start"] + 2.0, candidate["t_end"]
+    client.post(
+        f"/api/candidates/{candidate['id']}/rating",
+        json={"rating": 1, "adjusted_start": start, "adjusted_end": end},
+    )
+
+    reloaded = client.get("/api/streams/fx/candidates").json()["candidates"]
+    found = next(c for c in reloaded if c["id"] == candidate["id"])
+    assert (found["adjusted_start"], found["adjusted_end"]) == (start, end)
+    # The detector's own window is still reported alongside, unchanged.
+    assert found["t_start"] == candidate["t_start"]
+
+
+def test_re_rating_without_nudging_preserves_an_existing_trim(client, conn):
+    """Absent means "no opinion", not "restore the detector's window"."""
+    candidate = _unrated(client, conn, 2)
+    start, end = candidate["t_start"] + 1.0, candidate["t_end"] - 1.0
+    client.post(
+        f"/api/candidates/{candidate['id']}/rating",
+        json={"rating": 1, "adjusted_start": start, "adjusted_end": end},
+    )
+    client.post(f"/api/candidates/{candidate['id']}/rating", json={"rating": 2})
+
+    row = conn.execute(
+        "SELECT rating, adjusted_start, adjusted_end FROM ratings WHERE candidate_id = ?",
+        (candidate["id"],),
+    ).fetchone()
+    assert row["rating"] == 2
+    assert (row["adjusted_start"], row["adjusted_end"]) == (start, end)
+
+
+def test_a_window_shorter_than_min_window_s_is_accepted(client, conn):
+    """THE assertion that the measurement is not circular.
+
+    §17 tunes `min_window_s` against how the operator nudges boundaries, so
+    refusing a nudge that leaves its range would mean the operator could never
+    record "I wanted this shorter than 8 seconds" — which is precisely the
+    observation §17 asks for. A window under the minimum is a finding.
+    """
+    cfg = config.load()
+    minimum = float(cfg.get("score.window.min_window_s"))
+    candidate = _unrated(client, conn, 3)
+    start = candidate["t_start"]
+    end = start + minimum / 4.0
+
+    assert client.post(
+        f"/api/candidates/{candidate['id']}/rating",
+        json={"rating": 2, "adjusted_start": start, "adjusted_end": end},
+    ).status_code == 200
+
+    row = conn.execute(
+        "SELECT adjusted_start, adjusted_end FROM ratings WHERE candidate_id = ?",
+        (candidate["id"],),
+    ).fetchone()
+    assert row["adjusted_end"] - row["adjusted_start"] < minimum
+
+
+@pytest.mark.parametrize("start,end", [
+    (50.0, 50.0),        # zero length
+    (60.0, 40.0),        # inverted
+    (-5.0, 20.0),        # before the recording
+    (10.0, 10_000.0),    # past the end of the recording
+])
+def test_an_impossible_window_is_refused_and_writes_nothing(client, conn, start, end):
+    candidate = _unrated(client, conn, 4)
+    response = client.post(
+        f"/api/candidates/{candidate['id']}/rating",
+        json={"rating": 2, "adjusted_start": start, "adjusted_end": end},
+    )
+    assert response.status_code == 400
+    assert conn.execute(
+        "SELECT COUNT(*) FROM ratings WHERE candidate_id = ?", (candidate["id"],)
+    ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_a_non_finite_window_is_refused(client, conn, literal):
+    """Sent as a raw body, because that is the only way one can arrive.
+
+    `json.dumps` refuses these outright, but `json.loads` — which is what
+    Starlette's `request.json()` calls — accepts all three by default. So a
+    non-finite boundary is reachable from the wire and unreachable from the
+    test client's `json=` argument, and `math.isfinite` is what stops it
+    becoming a NULL-ish REAL in `ratings`.
+    """
+    candidate = _unrated(client, conn, 4)
+    body = (f'{{"rating": 2, "adjusted_start": {literal}, "adjusted_end": 20.0}}')
+    response = client.post(
+        f"/api/candidates/{candidate['id']}/rating",
+        content=body, headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+    assert conn.execute(
+        "SELECT COUNT(*) FROM ratings WHERE candidate_id = ?", (candidate["id"],)
+    ).fetchone()[0] == 0
+
+
+def test_half_a_window_is_refused(client, conn):
+    candidate = _unrated(client, conn, 5)
+    assert client.post(
+        f"/api/candidates/{candidate['id']}/rating",
+        json={"rating": 2, "adjusted_start": candidate["t_start"]},
+    ).status_code == 400
+
+
+def test_the_nudge_metric_records_direction_and_the_clamp_flags(client, conn):
+    """§17 asks "how often", but a count cannot tune anything on its own.
+
+    The clamp flags are the field that moves a bound: a window that came out at
+    exactly `max_window_s` and then got extended IS `max_window_s` being too low.
+    """
+    cfg = config.load()
+    maximum = float(cfg.get("score.window.max_window_s"))
+    candidate = _unrated(client, conn, 6)
+
+    # Make the detector's window exactly max_window_s, which is what the clamp
+    # produces, so the flag has something true to report. Restored afterwards:
+    # the processed stream is a session fixture and every other test in this
+    # module reads it.
+    original = conn.execute(
+        "SELECT t_start, t_end, t_peak FROM candidates WHERE id = ?",
+        (candidate["id"],),
+    ).fetchone()
+    conn.execute(
+        "UPDATE candidates SET t_start = ?, t_end = ?, t_peak = ? WHERE id = ?",
+        (100.0, 100.0 + maximum, 110.0, candidate["id"]),
+    )
+    try:
+        response = client.post(
+            f"/api/candidates/{candidate['id']}/nudge",
+            json={"adjusted_start": 98.0, "adjusted_end": 100.0 + maximum + 3.0,
+                  "presses": 10},
+        )
+        assert response.status_code == 200
+    finally:
+        conn.execute(
+            "UPDATE candidates SET t_start = ?, t_end = ?, t_peak = ? WHERE id = ?",
+            (original["t_start"], original["t_end"], original["t_peak"],
+             candidate["id"]),
+        )
+
+    row = conn.execute(
+        "SELECT stream_id, value, meta FROM tool_metrics WHERE metric = ? "
+        "ORDER BY id DESC LIMIT 1", (queries.NUDGE_METRIC,),
+    ).fetchone()
+    meta = json.loads(row["meta"])
+    assert row["stream_id"] == "fx"
+    assert row["value"] == pytest.approx(5.0)          # 2 s earlier + 3 s later
+    assert meta["start_delta"] == pytest.approx(-2.0)
+    assert meta["end_delta"] == pytest.approx(3.0)
+    assert meta["presses"] == 10
+    assert meta["at_max"] is True
+    assert meta["at_min"] is False
+    assert meta["keeps_peak"] is True
+
+
+def test_the_nudge_route_never_creates_a_rating(client, conn):
+    """`ratings.rating` is NOT NULL, so storing an unrated nudge there would
+    mean inventing a rating — and a fabricated rating corrupts §14's
+    `signal_firing_rate_by_rating`, which §17 calls the primary tuning input."""
+    candidate = _unrated(client, conn, 7)
+    client.post(
+        f"/api/candidates/{candidate['id']}/nudge",
+        json={"adjusted_start": candidate["t_start"] + 1,
+              "adjusted_end": candidate["t_end"], "presses": 2},
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM ratings WHERE candidate_id = ?", (candidate["id"],)
+    ).fetchone()[0] == 0
+
+
+def test_a_nudge_that_drops_the_peak_is_allowed_and_flagged(client, conn):
+    """`candidates` forbids this by CHECK; `ratings` does not, and trimming to
+    the second half of a moment is a legitimate thing to want."""
+    candidate = _unrated(client, conn, 8)
+    peak = candidate["t_peak"]
+    client.post(
+        f"/api/candidates/{candidate['id']}/nudge",
+        json={"adjusted_start": peak + 0.5, "adjusted_end": candidate["t_end"],
+              "presses": 1},
+    )
+    meta = json.loads(conn.execute(
+        "SELECT meta FROM tool_metrics WHERE metric = ? ORDER BY id DESC LIMIT 1",
+        (queries.NUDGE_METRIC,),
+    ).fetchone()["meta"])
+    assert meta["keeps_peak"] is False
+
+
+def test_an_impossible_nudge_is_refused_and_records_nothing(client, conn):
+    candidate = _unrated(client, conn)
+    before = conn.execute(
+        "SELECT COUNT(*) FROM tool_metrics WHERE metric = ?", (queries.NUDGE_METRIC,)
+    ).fetchone()[0]
+
+    assert client.post(
+        f"/api/candidates/{candidate['id']}/nudge",
+        json={"adjusted_start": 90.0, "adjusted_end": 20.0, "presses": 1},
+    ).status_code == 400
+    assert conn.execute(
+        "SELECT COUNT(*) FROM tool_metrics WHERE metric = ?", (queries.NUDGE_METRIC,)
+    ).fetchone()[0] == before
+
+
+def test_the_session_row_carries_the_denominator(client, conn):
+    """§17 asks how OFTEN. The count of nudged candidates lives beside
+    `reviewed` in the same row, so the two cannot be mismatched later."""
+    client.post("/api/streams/fx/session",
+                json={"duration_s": 300.0, "reviewed": 20, "nudged": 7})
+    row = conn.execute(
+        "SELECT meta FROM tool_metrics WHERE metric='review_session_duration_s' "
+        "ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    meta = json.loads(row["meta"])
+    assert (meta["reviewed"], meta["nudged"]) == (20, 7)
 
 
 # --------------------------------------------------------------------------

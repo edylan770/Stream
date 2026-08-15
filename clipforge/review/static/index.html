@@ -185,6 +185,10 @@
             <div>
               <div id="window" class="window mono"></div>
               <div id="position" class="muted small"></div>
+              <!-- §7.3's nudged boundaries. Says whose window this is: once a
+                   boundary moves, ratings.adjusted_start/_end is what the
+                   FCPXML and the render will use, not the detector's. -->
+              <div id="window-note" class="window-note"></div>
             </div>
             <div class="score-block">
               <div id="score" class="score mono"></div>
@@ -243,15 +247,13 @@
 
       <span class="sep"></span>
 
-      <!-- §7.3 defines these and no phase has built them. They are shown
-           greyed rather than omitted because their absence is a MEASUREMENT
-           GAP, not just a missing convenience: §17 tunes min_window_s/
-           max_window_s against "how often the operator nudges boundaries
-           during review", and with no nudge keys that number cannot be
-           collected at all (spec/GUESSES.md, gap 1). -->
-      <span class="soon" title="§7.3, not built — and until it is, §17 cannot tune min_window_s/max_window_s">
+      <!-- Built in commit 30. §17 tunes min_window_s/max_window_s against "how
+           often the operator nudges boundaries during review", and these keys
+           are what makes that number collectable at all (spec/GUESSES.md gap 1
+           was open until they existed). -->
+      <span title="§7.3 — move the window start by review.nudge_step_s">
         <kbd>[</kbd><kbd>]</kbd> nudge start</span>
-      <span class="soon" title="§7.3, not built — and until it is, §17 cannot tune min_window_s/max_window_s">
+      <span title="§7.3 — move the window end by review.nudge_step_s">
         <kbd>{</kbd><kbd>}</kbd> nudge end</span>
       <span class="soon" title="§7.3, not built — the ratings.tags column exists and nothing writes it">
         <kbd>t</kbd> tag</span>

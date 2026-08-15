@@ -33,7 +33,7 @@ as requiring empirical tuning, and the tuning input is
 | `score.zscore_std_floor` | `0.5` dB | **plausible** | NOT IN §17. A near-silent five minutes has σ≈0, so dither becomes z=50 and the quietest moment tops the stream. Coupled to `extract.rms.db_floor` | Quiet stretches producing candidates; or, too high, real quiet-room moments never scoring |
 | `score.smoothing_sigma_s` | `2.0` | **plausible** | §6.2 step 6's value | Peaks landing beside the moment rather than on it, or two adjacent moments merging into one |
 | `score.min_peak_value` | `0.0` | **grounded** | NOT IN §17. A local maximum in negative territory is a local maximum of *quietness*, and §6.3's `exit = 0.35 × v_peak` is *above* `v_peak` when negative, so expansion terminates immediately | Nothing — this is arithmetic, not tuning |
-| `score.window.min_window_s` / `max_window_s` | `8` / `60` | **plausible** | §17's defaults | How often the operator nudges boundaries during review. §7.3's `[`/`]` keys are unbuilt, so this is currently unobservable — **a gap** |
+| `score.window.min_window_s` / `max_window_s` | `8` / `60` | **plausible** | §17's defaults | How often the operator nudges boundaries during review — **now being collected** (commit 30). `clipforge metrics` reports the direction of each nudge and, crucially, how many nudged windows had come out sitting exactly on one of these two clamps. Repeatedly extending windows that arrived at exactly 60 s means `max_window_s` is too low; repeatedly trimming ones that arrived at exactly 8 s means `min_window_s` is too high. Needs ~10 streams |
 | `score.window.hysteresis_enter` | `0.6` | **plausible** | §17 lists it; §6.3 never reads it. Repurposed as the peak-merge threshold: a later peak opens a new window only if the composite dipped below `enter × v_peak` since the last one | Two distinct moments merged into one window, or one moment split in two |
 | `score.window.hysteresis_exit` | `0.35` | **plausible** | §17's default | The window-length distribution: everything clamped at `max_window_s` means it is too low |
 | `score.window.clamp_mode` | `expand_around_peak` | **grounded** | §6.3 says "clamp" without saying how. This is the only variant that cannot move the peak outside its own window, which the schema forbids | Nothing — the alternatives are invalid |
@@ -247,6 +247,7 @@ that nothing has checked.
 | Parameter | Value | Confidence | Rationale | Falsified by |
 |---|---|---|---|---|
 | `review.target_ms_per_candidate` | `4000` | **grounded** | §7.1's hard target, arithmetic from "120 in under 8 minutes" | — |
+| `review.nudge_step_s` | `0.5` | **grounded** | §7.3 states 0.5 s for `[`/`]`/`{`/`}` | Every adjustment taking a dozen presses (too small), or never landing where you want it (too large). The keypress count is in each `window_nudge_s` row, so this one falsifies itself |
 | `export.fcpxml_version` | `1.10` | **plausible** | Current at time of writing | Resolve rejecting the file — try `1.8` |
 | `export.source` | `master` | **grounded** | The master is the quality source; §10.5 exports reference it | — |
 | `export.handles_s` | `0.0` | **arbitrary** | No handles by default. Editors often want a second either side | Finding every clip needs manual extension in Resolve |
@@ -275,10 +276,18 @@ argument blocks. Wrong values there fail loudly rather than silently.
 These are the ones to be uneasy about: the parameter is unvalidated **and** the
 observation that would falsify it is not being recorded.
 
-1. **Window length.** §17 tunes `min_window_s`/`max_window_s` against "how often the
-   operator nudges boundaries during review" — and §7.3's `[`/`]`/`{`/`}` nudge keys are
-   not built, so nudges cannot be counted. Either build the keys or accept the defaults
-   untested.
+1. ~~**Window length.**~~ **CLOSED in commit 30.** §7.3's `[`/`]`/`{`/`}` keys are built
+   and every nudge writes a `window_nudge_s` row carrying direction, size, keypresses,
+   whether the detector's window had been clamped to `min_window_s`/`max_window_s`, and
+   whether the operator's window still contains the peak. `clipforge metrics` reports it.
+   **Still needs ~10 real streams before the numbers mean anything** — the gap now is
+   footage, not instrumentation.
+
+   Note what the nudge deliberately does *not* do: it is **not clamped to
+   `min_window_s`/`max_window_s`**. Those are the values being measured, so refusing a
+   window outside their range would make the measurement circular — the operator could
+   never record "I wanted this shorter than 8 seconds". VERIFIED in a browser: a window
+   nudges down to 0.6 s against a `min_window_s` of 8.
 2. **Marker precision and recall.** §14 defines `marker_precision` and
    `marker_recall_proxy` and they are the direct test of `retro_offset_s`. Neither is
    computed yet; both are pure SQL over `ratings` and `events` once ten streams exist.

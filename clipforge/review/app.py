@@ -99,6 +99,10 @@ def create_app(cfg) -> FastAPI:
                 # operator would rate a moment believing one person said it and
                 # watch the export attribute it to the other.
                 "role_colours": queries.role_colours(cfg),
+                # §7.3's nudge step, sent for the same reason `target_ms` is:
+                # a copy of it in the browser would drift from the config and
+                # nothing would say so.
+                "nudge_step_s": float(cfg.get("review.nudge_step_s", 0.5)),
             })
         finally:
             conn.close()
@@ -117,23 +121,76 @@ def create_app(cfg) -> FastAPI:
 
     # -- writes -----------------------------------------------------------
 
+    def _adjusted(conn: sqlite3.Connection, candidate_id: int, body: dict):
+        """§7.3's nudged window out of a request body, or (None, None).
+
+        Absent means "no opinion" and leaves any stored adjustment alone; it
+        does not mean "restore the detector's window". Present means both
+        values, validated together — a half-specified window has no meaning.
+        """
+        start, end = body.get("adjusted_start"), body.get("adjusted_end")
+        if start is None and end is None:
+            return None, None
+        if start is None or end is None:
+            raise ValueError("adjusted_start and adjusted_end must be sent together")
+
+        start, end = float(start), float(end)
+        row = queries.candidate_window(conn, candidate_id)
+        if row is None:
+            raise ValueError(f"no candidate {candidate_id}")
+        queries.check_window(start, end, row["duration_s"])
+        return start, end
+
     @app.post("/api/candidates/{candidate_id}/rating")
     async def api_rate(candidate_id: int, request: Request) -> JSONResponse:
         body = await request.json()
         conn = connect()
         try:
+            start, end = _adjusted(conn, candidate_id, body)
             with db.transaction(conn):
                 queries.save_rating(
                     conn, candidate_id,
                     rating=int(body["rating"]),
                     review_ms=body.get("review_ms"),
                     note=body.get("note"),
+                    adjusted_start=start,
+                    adjusted_end=end,
                 )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         finally:
             conn.close()
         return JSONResponse({"ok": True})
+
+    @app.post("/api/candidates/{candidate_id}/nudge")
+    async def api_nudge(candidate_id: int, request: Request) -> JSONResponse:
+        """§17's missing observation. Writes a metric and nothing else.
+
+        Separate from the rating route because a nudge and a judgment are
+        different events: `ratings.rating` is NOT NULL, so storing a nudge on an
+        unrated candidate would mean inventing a rating — and a fabricated
+        rating corrupts §14's `signal_firing_rate_by_rating`, which §17 calls
+        the primary weight-tuning input. So the *window* rides along with the
+        rating and the *observation* comes here, which means it survives the
+        operator nudging a boundary and then moving on without rating.
+        """
+        body = await request.json()
+        conn = connect()
+        try:
+            with db.transaction(conn):
+                meta = queries.record_nudge(
+                    conn, candidate_id,
+                    adjusted_start=float(body["adjusted_start"]),
+                    adjusted_end=float(body["adjusted_end"]),
+                    presses=int(body.get("presses", 1)),
+                    min_window_s=cfg.get("score.window.min_window_s", None),
+                    max_window_s=cfg.get("score.window.max_window_s", None),
+                )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            conn.close()
+        return JSONResponse({"ok": True, "recorded": meta})
 
     @app.post("/api/streams/{stream_id}/session")
     async def api_session(stream_id: str, request: Request) -> JSONResponse:
@@ -145,6 +202,7 @@ def create_app(cfg) -> FastAPI:
                     conn, stream_id,
                     duration_s=float(body.get("duration_s", 0.0)),
                     reviewed=int(body.get("reviewed", 0)),
+                    nudged=int(body.get("nudged", 0)),
                 )
         finally:
             conn.close()

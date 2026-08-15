@@ -8,6 +8,7 @@ can find them.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import statistics
 from dataclasses import dataclass, field
@@ -28,6 +29,21 @@ SPARKLINE_POINTS = 120
 #: A fallback only — the caller passes `review.target_ms_per_candidate`. It
 #: exists so this module can be called without a config object in a test.
 DEFAULT_TARGET_MS = 4000
+
+#: §14 names no metric for boundary nudges, so this name is INVENTED. §17 asks
+#: for "how often the operator nudges boundaries during review" and that phrase
+#: describes a count, which cannot tune anything on its own: it does not say
+#: which way to move `min_window_s`. The row therefore carries direction, size,
+#: and whether the detector's window was sitting on one of the two clamps —
+#: an operator repeatedly extending windows that came out at exactly
+#: `max_window_s` IS `max_window_s` being too low, stated in one row.
+NUDGE_METRIC = "window_nudge_s"
+
+#: Tolerance for "this window was sitting on a clamp". Window bounds come back
+#: through SQLite REAL and through §6.3's snapping, so an exact equality test
+#: against the configured value would report False on a window that is plainly
+#: clamped. One millisecond is far below `nudge_step_s` and far above the error.
+CLAMP_EPSILON_S = 0.001
 
 
 def list_streams(conn: sqlite3.Connection) -> list[dict]:
@@ -189,6 +205,12 @@ class CandidateView:
     rating: int | None = None
     rating_source: str | None = None
     note: str | None = None
+    #: §7.3's nudged boundaries, when the operator has moved them. NULL means
+    #: the detector's window still stands. Sent so that reopening a stream shows
+    #: the operator's own trim rather than silently reverting to the detector's
+    #: — and so `space` plays what the export will contain.
+    adjusted_start: float | None = None
+    adjusted_end: float | None = None
     #: §7.3's "transcript text for the window displayed alongside". Empty when
     #: the stream has no segments — see `stream_detail`'s `has_transcript`.
     transcript: list[dict] = field(default_factory=list)
@@ -201,6 +223,10 @@ class CandidateView:
             "t_end": round(self.t_end, 3),
             "t_peak": round(self.t_peak, 3),
             "duration_s": round(self.t_end - self.t_start, 2),
+            "adjusted_start": (None if self.adjusted_start is None
+                               else round(self.adjusted_start, 3)),
+            "adjusted_end": (None if self.adjusted_end is None
+                             else round(self.adjusted_end, 3)),
             "score": round(self.score, 4),
             "generation": self.generation,
             "profile": self.profile,
@@ -228,7 +254,8 @@ def load_candidates(conn: sqlite3.Connection, stream_id: str) -> list[CandidateV
     """
     rows = conn.execute(
         """
-        SELECT c.*, r.rating, r.rating_source, r.note
+        SELECT c.*, r.rating, r.rating_source, r.note,
+               r.adjusted_start, r.adjusted_end
           FROM candidates c
           LEFT JOIN ratings r ON r.candidate_id = c.id
          WHERE c.stream_id = ? AND c.is_current = 1
@@ -272,6 +299,10 @@ def load_candidates(conn: sqlite3.Connection, stream_id: str) -> list[CandidateV
             sparkline=spark, sparkline_kind=series[0] if series else None,
             sparkline_range=low_high,
             rating=row["rating"], rating_source=row["rating_source"], note=row["note"],
+            adjusted_start=row["adjusted_start"], adjusted_end=row["adjusted_end"],
+            # Sliced on the DETECTOR's window, not the adjusted one. A nudge can
+            # reach outside it and the extra lines are not in this payload —
+            # which is what commit 31's `nudge_context_s` padding is for.
             transcript=lines_in(transcript, row["t_start"], row["t_end"]),
         ))
     return out
@@ -327,41 +358,197 @@ def _sparkline_for(series, t_start: float, t_end: float) -> tuple[list[float], l
 def save_rating(
     conn: sqlite3.Connection, candidate_id: int, rating: int, review_ms: int | None,
     note: str | None = None,
+    adjusted_start: float | None = None, adjusted_end: float | None = None,
 ) -> None:
     """Record an operator rating (§3.2 ratings, §7.5 instrumentation).
 
     Always `rating_source='operator'`: this is a human pressing a key, which is
     the distinction §14's weight tuning depends on when a re-score has carried
     inherited copies alongside.
+
+    §7.3's nudged boundaries ride along with the rating rather than getting a
+    write of their own, because `ratings.rating` is NOT NULL: an unrated nudge
+    could only be stored by inventing a rating, and a fabricated rating poisons
+    §14's `signal_firing_rate_by_rating` — the primary weight-tuning input.
+    The nudge *metric* is recorded separately (`record_nudge`), so §17's number
+    survives even when the operator nudges and moves on without rating.
+
+    Passing None for the pair means "no opinion", not "clear it": re-rating a
+    candidate that was trimmed in an earlier session must not silently restore
+    the detector's window. Hence COALESCE rather than assignment.
     """
     if rating not in (0, 1, 2):
         raise ValueError(f"rating must be 0, 1 or 2 (§7.3), got {rating!r}")
 
     conn.execute(
         """
-        INSERT INTO ratings (candidate_id, rating, note, review_ms, rating_source)
-        VALUES (?, ?, ?, ?, 'operator')
+        INSERT INTO ratings (candidate_id, rating, note, review_ms, rating_source,
+                             adjusted_start, adjusted_end)
+        VALUES (?, ?, ?, ?, 'operator', ?, ?)
         ON CONFLICT(candidate_id) DO UPDATE SET
             rating = excluded.rating,
             note = COALESCE(excluded.note, ratings.note),
             review_ms = excluded.review_ms,
             rating_source = 'operator',
             inherited_from = NULL,
+            adjusted_start = COALESCE(excluded.adjusted_start, ratings.adjusted_start),
+            adjusted_end = COALESCE(excluded.adjusted_end, ratings.adjusted_end),
             rated_at = datetime('now')
         """,
-        (candidate_id, rating, note, review_ms),
+        (candidate_id, rating, note, review_ms, adjusted_start, adjusted_end),
     )
+
+
+def candidate_window(conn: sqlite3.Connection, candidate_id: int) -> sqlite3.Row | None:
+    """A candidate's own window plus its stream's duration, for validation."""
+    return conn.execute(
+        """
+        SELECT c.id, c.stream_id, c.t_start, c.t_end, c.t_peak, s.duration_s
+          FROM candidates c JOIN streams s ON s.id = c.stream_id
+         WHERE c.id = ?
+        """,
+        (candidate_id,),
+    ).fetchone()
+
+
+def check_window(start: float, end: float, duration_s: float | None) -> None:
+    """Reject a nudged window that is arithmetically impossible. Nothing else.
+
+    **Deliberately not checked against `score.window.min_window_s` /
+    `max_window_s`.** Those are the two numbers §17 tunes *against these
+    nudges*, so refusing a window outside their range would make the
+    measurement circular — the operator could never record "I wanted this
+    shorter than 8 seconds", which is precisely the observation being
+    collected. A window shorter than `min_window_s` is a finding, not an error.
+    """
+    for name, value in (("start", start), ("end", end)):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number, got {value!r}")
+    if end <= start:
+        raise ValueError(f"end ({end}) must be after start ({start})")
+    if start < 0:
+        raise ValueError(f"start ({start}) is before the beginning of the recording")
+    if duration_s is not None and end > float(duration_s) + CLAMP_EPSILON_S:
+        raise ValueError(f"end ({end}) is past the end of the recording ({duration_s})")
+
+
+def record_nudge(
+    conn: sqlite3.Connection, candidate_id: int, *,
+    adjusted_start: float, adjusted_end: float, presses: int,
+    min_window_s: float | None = None, max_window_s: float | None = None,
+) -> dict:
+    """§17's missing observation, as one row per nudged candidate.
+
+    §17 tunes `min_window_s`/`max_window_s` against "how often the operator
+    nudges boundaries during review". A bare count cannot do that job — it does
+    not say which direction to move a bound. So the row carries:
+
+    * `value` — the change in window LENGTH, signed. Negative means the operator
+      wanted less than the detector gave.
+    * `start_delta` / `end_delta` — which edge moved, and which way. Trimming
+      dead air off the front is a different finding from extending past the end.
+    * `presses` — how many keystrokes it took, which is the literal reading of
+      "how often".
+    * `at_min` / `at_max` — whether the DETECTOR's window was sitting on a
+      clamp. This is the one that tunes: an operator repeatedly extending
+      windows that came out at exactly `max_window_s` is `max_window_s` being
+      too low, and no other field says so.
+
+    Writes to `tool_metrics` only, never to `ratings` — so it is safe on a
+    candidate the operator has not rated and never will.
+    """
+    row = candidate_window(conn, candidate_id)
+    if row is None:
+        raise ValueError(f"no candidate {candidate_id}")
+
+    check_window(adjusted_start, adjusted_end, row["duration_s"])
+
+    original = float(row["t_end"]) - float(row["t_start"])
+    adjusted = adjusted_end - adjusted_start
+    meta = {
+        "candidate_id": int(candidate_id),
+        "start_delta": round(adjusted_start - float(row["t_start"]), 3),
+        "end_delta": round(adjusted_end - float(row["t_end"]), 3),
+        "original_s": round(original, 3),
+        "adjusted_s": round(adjusted, 3),
+        "presses": int(presses),
+        # Whether the operator's window still contains the peak the detector
+        # found. `candidates` forbids this by CHECK; `ratings` does not, and a
+        # trim to the second half of a moment is a legitimate thing to want.
+        "keeps_peak": bool(adjusted_start <= float(row["t_peak"]) <= adjusted_end),
+        "at_min": (min_window_s is not None
+                   and abs(original - float(min_window_s)) <= CLAMP_EPSILON_S),
+        "at_max": (max_window_s is not None
+                   and abs(original - float(max_window_s)) <= CLAMP_EPSILON_S),
+    }
+    conn.execute(
+        "INSERT INTO tool_metrics (stream_id, metric, value, meta) VALUES (?, ?, ?, ?)",
+        (row["stream_id"], NUDGE_METRIC, round(adjusted - original, 3), json.dumps(meta)),
+    )
+    return meta
 
 
 def record_session(
-    conn: sqlite3.Connection, stream_id: str, duration_s: float, reviewed: int
+    conn: sqlite3.Connection, stream_id: str, duration_s: float, reviewed: int,
+    nudged: int = 0,
 ) -> None:
-    """§7.5 / §14: how the C4 target gets verified rather than assumed."""
+    """§7.5 / §14: how the C4 target gets verified rather than assumed.
+
+    `nudged` goes in this row's meta rather than becoming a metric of its own,
+    because it is the denominator for `reviewed`: §17 asks how *often* the
+    operator nudges, and a count with its own timestamp somewhere else could
+    only be matched back to a session by guessing.
+    """
     conn.execute(
         "INSERT INTO tool_metrics (stream_id, metric, value, meta) VALUES (?, ?, ?, ?)",
         (stream_id, "review_session_duration_s", float(duration_s),
-         json.dumps({"reviewed": reviewed})),
+         json.dumps({"reviewed": reviewed, "nudged": int(nudged)})),
     )
+
+
+def nudge_summary(conn: sqlite3.Connection, stream_id: str) -> dict:
+    """§17's tuning input for `min_window_s` / `max_window_s`.
+
+    Deliberately reports the two clamp counts separately from the averages. An
+    average delta near zero can mean "the windows are right" or "half were too
+    long and half too short", and those call for opposite changes; the clamp
+    counts are what distinguish them.
+    """
+    rows = [
+        json.loads(r["meta"] or "{}") for r in conn.execute(
+            "SELECT meta FROM tool_metrics WHERE stream_id = ? AND metric = ? "
+            "ORDER BY recorded_at",
+            (stream_id, NUDGE_METRIC),
+        )
+    ]
+    if not rows:
+        return {"nudged": 0}
+
+    starts = [float(r.get("start_delta", 0.0)) for r in rows]
+    ends = [float(r.get("end_delta", 0.0)) for r in rows]
+    return {
+        "nudged": len(rows),
+        "presses": sum(int(r.get("presses", 0)) for r in rows),
+        "mean_start_delta_s": round(statistics.fmean(starts), 3),
+        "mean_end_delta_s": round(statistics.fmean(ends), 3),
+        "mean_length_delta_s": round(
+            statistics.fmean(
+                float(r.get("adjusted_s", 0.0)) - float(r.get("original_s", 0.0))
+                for r in rows
+            ), 3),
+        "extended": sum(
+            1 for r in rows
+            if float(r.get("adjusted_s", 0)) > float(r.get("original_s", 0))
+        ),
+        "trimmed": sum(
+            1 for r in rows
+            if float(r.get("adjusted_s", 0)) < float(r.get("original_s", 0))
+        ),
+        # The two that actually move a bound.
+        "was_at_min": sum(1 for r in rows if r.get("at_min")),
+        "was_at_max": sum(1 for r in rows if r.get("at_max")),
+        "dropped_peak": sum(1 for r in rows if r.get("keeps_peak") is False),
+    }
 
 
 def review_metrics(
@@ -425,4 +612,6 @@ def review_metrics(
         "mean_review_ms": int(statistics.fmean(times)) if times else None,
         "target_ms": int(target_ms),
         "sessions": sessions,
+        # §17's input for min_window_s / max_window_s — GUESSES gap 1.
+        "nudges": nudge_summary(conn, stream_id),
     }

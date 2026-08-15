@@ -212,8 +212,8 @@ def test_an_inherited_row_alone_still_exports_its_moment(bare):
 
 
 def test_an_operator_trim_outranks_the_detector(bare):
-    """§7.3's nudge keys are not built yet, so adjusted_* is NULL in practice —
-    but the operator's boundary must win the moment it exists."""
+    """§7.3's nudge keys write these (commit 30), and the operator's boundary
+    wins wherever it exists — this is what makes a nudge reach the FCPXML."""
     made = hand_rows(bare, "s", [
         (1, 1, 100.0, 140.0, 2, "2026-08-10 10:00:00", "operator"),
     ])
@@ -223,6 +223,134 @@ def test_an_operator_trim_outranks_the_detector(bare):
     )
     moment = selection.approved_moments(bare, "s", min_rating=2)[0]
     assert (moment.t_start, moment.t_end) == (112.5, 133.25)
+
+
+def test_a_hand_set_boundary_is_not_widened_by_an_overlapping_rating(bare):
+    """The collision between §7.3's nudges and the union rule.
+
+    `approved_moments` unions every rated window in a cluster so that a re-score
+    which trimmed a window cannot shorten a moment approved at its original
+    length (C2). But a nudge is an explicit statement about where the moment
+    begins, and an older overlapping generation would put the trimmed seconds
+    straight back — the operator cuts dead air off the front, the export
+    restores it, and nothing says so.
+
+    So an adjusted window suppresses the unadjusted ones in its cluster.
+    """
+    made = hand_rows(bare, "s", [
+        (1, 0, 100.0, 140.0, 2, "2026-08-10 10:00:00", "operator"),   # superseded
+        (2, 1, 101.0, 141.0, 2, "2026-08-12 11:00:00", "operator"),   # current
+    ])
+    bare.execute(
+        "UPDATE ratings SET adjusted_start = 120.0, adjusted_end = 130.0 "
+        "WHERE candidate_id = ?", (made[1],)
+    )
+
+    moment = selection.approved_moments(bare, "s", min_rating=2)[0]
+    assert (moment.t_start, moment.t_end) == (120.0, 130.0)
+
+
+def test_two_nudged_windows_in_one_cluster_still_union(bare):
+    """C2 among the adjustments themselves: both are the operator speaking."""
+    made = hand_rows(bare, "s", [
+        (1, 0, 100.0, 140.0, 2, "2026-08-10 10:00:00", "operator"),
+        (2, 1, 101.0, 141.0, 2, "2026-08-12 11:00:00", "operator"),
+    ])
+    bare.execute(
+        "UPDATE ratings SET adjusted_start = 118.0, adjusted_end = 128.0 "
+        "WHERE candidate_id = ?", (made[0],)
+    )
+    bare.execute(
+        "UPDATE ratings SET adjusted_start = 124.0, adjusted_end = 132.0 "
+        "WHERE candidate_id = ?", (made[1],)
+    )
+
+    moment = selection.approved_moments(bare, "s", min_rating=2)[0]
+    assert (moment.t_start, moment.t_end) == (118.0, 132.0)
+
+
+def _current_candidate(conn, stream_id):
+    """The first candidate of the CURRENT generation.
+
+    The two nudge tests below make their own ratings rather than reusing the
+    `scored` fixture's, because earlier tests in this module deliberately
+    re-score it — which strands those ratings on a superseded generation and is
+    exactly the state `is_current` cannot see.
+    """
+    row = conn.execute(
+        "SELECT id, t_start, t_end FROM candidates "
+        "WHERE stream_id = ? AND is_current = 1 ORDER BY t_start LIMIT 1",
+        (stream_id,),
+    ).fetchone()
+    assert row is not None, "the fixture stream should have current candidates"
+    return row
+
+
+def test_a_nudge_reaches_the_export_through_the_review_route(scored):
+    """End to end, through the code the operator's keypress actually runs.
+
+    §7.3's nudge keys write `ratings.adjusted_*` via `queries.save_rating`, and
+    `render/clips.py` and `render/cmd_export.py` both read their windows from
+    `approved_moments`. This asserts the join between those two — that a
+    boundary moved in the review screen is the boundary that gets rendered and
+    exported, with nothing in between needing to know about it.
+    """
+    from clipforge.review import queries
+
+    _cfg, stream_id, conn = scored
+    # Rated here rather than relying on the fixture's ratings: earlier tests in
+    # this module re-score it, which strands those on a superseded generation.
+    row = _current_candidate(conn, stream_id)
+    candidate_id = row["id"]
+    trimmed_start = float(row["t_start"]) + 1.5
+    trimmed_end = float(row["t_end"]) - 1.0
+
+    with db.transaction(conn):
+        queries.save_rating(
+            conn, candidate_id, rating=2, review_ms=900,
+            adjusted_start=trimmed_start, adjusted_end=trimmed_end,
+        )
+
+    after = selection.approved_moments(conn, stream_id, min_rating=2)
+    moved = next(m for m in after if candidate_id in m.candidate_ids)
+    assert moved.t_start == pytest.approx(trimmed_start)
+    assert moved.t_end == pytest.approx(trimmed_end)
+
+    # And re-rating without touching the boundaries leaves them alone: absent
+    # means "no opinion", not "restore the detector's window".
+    with db.transaction(conn):
+        queries.save_rating(conn, candidate_id, rating=2, review_ms=800)
+    again = selection.approved_moments(conn, stream_id, min_rating=2)
+    kept = next(m for m in again if candidate_id in m.candidate_ids)
+    assert kept.t_start == pytest.approx(trimmed_start)
+
+
+def test_a_nudged_window_survives_a_rescore(scored):
+    """§13.2 calls the operator's judgment calls irreplaceable, and a trimmed
+    boundary is one. `_inherit_ratings` already carries the columns; this is the
+    assertion that it keeps doing so now that something writes them."""
+    from clipforge.review import queries
+
+    cfg, stream_id, conn = scored
+    row = _current_candidate(conn, stream_id)
+    trimmed_start = float(row["t_start"]) + 0.5
+    trimmed_end = float(row["t_end"]) - 0.5
+    with db.transaction(conn):
+        queries.save_rating(
+            conn, row["id"], rating=2, review_ms=1000,
+            adjusted_start=trimmed_start, adjusted_end=trimmed_end,
+        )
+
+    rescore(cfg, conn, stream_id, ["score.smoothing_sigma_s=2.5"])
+
+    carried = conn.execute(
+        "SELECT r.adjusted_start, r.adjusted_end FROM ratings r "
+        "JOIN candidates c ON c.id = r.candidate_id "
+        "WHERE c.stream_id = ? AND c.is_current = 1 AND r.rating_source = 'inherited' "
+        "AND r.adjusted_start IS NOT NULL", (stream_id,)
+    ).fetchall()
+    assert carried, "a nudged window must not be lost by a re-score"
+    assert any(c["adjusted_start"] == pytest.approx(trimmed_start) for c in carried)
 
 
 # --------------------------------------------------------------------------

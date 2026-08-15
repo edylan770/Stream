@@ -480,6 +480,18 @@ review:
   # `clipforge metrics`, not enforced.
   target_ms_per_candidate: 4000
 
+  # §7.3's `[`/`]`/`{`/`}` keys, which move a window boundary by this much.
+  # §7.3 states 0.5 s.
+  #
+  # A nudge is NOT clamped to score.window.min_window_s / max_window_s, and that
+  # is the whole point rather than an oversight. §17 tunes those two against
+  # "how often the operator nudges boundaries during review", so refusing a
+  # nudge that leaves their range would make the measurement circular: the
+  # operator could never record "I wanted this shorter than 8 s", which is
+  # exactly the observation being collected. The only floor is arithmetic --
+  # a window may not invert or leave the recording.
+  nudge_step_s: 0.5
+
   # NOT IN THE SPEC. §2.2 says "local web app" and nothing about who may talk to
   # it, which was harmless while every route was read-only. A file browser and a
   # "run the pipeline" trigger are reachable by every page open in the browser:

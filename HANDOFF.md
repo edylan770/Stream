@@ -69,9 +69,11 @@ Phase 2.
 | 26 | `7dfcc87` | loudness normalisation (two-pass, measured) and export presets |
 | 27 | `2427dd5` | §8.6 profanity muting, §8.2 filler removal — both toggles, both off |
 | 28 | `9a6d852` | §8.5 hook text via a paste round trip — **Phase 4 complete** |
-| 29 | *this* | §13.2's backup + §13.3's restore test — the irreplaceable tier, covered |
+| 29 | `572a885` | §13.2's backup + §13.3's restore test — the irreplaceable tier, covered |
+| 29a | `3b0d1ab` | the backup manifest describes the copy, not the source (a race in 29) |
+| 30 | *this* | §7.3's nudge keys — **GUESSES gap 1 closed**; §17 can tune the window bounds |
 
-1223 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1249 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 
 **What is not built, by design:** no dual profiles, laughter, pitch, input signals or
 preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
@@ -115,13 +117,13 @@ amount of reading the spec.
 
 ### Still missing, and not asked for by any phase
 
-**§7.3's `[`/`]`/`{`/`}` nudge keys** — the last measurement gap. §17 tunes
-`min_window_s`/`max_window_s` against "how often the operator nudges boundaries during
-review", and with no keys that number cannot be collected at all (GUESSES gap 1). They
-are greyed in the review footer already, and `ratings.adjusted_start`/`adjusted_end`
-plus `render/selection.py` are waiting for them.
+Nothing, for the first time. **§13.2's backup is built** (commits 29/29a) and **§7.3's
+nudge keys are built** (commit 30), which closes GUESSES gap 1 — the instrumentation
+exists and now wants ~10 real streams to say anything.
 
-**§13.2's backup is now built** (commit 29) — see the deviations below.
+Still greyed in the review footer, and still genuinely unbuilt: §7.3's `t` (tag), `n`
+(note) and `e` (export queue). None of them is a measurement gap; `ratings.tags` and
+`ratings.note` exist and nothing writes them.
 
 ---
 
@@ -816,6 +818,54 @@ looks correct and is not.
   the backup, not to throw it away.
 - **`clipforge doctor` reports the newest backup's age.** A nightly job that silently
   stopped looks exactly like one that is working, right up until it matters.
+
+**§7.3's nudge keys (commit 30)**
+
+- **Nothing new in the schema, and nothing new downstream.** `ratings.adjusted_start`/
+  `adjusted_end` already existed, `render/selection.py` already preferred them, and
+  `score/runner._inherit_ratings` already carried them across a re-score — so the keys
+  reach the FCPXML and the renderer without either knowing they exist. `candidates` is
+  never touched: §3.2's `CHECK (t_peak BETWEEN t_start AND t_end)` makes a nudge past the
+  peak an IntegrityError, and candidates are the detector's output that a re-score is
+  free to replace.
+- **A nudge is NOT clamped to `min_window_s`/`max_window_s`, and that is the point.**
+  Those are the two values §17 tunes *against these nudges*, so refusing a window outside
+  their range would make the measurement circular — the operator could never record "I
+  wanted this shorter than 8 seconds". Only arithmetic clamps apply: a window may not
+  invert or leave the recording. VERIFIED in a browser: nudged down to 0.6 s against a
+  `min_window_s` of 8.
+- **A count cannot tune anything, so the row carries direction.** §17 asks "how often the
+  operator nudges", which does not say which way to move a bound. `window_nudge_s`
+  (an **invented** name — §14 has no such metric) records start/end deltas, keypresses,
+  whether the window still contains its peak, and **whether the detector's window had
+  been sitting exactly on a clamp**. That last field is the one that moves a number:
+  repeatedly extending windows that arrived at exactly 60 s *is* `max_window_s` being too
+  low.
+- **The nudge and the rating are different events with different routes.**
+  `ratings.rating` is NOT NULL, so storing an unrated nudge would mean inventing a
+  rating — and a fabricated rating corrupts §14's `signal_firing_rate_by_rating`, which
+  §17 calls the primary weight-tuning input. So the *window* rides along with the rating
+  (§7.3's actual flow: watch, adjust, rate) and the *observation* posts to its own route
+  when the operator leaves the candidate. A nudge followed by walking away is still
+  counted. VERIFIED: the nudge route left the ratings table untouched.
+- **An absent adjustment means "no opinion", not "revert".** `save_rating` COALESCEs, so
+  re-rating a moment trimmed in an earlier session keeps the trim. The payload also
+  returns the stored adjustment, or reopening a stream would show the detector's window
+  and silently hide the operator's own.
+- **An adjusted window suppresses unadjusted ones in its cluster** —
+  `render/selection.py`. FOUND BY A FAILING TEST. `approved_moments` unions every rated
+  window in a cluster so a re-score that trimmed one cannot shorten a moment approved at
+  its original length (C2); but with a nudge in the mix, an overlapping older generation
+  put the trimmed seconds straight back. The operator cuts dead air off the front and the
+  export restores it, with nothing reporting that it did. A hand-set boundary is an
+  explicit statement where a rated candidate window is not, so it wins. Two nudged rows
+  in one cluster still union — both are the operator speaking.
+- **The review modules are now checked for duplicate declarations in one scope.**
+  MEASURED THE HARD WAY: a second `const span` in `drawSpark` is a SyntaxError, an ES
+  module that does not parse does not load *at all*, and the entire review screen went
+  blank while every Python test passed — none of them execute the JS. The check is in
+  Python rather than shelling out to node, because there is no node on this machine and a
+  test that always skips is not a test.
 
 **Export (§10.5)**
 

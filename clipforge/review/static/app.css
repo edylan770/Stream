@@ -732,6 +732,24 @@ video { width: 100%; height: 100%; object-fit: contain; }
 
 .verdict { margin-top: var(--s4); font-size: var(--tmd); min-height: 20px; }
 .verdict b { font-weight: 600; }
+/* ------------------------------------------------- §7.3's nudged window
+ *
+ * Once a boundary moves, this moment's window is the operator's rather than
+ * the detector's — and that is what render/selection.py hands to the FCPXML
+ * and the renderer. Worth being visible at a glance, since nothing else on
+ * screen distinguishes a window you chose from one that was computed.
+ */
+
+.window.adjusted { color: var(--clip); }
+
+.window-note {
+  font-size: var(--txs);
+  color: var(--faint);
+  min-height: 1.1em;                /* reserve the line so nothing jumps */
+}
+.window-note.is-adjusted { color: var(--clip); }
+.window-note.at-limit { color: var(--maybe); }
+
 .verdict.r0 b { color: var(--skip); }
 .verdict.r1 b { color: var(--maybe); }
 .verdict.r2 b { color: var(--clip); }

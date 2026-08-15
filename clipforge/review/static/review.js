@@ -31,8 +31,26 @@ const state = {
   focusedAt: 0,
   sessionStart: 0,
   reviewed: 0,
+  nudged: 0,
+  nudgeStep: 0.5,
   playTimer: null,
 };
+
+/* ---------------------------------------------------------------- windows
+ *
+ * §7.3's `[`/`]`/`{`/`}`. The operator's boundary, when there is one, beats the
+ * detector's everywhere: the readout, `space`, the sparkline rules, the
+ * transcript slice, and — through ratings.adjusted_start/_end and
+ * render/selection.py — the exported clip.
+ *
+ * `adj_start`/`adj_end` are undefined until something moves. Falling back to
+ * the candidate's own values rather than copying them on load keeps "the
+ * operator has an opinion about this window" a fact the code can read, which is
+ * what decides whether a rating carries an adjustment at all. */
+
+const startOf = (c) => (c.adjusted_start ?? c.t_start);
+const endOf = (c) => (c.adjusted_end ?? c.t_end);
+const isAdjusted = (c) => c.adjusted_start !== null && c.adjusted_start !== undefined;
 
 /* ------------------------------------------------------------- lifecycle */
 
@@ -43,10 +61,15 @@ export async function enter(id) {
   state.stream = data.stream;
   state.all = data.candidates;
   state.roleColours = data.role_colours || {};
+  // From the server, not a literal here: review.nudge_step_s is config, and a
+  // second copy of it in the browser would drift silently — the same trap
+  // `target_ms` had before commit 25a.
+  state.nudgeStep = Number(data.nudge_step_s) || 0.5;
   state.cursor = 0;
   state.markersOnly = false;
   state.sessionStart = performance.now();
   state.reviewed = 0;
+  state.nudged = 0;
 
   $("review-main").hidden = false;
   $("summary").hidden = true;
@@ -157,6 +180,9 @@ function current() {
 
 function focusCandidate(index) {
   if (!state.view.length) return;
+  // Leaving a candidate is when its nudges are reported: once per candidate,
+  // whatever the operator did next, including nothing.
+  reportNudge(current());
   state.cursor = Math.max(0, Math.min(index, state.view.length - 1));
   const c = current();
   if (!c) return;
@@ -170,10 +196,7 @@ function focusCandidate(index) {
   document.querySelector("#candidates li.current")
     ?.scrollIntoView({ block: "nearest" });
 
-  $("window").textContent = `${fmt(c.t_start)} – ${fmt(c.t_end)}`;
-  $("position").textContent =
-    `${c.duration_s.toFixed(1)}s window · peak ${fmt(c.t_peak)}` +
-    (c.markers.length ? ` · ${c.markers.length} marker${c.markers.length > 1 ? "s" : ""}` : "");
+  renderWindow(c);
   $("score").textContent = c.score.toFixed(3);
 
   drawSpark(c);
@@ -190,6 +213,47 @@ function focusCandidate(index) {
   if (Number.isFinite(c.t_peak)) {
     try { video.currentTime = c.t_peak; } catch { /* not seekable yet */ }
   }
+}
+
+/* The window readout, and whose window it is.
+ *
+ * When the operator has moved a boundary the screen has to say so plainly:
+ * from here on this moment is theirs, not the detector's, and that is what the
+ * FCPXML and the render will use. */
+function renderWindow(c) {
+  if (!c) return;
+  const start = startOf(c);
+  const end = endOf(c);
+  const adjusted = isAdjusted(c);
+
+  $("window").textContent = `${fmt(start)} – ${fmt(end)}`;
+  $("window").classList.toggle("adjusted", adjusted);
+
+  const bits = [`${(end - start).toFixed(1)}s window`, `peak ${fmt(c.t_peak)}`];
+  if (c.markers.length) {
+    bits.push(`${c.markers.length} marker${c.markers.length > 1 ? "s" : ""}`);
+  }
+  $("position").textContent = bits.join(" · ");
+
+  const note = $("window-note");
+  if (!note || note.classList.contains("at-limit")) return;
+
+  if (!adjusted) {
+    note.textContent = "";
+    note.className = "window-note";
+    return;
+  }
+
+  const signed = (v) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(1)}`;
+  const parts = [
+    `yours: start ${signed(start - c.t_start)}s, end ${signed(end - c.t_end)}s`,
+  ];
+  // Legal here and forbidden on `candidates` by CHECK — worth saying out loud,
+  // because a window that no longer contains the peak it was detected from is
+  // either a deliberate trim or a mis-keyed nudge, and only the operator knows.
+  if (c.t_peak < start || c.t_peak > end) parts.push("peak is now outside it");
+  note.textContent = parts.join(" · ");
+  note.className = "window-note is-adjusted";
 }
 
 function drawSpark(c) {
@@ -224,14 +288,41 @@ function drawSpark(c) {
   svg.appendChild(line);
 
   // Where the peak sits inside the window, and where any markers landed.
-  addRule(svg, (c.t_peak - c.t_start) / (c.t_end - c.t_start), W, H, "#5aa9ff", 1.5);
+  // `window` rather than `span`: `span` is already the sparkline's dB range a
+  // few lines up, and reusing the name here is a SyntaxError that takes the
+  // whole module — and therefore the entire review screen — down at load.
+  const window_s = c.t_end - c.t_start;
+  addRule(svg, (c.t_peak - c.t_start) / window_s, W, H, "#5aa9ff", 1.5);
   for (const t of c.markers) {
-    addRule(svg, (t - c.t_start) / (c.t_end - c.t_start), W, H, "#b57cff", 1);
+    addRule(svg, (t - c.t_start) / window_s, W, H, "#b57cff", 1);
+  }
+
+  // The operator's boundaries, drawn over the detector's envelope. The envelope
+  // itself still covers the ORIGINAL window — the payload has no samples
+  // outside it — so an extension is reported in words rather than drawn as a
+  // rule pinned to the edge, which would look like a boundary that is there.
+  // Commit 31's nudge_context_s is what turns that into something visible.
+  const notes = [];
+  if (isAdjusted(c)) {
+    const start = startOf(c);
+    const end = endOf(c);
+    for (const t of [start, end]) {
+      if (t >= c.t_start && t <= c.t_end) {
+        addRule(svg, (t - c.t_start) / window_s, W, H, "#ffd400", 1.5);
+      }
+    }
+    if (start < c.t_start || end > c.t_end) {
+      notes.push("your window extends past what is drawn here");
+    } else {
+      notes.push("yellow = your boundaries");
+    }
   }
 
   caption.textContent =
-    `${c.sparkline_kind} · ${lo.toFixed(1)} to ${hi.toFixed(1)} dBFS` +
-    (c.markers.length ? " · purple = marker press" : "");
+    [`${c.sparkline_kind} · ${lo.toFixed(1)} to ${hi.toFixed(1)} dBFS`]
+      .concat(c.markers.length ? ["purple = marker press"] : [])
+      .concat(notes)
+      .join(" · ");
 }
 
 function addRule(svg, fraction, W, H, colour, width) {
@@ -259,7 +350,14 @@ function renderTranscript(c) {
   const list = $("transcript");
   if (!list || $("transcript-pane").hidden) return;
 
-  const lines = c.transcript || [];
+  // Re-sliced against the CURRENT window, so trimming a boundary immediately
+  // shows what the clip would no longer contain. The server sliced on the
+  // detector's window, so an extension cannot reveal lines that are not in the
+  // payload — that is commit 31.
+  const start = startOf(c);
+  const end = endOf(c);
+  const lines = (c.transcript || []).filter((l) => l.t_end >= start && l.t <= end);
+
   $("transcript-count").textContent = lines.length
     ? `${lines.length} line${lines.length > 1 ? "s" : ""}` : "";
 
@@ -344,13 +442,105 @@ function rate(value) {
   c.rating_source = "operator";
   if (wasUnrated) state.reviewed += 1;
 
+  // §7.3's adjusted window rides along with the rating — ratings.rating is NOT
+  // NULL, so there is nowhere to put a boundary before there is a verdict, and
+  // inventing one would corrupt §14's tuning input. The keys are omitted when
+  // untouched: absent means "no opinion", and the server keeps whatever an
+  // earlier session recorded rather than reverting to the detector's window.
+  const body = { rating: value, review_ms: elapsed };
+  if (isAdjusted(c)) {
+    body.adjusted_start = c.adjusted_start;
+    body.adjusted_end = c.adjusted_end;
+  }
+
   // Fire and forget: the keyboard must never wait on the network.
-  postAndForget(`/api/candidates/${c.id}/rating`, { rating: value, review_ms: elapsed });
+  postAndForget(`/api/candidates/${c.id}/rating`, body);
 
   renderList();
   // §7.3: "Rating advances automatically to the next candidate."
   if (state.cursor < state.view.length - 1) move(1);
   else focusCandidate(state.cursor);
+}
+
+/* §7.3: "[ / ] nudge window start earlier / later (0.5 s)", "{ / } end".
+ *
+ * The clamps here are ONLY the ones arithmetic demands: a window may not
+ * invert, start before the recording, or end after it.
+ *
+ * It is deliberately NOT clamped to score.window.min_window_s / max_window_s.
+ * Those are the two numbers §17 tunes *against these very nudges*, so refusing
+ * a window outside their range would make the measurement circular — the
+ * operator could never record "I wanted this shorter than 8 seconds", which is
+ * exactly the observation that has been missing (GUESSES gap 1). A window
+ * shorter than min_window_s is a finding, not a mistake.
+ *
+ * A press that would break a real clamp is a no-op and is NOT counted: a
+ * refused keystroke is not a nudge, and counting it would inflate the one
+ * number this feature exists to collect. */
+function nudge(edge, direction) {
+  const c = current();
+  if (!c) return;
+
+  const step = state.nudgeStep * direction;
+  let start = startOf(c);
+  let end = endOf(c);
+  if (edge === "start") start += step; else end += step;
+
+  const limit = Number(state.stream?.duration_s);
+  if (end - start < state.nudgeStep) return flashLimit("too short to nudge further");
+  if (start < 0) return flashLimit("that is the start of the recording");
+  if (Number.isFinite(limit) && end > limit) {
+    return flashLimit("that is the end of the recording");
+  }
+
+  c.adjusted_start = Number(start.toFixed(3));
+  c.adjusted_end = Number(end.toFixed(3));
+  c.nudge_presses = (c.nudge_presses || 0) + 1;
+  // A second visit that adjusts the window again is a second episode and gets
+  // its own row; without clearing this, coming back to a candidate would mean
+  // the later adjustment was never recorded at all.
+  c.nudge_reported = false;
+  // ...but the session's denominator counts CANDIDATES nudged, not episodes,
+  // because that is what "how often" is a fraction of.
+  if (!c.nudge_counted) {
+    c.nudge_counted = true;
+    state.nudged += 1;
+  }
+
+  // Redraw everything that describes the window. The video is deliberately not
+  // re-seeked: the operator is usually watching while adjusting, and yanking
+  // the playhead on every keypress would make the edit impossible to judge.
+  renderWindow(c);
+  renderTranscript(c);
+  drawSpark(c);
+}
+
+function flashLimit(message) {
+  const el = $("window-note");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.add("at-limit");
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => {
+    el.classList.remove("at-limit");
+    renderWindow(current());
+  }, 1200);
+}
+
+/* Posted once per candidate, on leaving it — not on every keypress, which
+ * would be a request per 0.5 s of adjustment, and not on rating, which would
+ * lose the nudges the operator makes and then walks away from. */
+function reportNudge(c) {
+  if (!c || !c.nudge_presses || c.nudge_reported) return;
+  c.nudge_reported = true;
+  postAndForget(`/api/candidates/${c.id}/nudge`, {
+    adjusted_start: c.adjusted_start,
+    adjusted_end: c.adjusted_end,
+    presses: c.nudge_presses,
+  });
+  // The presses are now accounted for. Anything after this belongs to the next
+  // episode, so summing `presses` across rows stays the true keystroke total.
+  c.nudge_presses = 0;
 }
 
 function playWindow() {
@@ -360,12 +550,12 @@ function playWindow() {
 
   if (!video.paused) return stopPlayback();
 
-  video.currentTime = c.t_start;
+  video.currentTime = startOf(c);
   $("playing").hidden = false;
   video.play().catch(() => { $("playing").hidden = true; });
 
   // Stop at the window's end rather than running on into the next moment.
-  const stopAt = c.t_end;
+  const stopAt = endOf(c);
   const watch = () => {
     if (video.currentTime >= stopAt) stopPlayback();
   };
@@ -382,9 +572,12 @@ function stopPlayback() {
 
 async function finish() {
   const seconds = (performance.now() - state.sessionStart) / 1000;
-  if (state.reviewed > 0) {
+  // The candidate on screen has not been left yet, so its nudges are still
+  // unreported.
+  reportNudge(current());
+  if (state.reviewed > 0 || state.nudged > 0) {
     await post(`/api/streams/${encodeURIComponent(state.streamId)}/session`, {
-      duration_s: seconds, reviewed: state.reviewed,
+      duration_s: seconds, reviewed: state.reviewed, nudged: state.nudged,
     }).catch(() => {});
   }
 
@@ -437,6 +630,12 @@ export function onKey(event) {
     case "1": rate(0); break;
     case "2": rate(1); break;
     case "3": rate(2); break;
+    // §7.3: [ / ] move the start earlier / later, { / } the end. On a US
+    // layout the braces are shift+brackets, which `event.key` reports directly.
+    case "[": event.preventDefault(); nudge("start", -1); break;
+    case "]": event.preventDefault(); nudge("start", +1); break;
+    case "{": event.preventDefault(); nudge("end", -1); break;
+    case "}": event.preventDefault(); nudge("end", +1); break;
     case " ": event.preventDefault(); playWindow(); break;
     case "?": case "/":
       state.showSignals = !state.showSignals;

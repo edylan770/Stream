@@ -12,7 +12,7 @@ show it wrong). Then the spec sections you are touching.
 
 ## Where the build actually is
 
-**Phases 0, 1, 2 and 4 of §15 are complete. 1223 tests pass** (`.venv\Scripts\python.exe -m pytest -q`), plus 3 that need `--asr`.
+**Phases 0, 1, 2 and 4 of §15 are complete. 1249 tests pass** (`.venv\Scripts\python.exe -m pytest -q`), plus 3 that need `--asr`.
 
 A recording goes all the way today:
 
@@ -78,13 +78,17 @@ those will say more about what to build next than any amount of planning.
 
 ### Missing, and asked for by no phase
 
-**§13.2's backup is built** (commit 29). `clipforge backup` takes one,
+**§13.2's backup is built** (commits 29/29a). `clipforge backup` takes one,
 `--schedule` prints the nightly `schtasks` line, `--verify` is §13.3's restore
 test. **Set the schedule up before your first review session** — the database
 already holds 3 ratings and 112 `tool_metrics` rows, so there is already
 something in there that cannot be reconstructed.
 
-**§7.3's nudge keys are the last measurement gap** — see GUESSES gap 1.
+**§7.3's nudge keys are built** (commit 30), which closes GUESSES gap 1. Press
+`[`/`]` to move a window's start and `{`/`}` its end; the trim is what gets
+exported and rendered, and every nudge is recorded for §17. **The
+instrumentation now exists and wants ~10 real streams** — which is, again, the
+thing at the top of this file.
 
 ---
 
@@ -160,7 +164,6 @@ In rough order of value:
 
 | What | Why now | Cost |
 |---|---|---|
-| **§7.3's nudge keys** (`[`/`]`/`{`/`}`) | GUESSES gap #1: §17 tunes `min_window_s` against "how often the operator nudges boundaries" and the keys do not exist, so the number cannot be collected. Every stream reviewed without them is one whose nudge data never existed (C6). `ratings.adjusted_start`/`adjusted_end` and `render/selection.py` are already waiting for them. | Half a day |
 | **`signal_firing_rate_by_rating`** | §14 calls it "the primary weight-tuning input" and §17's whole procedure needs it. The data is being logged per A9; nothing aggregates it. Needs ~10 streams to mean anything. | Half a day |
 | **Phase 3 proper** | Pitch, laughter, silence, overlap, input signals, dual profiles, preview assets. Four of them need `input_logger` to have run on a real stream. | A week |
 | **Phase 5** (digests) | Needs an API key, or the same paste round trip `hook` already uses. | Days |

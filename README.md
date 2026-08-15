@@ -170,6 +170,13 @@ Then, in the app:
    20–40 minutes for a 4-hour stream, mostly the proxy encode. Leave it.
 3. **Review** — `j`/`k` to move, `1`/`2`/`3` to rate, `space` to play the window,
    `?` for why it scored. Target is 4 seconds a candidate.
+   `[`/`]` move the window's **start** earlier/later by half a second, `{`/`}`
+   its **end**. A window you adjust is the one that gets exported and rendered,
+   not the detector's — the readout turns green and says how far you moved it.
+   Nudging is also how §17's window-length settings get tuned: `clipforge
+   metrics <id>` reports which way you tend to move boundaries and how often the
+   window you were given had been clamped, so **nudge freely rather than putting
+   up with a boundary you dislike.**
 4. **Export** — `.\clipforge.ps1 export <stream_id>` writes an FCPXML.
    In Resolve: *File → Import → Timeline*.
 5. **Render** — `.\clipforge.ps1 render <stream_id>` writes a finished vertical
@@ -258,6 +265,13 @@ registered, so marker times were read as VOD seconds instead of being converted
 **Review feels slow** — `clipforge metrics <id>`. §7.1 sets a hard target of 4
 seconds per candidate and says that if review exceeds it, the UI gets fixed
 before any other feature anywhere in the system.
+
+**The windows are consistently too long or too short** — do not put up with it,
+nudge them: `[`/`]`/`{`/`}` during review. After a handful of streams
+`clipforge metrics <id>` will tell you which way you keep moving boundaries and
+how many of the windows you adjusted had been clamped to
+`score.window.min_window_s` / `max_window_s` — which is exactly how §17 says to
+tune those two, and it needs your nudges to say anything.
 
 **Footage moved to another drive** — `clipforge db relink --from <old> --to <new>`.
 
@@ -355,7 +369,7 @@ deleted, whatever the settings say.
 .venv\Scripts\python -m pytest -q
 ```
 
-1223 tests, plus 3 that load a real Whisper model and need `--asr`. The test
+1249 tests, plus 3 that load a real Whisper model and need `--asr`. The test
 fixtures are **synthetic** — ffmpeg `testsrc2` video with
 numerically authored audio, colour bars and static, deliberately. Real footage
 cannot validate a detector: nobody can say what the correct mic RMS at t=412 of

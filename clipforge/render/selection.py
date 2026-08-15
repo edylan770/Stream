@@ -30,8 +30,11 @@ Two smaller rules fall out of the same reasoning:
   both would let one judgment call appear as two, which is exactly what §14's
   tuning is told to avoid.
 * **`ratings.adjusted_start`/`adjusted_end` win over the candidate window.**
-  §7.3's nudge keys are not built yet so these are NULL in practice, but the
-  operator's trim outranks the detector's guess whenever it exists.
+  §7.3's nudge keys write them, and the operator's trim outranks the detector's
+  guess wherever it exists — including over the union rule above. A cluster
+  containing an adjusted window is measured from the adjusted windows alone;
+  otherwise an overlapping older generation would widen a hand-set boundary
+  back out, silently undoing the edit that was just made.
 """
 
 from __future__ import annotations
@@ -97,6 +100,10 @@ def rated_candidates(conn: sqlite3.Connection, stream_id: str) -> list[dict]:
             # still resolve to the later one deterministically.
             "rated_at": row["rated_at"] or "",
             "note": row["note"],
+            # Whether these boundaries are the operator's own (§7.3's nudge
+            # keys) or the detector's. See `approved_moments` — it decides
+            # which windows the union may draw from.
+            "adjusted": row["adjusted_start"] is not None,
         }
         for row in rows
     ]
@@ -135,9 +142,23 @@ def approved_moments(
         # original length. C2 again — the operator can trim in Resolve, but
         # cannot recover a frame the export never referenced.
         keep = [e for e in group if e["rating"] >= min_rating]
+
+        # **Unless the operator set a boundary by hand.** §7.3's nudge keys are
+        # an explicit statement about where this moment starts and ends; a
+        # candidate window that was merely rated is not. Taking the union across
+        # both would let an overlapping older generation silently widen a trim
+        # back out — the operator cuts three seconds of dead air off the front,
+        # and the export puts it back with nothing reporting that it did.
+        #
+        # So an adjusted window suppresses the unadjusted ones. C2 still holds
+        # among adjustments themselves: two nudged rows in one cluster union
+        # normally, because both are the operator speaking.
+        adjusted = [e for e in keep if e["adjusted"]]
+        source = adjusted or keep
+
         moments.append(Moment(
-            t_start=min(e["t_start"] for e in keep),
-            t_end=max(e["t_end"] for e in keep),
+            t_start=min(e["t_start"] for e in source),
+            t_end=max(e["t_end"] for e in source),
             rating=decision["rating"],
             rated_at=decision["rated_at"],
             candidate_ids=[e["id"] for e in sorted(

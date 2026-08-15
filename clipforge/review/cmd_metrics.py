@@ -93,9 +93,41 @@ def _print(stream_id: str, m: dict, target_ms: float) -> None:
         print(f"  session         {seconds / 60:.1f} min for {reviewed} candidates{rate}"
               f"  [{session['recorded_at']}]")
 
+    _nudges(m)
+
     if median > target_ms:
         print("\n  §7.1: if review exceeds the target, fix the UI before adding any "
               "feature anywhere in the system.")
+
+
+def _nudges(m: dict) -> None:
+    """§17's input for `min_window_s` / `max_window_s` (GUESSES gap 1).
+
+    §17 says to tune those two against "how often the operator nudges boundaries
+    during review". A count alone cannot do it — it does not say which way to
+    move a bound — so what is printed is the direction, and then the two
+    figures that actually decide: how many nudged windows had come out sitting
+    exactly on a clamp.
+    """
+    n = m.get("nudges") or {}
+    if not n.get("nudged"):
+        return
+
+    print(f"  windows nudged  {n['nudged']} ({n['presses']} keypresses)"
+          f"  ·  {n['extended']} extended, {n['trimmed']} trimmed")
+    print(f"  mean move       start {n['mean_start_delta_s']:+.2f}s  "
+          f"end {n['mean_end_delta_s']:+.2f}s  "
+          f"length {n['mean_length_delta_s']:+.2f}s")
+
+    if n["was_at_min"]:
+        print(f"  at min_window_s {n['was_at_min']} of them had been clamped to "
+              f"min_window_s — §17 says tune it against exactly this")
+    if n["was_at_max"]:
+        print(f"  at max_window_s {n['was_at_max']} of them had been clamped to "
+              f"max_window_s — §17 says tune it against exactly this")
+    if n["dropped_peak"]:
+        print(f"  peak dropped    {n['dropped_peak']} window(s) no longer contain "
+              f"the peak they were detected from")
 
 
 def _stage_durations(conn, ids: list[str]) -> None:
