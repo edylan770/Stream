@@ -137,6 +137,13 @@ def unweighted_context(tracks: list[SignalTrack], index: int) -> dict[str, float
     context: dict[str, float | None] = {}
     for track in tracks:
         suffix = track.unit.lower()
+        # A signal with no unit is skipped rather than given an empty suffix.
+        # This line exists to put an absolute level in a unit a human already
+        # reads — "−18 dB against a −34 dB baseline". `sudden_silence` is a 0..1
+        # gate, and "0.7 against a baseline of 0.02" tells the reader nothing
+        # the z-score beside it did not already say.
+        if not suffix:
+            continue
         if track.raw is not None:
             context[f"_{track.name}_{suffix}"] = _finite(track.raw[index])
         if track.baseline is not None:

@@ -23,7 +23,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from clipforge import db, signals
 from clipforge.pipeline.context import StageContext
-from clipforge.score import features, grid, kernels, windows
+from clipforge.score import derived, features, grid, kernels, windows
 
 #: §5.4.1 continuous signals live in `signal_series`; §5.4.2 events live in
 #: `events`. A profile weight naming neither is reported rather than ignored.
@@ -51,35 +51,87 @@ class ScoreResult:
 # --------------------------------------------------------------------------
 
 
+def std_floor_for(cfg, name: str) -> float:
+    """The z-score's sigma floor for one signal.
+
+    `score.zscore_std_floor` is in DECIBELS and coupled to `extract.rms.db_floor`
+    — it exists so a digitally silent stretch, whose sigma is exactly zero, does
+    not turn dither into z = 50. Phase 3 added signals on other scales, and one
+    number cannot serve them: for a 0..1 gate firing under 25% of the time sigma
+    is below 0.5, so the dB floor binds and z lands at exactly ~2.0 however rare
+    the firing is. That was the dB number rescuing a signal it knew nothing
+    about, by luck.
+    """
+    overrides = cfg.get("score.zscore_std_floor_by_signal", {}) or {}
+    if name in overrides:
+        return float(overrides[name])
+    return float(cfg.get("score.zscore_std_floor"))
+
+
+def gather_raw(
+    ctx: StageContext, timeline: np.ndarray
+) -> tuple[dict[str, np.ndarray], dict[str, str]]:
+    """Every stored signal, resampled onto the grid, before any normalization.
+
+    Split out from `build_tracks` because §5.4.1's derived signals are functions
+    of these *raw* arrays — `sudden_silence` needs the RMS, not its z-score —
+    and because it puts "what does this stream have" in one place.
+    """
+    raw: dict[str, np.ndarray] = {}
+    units: dict[str, str] = {}
+    for name, series in signals.load_all(ctx.conn, ctx.stream_id).items():
+        raw[name] = grid.resample(series, timeline)
+        units[name] = str(series.params.get("unit", "dB"))
+    return raw, units
+
+
 def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features.SignalTrack], list[str]]:
-    """Every weighted signal, resampled and normalized onto the grid.
+    """Every signal, resampled and normalized onto the grid.
 
     Continuous signals are z-scored (§6.2 step 3); event kernels are not. That
     asymmetry is deliberate and is what makes §6.5's weights comparable: both
     arrive in units where 1.0 is roughly one standard deviation of notability,
     z-scores by construction and kernels by unit-peak normalization.
+
+    §5.4.1's derived signals (`score/derived.py`) join the same pool as the
+    stored ones before anything is weighted, so the profile lookup and A9's
+    weight-0 sweep both see them with no special case. §6.2 puts step 5's
+    composites before step 6's weighting for the same reason.
     """
     profile = ctx.cfg.profile
     baseline_samples = grid.window_samples(
         ctx.cfg.get("score.rolling_baseline_window_s"), ctx.cfg.get("score.score_grid_hz")
     )
-    std_floor = float(ctx.cfg.get("score.zscore_std_floor"))
 
     tracks: list[features.SignalTrack] = []
     missing: list[str] = []
 
-    stored = signals.load_all(ctx.conn, ctx.stream_id)
+    raw_values, units = gather_raw(ctx, timeline)
     events = load_events(ctx)
 
+    # §6.2 step 5: "Compute composite/correlation signals" — before the profiles
+    # are applied, so a derived signal is weightable exactly like a stored one.
+    derived_values, derived_units, derived_events = derived.compute(
+        raw_values, timeline, ctx.cfg
+    )
+    raw_values.update(derived_values)
+    units.update(derived_units)
+    for kind, times in derived_events.items():
+        events.setdefault(kind, list(times))
+
+    def continuous(name: str, weight: float) -> features.SignalTrack:
+        raw = raw_values[name]
+        z, baseline, _ = grid.rolling_zscore(
+            raw, baseline_samples, std_floor_for(ctx.cfg, name)
+        )
+        return features.SignalTrack(
+            name=name, values=z, weight=weight, is_event=False,
+            baseline=baseline, raw=raw, unit=units.get(name, "dB"),
+        )
+
     for name, weight in profile.weights.items():
-        if name in stored:
-            raw = grid.resample(stored[name], timeline)
-            z, baseline, _ = grid.rolling_zscore(raw, baseline_samples, std_floor)
-            tracks.append(features.SignalTrack(
-                name=name, values=z, weight=float(weight),
-                is_event=False, baseline=baseline, raw=raw,
-                unit=str(stored[name].params.get("unit", "dB")),
-            ))
+        if name in raw_values:
+            tracks.append(continuous(name, float(weight)))
         elif name in events or name in EVENT_SOURCE_KINDS:
             kernel = kernels.for_kind(name, timeline, events.get(name, []), ctx.cfg)
             tracks.append(features.SignalTrack(
@@ -99,17 +151,18 @@ def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features
     # and written into every vector as null — with §17's tuning input silently
     # absent.
     #
-    # Weight 0 contributes exactly nothing to the composite, so no score moves.
+    # Weight 0 contributes exactly nothing to the composite (`composite_of`
+    # skips these outright), so no score moves.
     weighted = {track.name for track in tracks}
-    for name, series in stored.items():
-        if name in weighted:
-            continue
-        raw = grid.resample(series, timeline)
-        z, baseline, _ = grid.rolling_zscore(raw, baseline_samples, std_floor)
-        tracks.append(features.SignalTrack(
-            name=name, values=z, weight=0.0, is_event=False, baseline=baseline, raw=raw,
-            unit=str(series.params.get("unit", "dB")),
-        ))
+    for name in raw_values:
+        if name not in weighted:
+            tracks.append(continuous(name, 0.0))
+    for kind, times in events.items():
+        if kind not in weighted and kind in derived_events:
+            tracks.append(features.SignalTrack(
+                name=kind, weight=0.0, is_event=True,
+                values=kernels.for_kind(kind, timeline, list(times), ctx.cfg),
+            ))
 
     return tracks, missing
 

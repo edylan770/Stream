@@ -24,6 +24,11 @@ def add_arguments(parser) -> None:
         help="with --at, summarise +/- this many seconds around it",
     )
     parser.add_argument("--params", action="store_true", help="show extraction parameters")
+    parser.add_argument(
+        "--derived", action="store_true",
+        help="also compute §5.4.1's score-time signals (sudden_silence, "
+             "overlap_speech, ...) and show them alongside the stored ones",
+    )
     config.add_config_arguments(parser)
 
 
@@ -42,6 +47,8 @@ def main(args) -> int:
             return 1
 
         series = signals.load_all(conn, args.stream_id)
+        if args.derived:
+            series.update(_derived_series(cfg, conn, args.stream_id, series))
         if args.kind:
             series = {k: v for k, v in series.items() if k == args.kind}
             if not series:
@@ -110,6 +117,47 @@ def _summary(conn: sqlite3.Connection, stream_id: str, series: dict, show_params
             for key, value in sorted(data.params.items()):
                 print(f"    {key:<20} {value}")
     return 0
+
+
+def _derived_series(cfg, conn: sqlite3.Connection, stream_id: str, stored: dict) -> dict:
+    """§5.4.1's score-time signals, recomputed for inspection.
+
+    They are not stored (C3 — see `score/derived.py`), which means the one
+    command whose whole purpose is "the candidates look wrong, is the signal
+    underneath them wrong" could not see half the signals feeding a Phase 3
+    profile. Recomputing is a few array operations, so the answer is to offer
+    it rather than to start writing them to the database.
+
+    Sampled at `score.score_grid_hz` rather than `extract.signal_hz`, and the
+    rate is printed, because that is genuinely the grid they exist on.
+    """
+    from clipforge import signals as signals_mod
+    from clipforge.score import derived, grid
+
+    duration = conn.execute(
+        "SELECT duration_s FROM streams WHERE id = ?", (stream_id,)
+    ).fetchone()[0]
+    if not duration or not stored:
+        return {}
+
+    grid_hz = float(cfg.get("score.score_grid_hz"))
+    timeline = grid.build(float(duration), grid_hz)
+    raw = {kind: grid.resample(data, timeline) for kind, data in stored.items()}
+
+    values, units, events = derived.compute(raw, timeline, cfg)
+    out = {
+        name: signals_mod.Series(
+            kind=name, values=data, sample_rate_hz=grid_hz, t0=0.0,
+            params={"unit": units.get(name, ""), "derived": True},
+        )
+        for name, data in values.items()
+    }
+    for kind, times in events.items():
+        print(f"  (derived event {kind}: {len(times)} occurrence(s)"
+              + (f", first at {times[0]:.2f}s" if times else "") + ")")
+    for name, needs in derived.missing_inputs(raw).items():
+        print(f"  (derived {name}: not computed — needs {', '.join(needs)})")
+    return out
 
 
 def _unit(data) -> str:

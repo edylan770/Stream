@@ -289,8 +289,33 @@ def test_the_vector_holds_signals_the_profile_does_not_weight(scored):
 
     # Everything else — the signals no phase computes yet — is still null,
     # which is what makes a Phase 1 vector and a Phase 3 vector comparable.
-    assert not computed - stored - weighted
+    #
+    # There are now three legitimate sources of a value, not two: stored,
+    # weighted, and DERIVED (§5.4.1's signals that are computed at score time
+    # rather than extracted — see score/derived.py). Anything outside those
+    # three is the failure this guards: a Phase 7 signal like `clutch` acquiring
+    # a number that nothing computed.
+    from clipforge.score import derived
+
+    derivable = {d.name for d in derived.DERIVATIONS}
+    assert not computed - stored - weighted - derivable
     assert len(vector) == len(cfg.feature_schema.keys)
+
+
+def test_derived_signals_are_in_the_vector_but_were_never_stored(scored):
+    """The C3 boundary, asserted from the other side: `overlap_speech` reaches
+    A9's vector without ever becoming a `signal_series` row, so retuning its
+    threshold costs a re-score rather than a re-extraction."""
+    from clipforge import signals
+    from clipforge.score import derived
+
+    _cfg, conn, _engine, _manifest, _ = scored
+    vector = json.loads(candidates(conn)[0]["feature_vector"])
+    stored = set(signals.kinds(conn, "fx"))
+
+    derivable = {d.name for d in derived.DERIVATIONS if not d.emits_events}
+    assert derivable & set(vector), "derived signals belong in the vector"
+    assert not derivable & stored, "and must not have been written to the database"
 
 
 def test_unweighted_signals_do_not_appear_in_the_breakdown(scored):

@@ -408,7 +408,7 @@ function renderSignals(c) {
 // mic_f0 is hertz, and a context line reading "mic_f0 166.2 dB" would be a
 // label stating something false. A null is a signal that had no observation at
 // this instant — an unvoiced frame — and is dropped rather than printed.
-const CONTEXT_UNITS = { db: "dB", hz: "Hz" };
+const CONTEXT_UNITS = { db: "dB", hz: "Hz", st: "semitones" };
 
 function contextLine(c) {
   const bits = Object.entries(c.context)

@@ -150,6 +150,52 @@ without saying so, and all three were silent failures rather than errors:
 seconds would draw a smooth pitch glide between two words and hand it to
 `mic_f0_variance` as prosody.
 
+## Derived signals (Phase 3, §5.4.1 / §5.4.3)
+
+Computed at score time, not stored — each is a pure function of a stored
+primitive **plus a tunable**, and storing it would freeze that tunable into every
+stream ever processed (C3). Retuning anything below costs a re-score, which §6.1
+promises is free, rather than a re-extraction of the library.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `score.derived.f0_variance_window_s` | `5.0` | **grounded** | §5.4.1 states it | A window too short to span a phrase, or so long it averages a whole paragraph's prosody into one number |
+| `score.derived.f0_variance_min_observations` | `8` | **arbitrary** | Below this many voiced samples the answer is NaN rather than zero. A "prosodic range" over two voiced frames is noise wearing the name of a signal, and zero would claim the speaker was monotone | `mic_f0_variance` null on lines that are plainly expressive (too high), or spiking on single words (too low) |
+| `score.derived.silence.lookback_s` | `2.0` | **grounded** | §5.4.1's own "within 2 s of high activity" | — |
+| `score.derived.silence.activity_z` / `drop_z` / `quiet_z` | `1.0` / `1.5` / `0.5` | **plausible** | See below — `drop_z` is the one that detects | Firing through ordinary pauses between sentences (thresholds too loose), or missing a real stop-dead (too tight). MEASURED on the speech fixture: 9 of 9 authored mic lines produce a firing, 0 of the party-only lines do |
+| `score.derived.silence.ramp_s` | `0.5` | **arbitrary** | §6.2 smooths the composite afterwards, so a square wave would be smoothed into something arbitrary anyway; ramping makes the shape intentional | — |
+| `score.derived.vad.margin_db` | `6.0` | **plausible** | Above the track's own rolling baseline, so it encodes no microphone's gain. MEASURED against the fixture's authored utterances: recall 100% on both tracks, precision 84.5% (mic) and 89.1% (party) | Speech missed on a quiet speaker (too high), or room tone counted as speech (too low) |
+| `score.derived.vad.min_speech_s` | `0.3` | **arbitrary** | A shorter run is a click, a keyboard, a cough | Short interjections ("what?") being dropped |
+| `score.derived.vad.hangover_s` | `0.4` | **plausible** | The gaps between words in one sentence are below any energy threshold; without this, one sentence becomes nine "utterances" none of which survives `min_speech_s`. MEASURED: the predicted overlap runs exactly this far past the authored one and no further | Two separate remarks merged into one utterance (too long) |
+| `score.derived.stillness.*` | `3.0` / `3.0` / `0.5` / `0.5` | **arbitrary** | Inert until the `input_signals` stage exists; nothing has ever produced an input rate to calibrate against | Everything. These are the least evidenced numbers in the file |
+| `score.derived.reaction.window_s` | `2.0` | **grounded** | §5.4.3's own "within 2 s" | — |
+| `score.derived.reaction.silence_level` / `party_spike_z` | `0.5` / `1.0` | **arbitrary** | How far `sudden_silence` must have ramped, and how loud the party must be | Nothing yet — **neither fixture authors §5.4.3's shape**, so this composite is tested synthetically only |
+| `score.zscore_std_floor_by_signal` | `0.05` × 3, `0.25` | **arbitrary** | `score.zscore_std_floor` is 0.5 and in DECIBELS. For a 0..1 gate firing under 25% of the time sigma is below 0.5, so the dB floor binds and z lands at exactly ~2.0 however rare the firing — the dB number rescuing a signal it knows nothing about. 0.05 lets a gate firing 1% of the time reach z ≈ 4 and one firing 20% reach z ≈ 2, which is the ordering C2 wants | A derived signal dominating the composite (floor too low), or its firings all scoring alike (too high) |
+
+**Four things measured that are not parameters:**
+
+- **`sudden_silence` cannot be defined as "below a threshold".** The first cut
+  tested `z <= quiet_z` with a negative threshold and fired **zero times on every
+  input**, because on any real stream *silence is the baseline*: the operator is
+  not talking most of the time, so the rolling mean sits near the quiet level and
+  z during silence is about zero, never meaningfully negative. The **drop** from
+  the recent peak is what detects; `quiet_z` is only a confirmation.
+- **`reaction_onset` requires the overlap to BEGIN after the silence.**
+  `sudden_silence` (the mic went quiet) and `overlap_speech` (both mics live) are
+  nearly contradictory, so the only way both hold at one instant is inside
+  `vad.hangover_s`. MEASURED: a concurrent test fired on the speech fixture at
+  54.6 s and on the noise fixture at 27.3 s — real moments, found through a
+  constant chosen to stop one sentence being chopped into nine. §5.4.3's word is
+  "followed", and a rising edge is what that means.
+- **Neither fixture authors §5.4.3's shape.** The noise fixture's overlap starts
+  *before* its silence; the speech fixture's overlap starts 0.6 s after a silence
+  that has already run nineteen seconds, by which time `sudden_silence` has
+  decayed. So `reaction_onset` has synthetic tests only, and the real check is a
+  hand-labelled clip.
+- **`overlap_speech` needs no model.** Recall was 100% against the manifest's own
+  `overlap_windows`, and the entire imprecision is the hangover overrunning the
+  authored end by 0.34 s. Zero firings across the 19.4 s of authored silence.
+
 ## Extraction and media
 
 | Parameter | Value | Confidence | Rationale | Falsified by |

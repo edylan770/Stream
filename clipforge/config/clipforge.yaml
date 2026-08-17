@@ -458,6 +458,128 @@ score:
   # division finite.
   zscore_std_floor: 0.5
 
+  # THE FLOOR ABOVE IS IN DECIBELS, AND NOT EVERY SIGNAL IS.
+  #
+  # Phase 3 adds signals on other scales: sudden_silence, overlap_speech and
+  # input_stillness are 0..1, mic_f0_variance is semitones. For any binary-ish
+  # signal firing less than 25% of the time, sigma is below 0.5 — so the dB
+  # floor binds and z comes out at exactly ~2.0 whenever it fires, however rare
+  # it is. Without a floor the same signal would reach z ~ 12 and dominate every
+  # stream, so 0.5 was rescuing it by accident of a number chosen for a
+  # different unit.
+  #
+  # One floor per signal instead, with `zscore_std_floor` as the default for
+  # anything not named here. Each value is "the smallest sigma that is
+  # meaningful for this signal", which is genuinely per-signal.
+  #
+  # ARBITRARY, all of them, and see spec/GUESSES.md for what would show each
+  # one wrong. Raise a value to compress that signal's z-range, lower it to let
+  # rare firings score higher.
+  zscore_std_floor_by_signal:
+    # 0..1 gates. 0.05 lets a signal that fires 1% of the time reach z ~ 4 and
+    # one that fires 20% reach z ~ 2, which is the ordering C2 wants: rarer is
+    # more notable.
+    sudden_silence: 0.05
+    overlap_speech: 0.05
+    input_stillness: 0.05
+    # Semitones. Ordinary speech varies by a few semitones over five seconds, so
+    # a sigma below a quarter of one is a measurement artefact rather than a
+    # monotone speaker.
+    mic_f0_variance: 0.25
+
+  # -------------------------------------------------------------------------
+  # §5.4.1's derived signals, computed at SCORE time rather than stored.
+  #
+  # Each is a pure function of a stored primitive plus a tunable, and storing it
+  # would freeze that tunable into every stream ever processed (C3). Same
+  # boundary as storing absolute dB rather than baselined RMS, and raw marker
+  # press times rather than t-20. Retuning any number below costs a re-score,
+  # which §6.1 promises is free, instead of a re-extraction of the library.
+  # -------------------------------------------------------------------------
+  derived:
+    # mic_f0_variance — §5.4.1: "rolling std of mic_f0 over 5 s. High prosodic
+    # range = comedic delivery." §6.5 weights it 1.8, the highest continuous
+    # weight in the entertainment profile.
+    #
+    # Computed in SEMITONES, not hertz. Pitch is log-distributed: +20 Hz at
+    # 100 Hz is three and a half semitones and the same rise at 300 Hz is one,
+    # so a deviation over linear hertz understates exactly the excursions this
+    # signal exists to find. CLAUDE.md's "dB are logarithms" rule, inverted.
+    f0_variance_window_s: 5.0
+    # Below this many voiced samples in the window the answer is NaN, not zero.
+    # A "prosodic range" measured over two voiced frames is noise wearing the
+    # name of a signal, and zero would claim the speaker was monotone.
+    f0_variance_min_observations: 8
+
+    # sudden_silence — §5.4.1: "RMS falls below floor within 2 s of high
+    # activity. Death, shock, concentration. Inverse of intuition."
+    #
+    # DEVIATION: "floor" is read relative to the rolling baseline, not as an
+    # absolute dBFS number. An absolute floor bakes this microphone's gain and
+    # this room into the signal, so a quietly recorded stream would be silent by
+    # definition and any setup change would need a retune.
+    #
+    # AND THE DROP IS THE SIGNAL, NOT THE LEVEL. The first cut tested "z below a
+    # negative threshold" and MEASURED zero firings, because on any real stream
+    # SILENCE IS THE BASELINE: the operator is not talking most of the time, so
+    # the rolling mean sits near the quiet level and z during silence is about
+    # zero, never meaningfully negative. Waiting for silence to fall below its
+    # own baseline waits forever. `drop_z` is what detects; `quiet_z` is only a
+    # ceiling confirming it really is quiet now.
+    silence:
+      lookback_s: 2.0        # §5.4.1's own "within 2 s"
+      activity_z: 1.0        # what counts as the "high activity" before it
+      drop_z: 1.5            # how far below the recent peak counts as a fall
+      quiet_z: 0.5           # and an upper bound on "quiet" in its own right
+      ramp_s: 0.5            # 0->1 over this, so it is not a square wave
+
+    # overlap_speech — §5.4.1: "VAD on both tracks, boolean AND. Everyone
+    # talking at once = something happened."
+    #
+    # Deterministic energy gate, not a model (C1). §4.2 records the tracks
+    # separately and the operator wears headphones, so there is no acoustic path
+    # from the party's voice into the mic: energy on the mic track IS the
+    # operator talking. A model would mean silero via the optional `asr` extra,
+    # which is off by default — so this signal would be missing from every
+    # stream that exists.
+    vad:
+      margin_db: 6.0         # above the track's own rolling baseline
+      min_speech_s: 0.3      # a shorter run is a click, not a word
+      hangover_s: 0.4        # bridges the gaps between words in one sentence
+
+    # input_stillness — §5.4.1: "inverse of input_rate, GATED. Sudden stillness
+    # after activity." Gated is the whole word: an hour of no input is someone
+    # not playing; a second of stillness after frantic input is a death.
+    #
+    # Requires input_coverage, so a stretch where the logger was not running is
+    # UNKNOWN rather than still. Nothing produces input signals until the
+    # input_signals stage lands, so this is inert today.
+    stillness:
+      lookback_s: 3.0
+      active_rate: 3.0       # events/s that counts as "was busy"
+      quiet_rate: 0.5        # and events/s that counts as "now still"
+      ramp_s: 0.5
+
+    # reaction_onset — §5.4.3: "sudden_silence followed within 2 s by
+    # overlap_speech + party_rms spike. Classic 'oh my god' moment." §6.5
+    # weights it 1.5.
+    #
+    # Emitted as EVENTS, not a level: it names a moment, and §5.4.3's sibling
+    # flick_signature says "emit composite event" for the same shape. So it goes
+    # through score.events' Gaussian kernel like every other event.
+    #
+    # THE OVERLAP MUST BEGIN AFTER THE SILENCE, not merely be present during it.
+    # sudden_silence says the mic went quiet and overlap_speech says both mics
+    # are live, so the only way both hold at one instant is inside the speech
+    # gate's hangover. MEASURED: a concurrent test fired on the speech fixture at
+    # 54.6 s, where the operator stops while the party carries on -- a real
+    # moment detected through a constant chosen to stop one sentence being
+    # chopped into nine. §5.4.3's word is "followed".
+    reaction:
+      window_s: 2.0          # §5.4.3's own "within 2 s"
+      silence_level: 0.5     # how far sudden_silence must have ramped
+      party_spike_z: 1.0
+
   # §6.2 step 6.
   smoothing_sigma_s: 2.0
 
