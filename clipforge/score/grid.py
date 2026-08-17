@@ -20,6 +20,16 @@ nothing about it approaching zero. A digitally silent stretch is exactly
 constant, so its sigma is exactly zero, and without the floor every dither in
 the noise becomes a z-score of fifty — making the top candidate of every stream
 a quiet moment.
+
+**Some signals have gaps, and a gap is not a zero.** Every Phase 1 signal was
+defined at every instant: RMS always has a value, even over silence. Pitch does
+not — roughly a fifth of speech frames are unvoiced and silence is unvoiced
+entirely, so `mic_f0` arrives full of NaN, and Phase 3's input signals will
+arrive with holes wherever the logger was not running. A cumulative sum poisons
+every sample *after* the first NaN, so the naive path does not degrade near a
+gap, it destroys the rest of the stream. Both functions below take a masked
+path when the input has gaps and the original path exactly when it does not, so
+no existing signal's numbers move.
 """
 
 from __future__ import annotations
@@ -50,7 +60,28 @@ def resample(series: Series, grid: np.ndarray) -> np.ndarray:
         return np.zeros_like(grid)
     if len(series) == 1:
         return np.full_like(grid, float(series.values[0]))
-    return np.interp(grid, series.times(), series.values.astype(np.float64))
+
+    times = series.times()
+    values = series.values.astype(np.float64)
+    finite = np.isfinite(values)
+    if finite.all():
+        return np.interp(grid, times, values)
+
+    if not finite.any():
+        return np.full_like(grid, np.nan)
+
+    # A gap must not be bridged. Interpolating across four unvoiced seconds
+    # would draw a smooth pitch glide between two words and hand it to
+    # `mic_f0_variance` as prosody. So the observed samples are interpolated
+    # normally and then every grid point whose NEAREST observation was missing
+    # is put back to NaN — no invention, and no widening of the gap either.
+    out = np.interp(grid, times[finite], values[finite])
+    nearest = np.clip(
+        np.round((grid - series.t0) * series.sample_rate_hz).astype(np.int64),
+        0, values.size - 1,
+    )
+    out[~finite[nearest]] = np.nan
+    return out
 
 
 def rolling_zscore(
@@ -73,29 +104,44 @@ def rolling_zscore(
 
     half = max(int(window_samples) // 2, 0)
     data = values.astype(np.float64)
+    observed = np.isfinite(data)
 
     # Center before accumulating. See the module docstring.
-    offset = float(np.mean(data))
+    offset = float(np.mean(data[observed])) if observed.any() else 0.0
     centered = data - offset
 
-    cumsum = np.concatenate(([0.0], np.cumsum(centered)))
-    cumsum2 = np.concatenate(([0.0], np.cumsum(np.square(centered))))
+    # A missing sample must contribute to neither the sums nor the count. Zero
+    # in the accumulator plus zero in the count is exactly "this sample was not
+    # observed"; leaving the NaN in would make every later sample NaN too,
+    # because a cumulative sum never recovers.
+    filled = np.where(observed, centered, 0.0)
+    cumsum = np.concatenate(([0.0], np.cumsum(filled)))
+    cumsum2 = np.concatenate(([0.0], np.cumsum(np.square(filled))))
+    cumcount = np.concatenate(([0.0], np.cumsum(observed.astype(np.float64))))
 
     index = np.arange(n)
     lo = np.maximum(index - half, 0)
     hi = np.minimum(index + half + 1, n)
-    count = (hi - lo).astype(np.float64)
+    count = cumcount[hi] - cumcount[lo]
 
     total = cumsum[hi] - cumsum[lo]
     total2 = cumsum2[hi] - cumsum2[lo]
 
-    mean_centered = total / count
+    # A window with no observation at all has no baseline to offer. That is a
+    # NaN rather than a zero: "the pitch here was average" is a claim, and there
+    # was nothing here to average.
+    safe = np.maximum(count, 1.0)
+    mean_centered = np.where(count > 0, total / safe, np.nan)
     # Float error can push a near-zero variance just below zero.
-    variance = np.maximum(total2 / count - np.square(mean_centered), 0.0)
-    std = np.sqrt(variance)
+    variance = np.maximum(total2 / safe - np.square(np.nan_to_num(mean_centered)), 0.0)
+    std = np.where(count > 0, np.sqrt(variance), np.nan)
 
-    effective_std = np.maximum(std, float(std_floor))
+    effective_std = np.maximum(np.nan_to_num(std, nan=0.0), float(std_floor))
     z = (centered - mean_centered) / effective_std
+    # An unobserved sample has no z-score of its own, whatever its neighbours
+    # said. `composite_of` is what decides that a missing signal contributes
+    # nothing to the sum; this function's job is only to refuse to invent one.
+    z = np.where(observed, z, np.nan)
     return z, mean_centered + offset, std
 
 

@@ -66,17 +66,28 @@ def _summary(conn: sqlite3.Connection, stream_id: str, series: dict, show_params
     ).fetchone()[0]
 
     width = max(len(k) for k in series)
-    print(f"{'signal'.ljust(width)}  {'samples':>8} {'rate':>6} {'t0':>6}  "
-          f"{'min':>7} {'p05':>7} {'med':>7} {'p95':>7} {'max':>7}")
+    print(f"{'signal'.ljust(width)}  {'samples':>8} {'obs':>5} {'rate':>6} {'t0':>6}  "
+          f"{'min':>7} {'p05':>7} {'med':>7} {'p95':>7} {'max':>7}  unit")
     for kind, data in series.items():
         stats = signals.summarize(data)
         if stats["n"] == 0:
             print(f"{kind.ljust(width)}  {'0':>8}  (empty)")
             continue
+        # A signal can be present and have nothing in it: an all-unvoiced pitch
+        # track is what a party.wav with nobody in Discord produces, and it is
+        # a normal result rather than a failure. Printing the header row and
+        # then raising KeyError on the percentiles is not.
+        if not stats["observed"]:
+            print(f"{kind.ljust(width)}  {stats['n']:>8} {'0':>5}  "
+                  f"(no observations — every sample is absent)")
+            continue
+        share = stats["observed"] / stats["n"]
         print(
-            f"{kind.ljust(width)}  {stats['n']:>8} {data.sample_rate_hz:>5g}H "
+            f"{kind.ljust(width)}  {stats['n']:>8} {100 * share:>4.0f}% "
+            f"{data.sample_rate_hz:>5g}H "
             f"{data.t0:>6.3f}  {stats['min']:>7.1f} {stats['p05']:>7.1f} "
-            f"{stats['median']:>7.1f} {stats['p95']:>7.1f} {stats['max']:>7.1f}"
+            f"{stats['median']:>7.1f} {stats['p95']:>7.1f} {stats['max']:>7.1f}  "
+            f"{_unit(data)}"
         )
 
     # Coverage: a series noticeably shorter than the stream means extraction
@@ -101,6 +112,17 @@ def _summary(conn: sqlite3.Connection, stream_id: str, series: dict, show_params
     return 0
 
 
+def _unit(data) -> str:
+    """What the numbers are in.
+
+    Every Phase 1 signal was dBFS, so the unit was a literal in the format
+    string. `mic_f0` is hertz, and a pitch printed as "166.2 dB" is a diagnostic
+    telling the operator something false. `signal_series.params` has carried the
+    unit since the series was written; this is the reader catching up.
+    """
+    return str(data.params.get("unit", "dB"))
+
+
 def _at(series: dict, t: float, window: float) -> int:
     import numpy as np
 
@@ -109,7 +131,10 @@ def _at(series: dict, t: float, window: float) -> int:
         print(f"at t={t:.3f}s")
         for kind, data in series.items():
             index = data.index_at(t)
-            print(f"  {kind.ljust(width)} {data.values[index]:>8.2f} dB "
+            value = float(data.values[index])
+            reading = (f"{value:>8.2f} {_unit(data)}" if np.isfinite(value)
+                       else f"{'absent':>8}          ")
+            print(f"  {kind.ljust(width)} {reading} "
                   f"(sample {index}, centred {data.time_of(index):.3f}s)")
         return 0
 
@@ -120,9 +145,14 @@ def _at(series: dict, t: float, window: float) -> int:
             print(f"  {kind.ljust(width)} (no samples in range)")
             continue
         values = chunk.astype(np.float64)
+        observed = values[np.isfinite(values)]
+        if observed.size == 0:
+            print(f"  {kind.ljust(width)} n={values.size:<5} (no observations in range)")
+            continue
+        seen = "" if observed.size == values.size else f" ({observed.size} observed)"
         print(
             f"  {kind.ljust(width)} n={values.size:<5} "
-            f"min {values.min():>7.2f}  median {np.median(values):>7.2f}  "
-            f"max {values.max():>7.2f} dB"
+            f"min {observed.min():>7.2f}  median {np.median(observed):>7.2f}  "
+            f"max {observed.max():>7.2f} {_unit(data)}{seen}"
         )
     return 0

@@ -208,9 +208,22 @@ def test_stage_succeeds(extracted):
 
 
 def test_one_series_per_extracted_track(extracted):
-    """C6: log everything from day one. Only mic_rms is weighted in Phase 1."""
+    """C6: log everything from day one. Only mic_rms is weighted in Phase 1.
+
+    Derived from config rather than written down, because what the stage
+    produces is now two things: an RMS series for every extracted track, and a
+    pitch series for every track `extract.f0.roles` asks for — and §5.4.1
+    defines no pitch signal for the game track, which has no voice.
+    """
     cfg, conn, engine, _ = extracted
-    assert signals.kinds(conn, "fx") == ["game_rms", "mic_rms", "party_rms"]
+    expected = {f"{role}_rms" for role in cfg.get("ingest.audio.extract_roles")}
+    if cfg.get("extract.f0.enabled"):
+        expected |= {
+            f"{role}_f0" for role in cfg.get("extract.f0.roles")
+            if role in features.F0_FOR_ROLE
+        }
+    assert set(signals.kinds(conn, "fx")) == expected
+    assert "game_f0" not in expected
 
 
 def test_series_are_stored_at_the_configured_rate(extracted, manifest):
@@ -328,6 +341,47 @@ def test_signals_command_reports_the_series(extracted, capsys):
     ) == 0
     out = capsys.readouterr().out
     assert "mic_rms" in out and "game_rms" in out
+
+
+def test_signals_command_survives_a_signal_with_no_observations(extracted, capsys):
+    """A pitch track over a party.wav with nobody in Discord is legitimately
+    empty of observations. The command used to print the header row and then
+    raise KeyError on the percentiles it had no samples for."""
+    from clipforge import cli
+
+    cfg, conn, _engine, _ = extracted
+    signals.store(conn, "fx", signals.Series(
+        kind="party_f0", values=np.full(50, np.nan), sample_rate_hz=10.0,
+        t0=0.05, params={"unit": "Hz"},
+    ))
+    conn.commit()
+
+    assert cli.main(
+        ["signals", "fx", "--set", f"paths.data_root={cfg.data_root.as_posix()}"]
+    ) == 0
+    out = capsys.readouterr().out
+    assert "no observations" in out
+
+
+def test_signals_command_labels_pitch_in_hertz_not_decibels(extracted, capsys):
+    """Every Phase 1 signal was dBFS, so the unit was a literal in the format
+    string. A pitch printed as "166.2 dB" is a diagnostic stating something
+    false."""
+    from clipforge import cli
+
+    cfg, conn, _engine, _ = extracted
+    signals.store(conn, "fx", signals.Series(
+        kind="mic_f0", values=np.full(50, 180.0), sample_rate_hz=10.0,
+        t0=0.05, params={"unit": "Hz"},
+    ))
+    conn.commit()
+
+    assert cli.main([
+        "signals", "fx", "--kind", "mic_f0",
+        "--set", f"paths.data_root={cfg.data_root.as_posix()}",
+    ]) == 0
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "mic_f0" in ln)
+    assert line.rstrip().endswith("Hz")
 
 
 def test_signals_command_reads_a_timestamp(extracted, manifest, capsys):

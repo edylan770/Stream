@@ -78,6 +78,7 @@ def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features
             tracks.append(features.SignalTrack(
                 name=name, values=z, weight=float(weight),
                 is_event=False, baseline=baseline, raw=raw,
+                unit=str(stored[name].params.get("unit", "dB")),
             ))
         elif name in events or name in EVENT_SOURCE_KINDS:
             kernel = kernels.for_kind(name, timeline, events.get(name, []), ctx.cfg)
@@ -107,6 +108,7 @@ def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features
         z, baseline, _ = grid.rolling_zscore(raw, baseline_samples, std_floor)
         tracks.append(features.SignalTrack(
             name=name, values=z, weight=0.0, is_event=False, baseline=baseline, raw=raw,
+            unit=str(series.params.get("unit", "dB")),
         ))
 
     return tracks, missing
@@ -123,10 +125,29 @@ def load_events(ctx: StageContext) -> dict[str, list[float]]:
 
 
 def composite_of(tracks: list[features.SignalTrack], length: int) -> np.ndarray:
-    """§6.2 step 6: `composite[t] = sum(weight_i * z_i[t])`."""
+    """§6.2 step 6: `composite[t] = sum(weight_i * z_i[t])`.
+
+    Two things that look like defensive noise and are neither:
+
+    **Unweighted tracks are skipped, not multiplied by zero.** A9 loads every
+    stored signal at weight 0 so the feature vector is complete, and `0.0 * NaN`
+    is NaN — so the moment a signal with gaps existed (`mic_f0`, Phase 3), one
+    unweighted, unscored, purely-for-the-archive series turned the entire
+    composite into NaN and the stream produced no candidates at all. Found by
+    the export tests going from green to "nothing rated 2 or above".
+
+    **A missing observation contributes zero.** In a sum of weighted z-scores,
+    zero is the value that adds nothing — the same thing "no observation" should
+    do. This is NOT a claim that the pitch was average: `feature_vector` still
+    records null for that sample, so the archive says "not observed" while the
+    score says "nothing added". Dropping the sample instead would make the
+    composite depend on which signals happened to be defined at each instant.
+    """
     total = np.zeros(length, dtype=np.float64)
     for track in tracks:
-        total += track.weight * track.values
+        if not track.weight:
+            continue
+        total += track.weight * np.nan_to_num(track.values, nan=0.0)
     return total
 
 

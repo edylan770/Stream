@@ -216,6 +216,18 @@ def test_breakdown_carries_the_decibels_behind_the_z_score(scored):
     assert payload["_mic_rms_db"] > payload["_mic_rms_baseline_db"]
 
 
+def test_the_context_key_carries_the_signals_own_unit(scored):
+    """Every Phase 1 signal was dBFS, so "_db" was a literal in the key. Pitch
+    is hertz, and "_mic_f0_db: 166.2" is a label stating something false — the
+    review UI reads the suffix to decide what to print beside the number."""
+    cfg, conn, engine, manifest, _ = scored
+    payload = json.loads(candidates(conn)[0]["contributing_signals"])
+
+    assert any(k.startswith("_mic_f0_") for k in payload), "pitch reaches the panel"
+    assert not any(k.startswith("_mic_f0_") and k.endswith("_db") for k in payload)
+    assert "_mic_f0_hz" in payload
+
+
 def test_feature_vector_holds_exactly_the_declared_schema(scored):
     """A9's value is that a Phase 1 vector and a Phase 3 vector have identical
     shape, so this field carries the schema's keys and nothing else."""
@@ -236,11 +248,19 @@ def test_the_vector_holds_signals_the_profile_does_not_weight(scored):
     signals and the profile weighted all three; `game_rms` and `party_rms` are
     extracted for any multi-track recording and weighted by nothing, so they
     were being dropped on the floor.
+
+    Phase 3 splits the assertion, because null now has two meanings and only one
+    of them is a bug. A gap-free signal MUST be non-null: a null there is the
+    original regression, a signal that was never loaded. A signal with gaps
+    (`mic_f0` is unvoiced wherever nobody is speaking) is null exactly when it
+    had no observation at that instant — which is checked against the series
+    itself below, so "null" can never quietly go back to meaning "dropped".
     """
     from clipforge import signals
 
     cfg, conn, engine, manifest, _ = scored
-    vector = json.loads(candidates(conn)[0]["feature_vector"])
+    row = candidates(conn)[0]
+    vector = json.loads(row["feature_vector"])
     computed = {k for k, v in vector.items() if v is not None}
 
     stored = set(signals.kinds(conn, "fx"))
@@ -248,10 +268,26 @@ def test_the_vector_holds_signals_the_profile_does_not_weight(scored):
 
     unweighted = stored - weighted
     assert unweighted, "the fixture should extract a signal the profile ignores"
-    assert unweighted <= computed, f"A9 requires {sorted(unweighted)} in the vector"
-    assert stored <= computed
+    assert stored <= set(vector), "A9 wants every stored signal's KEY in the vector"
 
-    # Everything else — the ~25 signals no phase computes yet — is still null,
+    import numpy as np
+
+    for kind in sorted(stored):
+        series = signals.load(conn, "fx", kind)
+        observed = np.isfinite(series.values)
+        if observed.all():
+            assert vector[kind] is not None, (
+                f"{kind} has no gaps, so a null here means it was never loaded"
+            )
+            continue
+        # A gappy signal: null must mean "not observed here", never "not loaded".
+        at_peak = np.isfinite(series.value_at(float(row["t_peak"])))
+        assert (vector[kind] is not None) == bool(at_peak), (
+            f"{kind} is {'observed' if at_peak else 'absent'} at t_peak but the "
+            f"vector says otherwise"
+        )
+
+    # Everything else — the signals no phase computes yet — is still null,
     # which is what makes a Phase 1 vector and a Phase 3 vector comparable.
     assert not computed - stored - weighted
     assert len(vector) == len(cfg.feature_schema.keys)

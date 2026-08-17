@@ -77,6 +77,79 @@ as requiring empirical tuning, and the tuning input is
 | `extract.embeddings.batch_size` | `32` | **arbitrary** | Enough to amortise the HTTP round trip, small enough not to hold a large request in memory. No evidence for the exact number | Embedding taking a visible share of a run (too small), or Ollama timing out on a batch (too large) |
 | `extract.embeddings.timeout_s` | `120.0` | **arbitrary** | Picked as "longer than a batch should ever take" | Timeouts on a slow machine, or a hung Ollama taking two minutes to report |
 
+## Pitch (Phase 3, §5.4.1)
+
+Unusually for this file, most of these are **grounded** — and not because pitch is
+better understood than anything else here, but because §5.4.1's own instruction
+(`librosa.pyin, fmin=65, fmax=400`) does not survive contact with the 10 Hz signal
+grid, so every value below had to be measured to find one that runs at all. The
+measurements are on the speech fixture (95 s, both tracks, best of three after a
+numba warm-up), extrapolated to 4 hours.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `extract.f0.enabled` | `true` | **grounded** | §5.4.1 defines `mic_f0`/`party_f0`, and §6.5 weights `mic_f0_variance` at 1.8 — the highest continuous weight in the entertainment profile after the markers | — |
+| `extract.f0.roles` | `[mic, party]` | **plausible** | §5.4.1 declares a pitch signal for these two and none for `game`, which is right: game audio has no voice. **NO §6.5 PROFILE WEIGHTS `party_f0` or `mic_f0` directly** — both exist to feed `mic_f0_variance` — so dropping `party` halves the stage's cost and loses nothing any current weight reads. On by default per C6 | Wanting the ~8 min/stream back. The counter-argument is that recomputing needs the master, and §13.1 does not promise to keep those forever |
+| `extract.f0.fmin_hz` / `fmax_hz` | `65` / `400` | **grounded** | §5.4.1 states both | `f0_rail_fraction` in `tool_metrics` (an INVENTED name). MEASURED that content outside the range is **pinned to the rail, not reported as absent**: a 32 Hz tone comes back as exactly 65.0 Hz on every frame, confidently voiced. So an excited shout above 400 Hz reads as a *flat* 400 Hz — excitement clipped into calm. The stage warns past 25% |
+| `extract.f0.analysis_rate_hz` | `8000` | **grounded** | fmax is 400 Hz so 8 kHz is generous. MEASURED it is not only faster: decimating took the mic track's false-positive rate (pitch found over authored silence) from **5.0% to 0.2%**, by removing the high-frequency content that was producing it | Pitch missed on a genuinely high voice, which would argue the decimation filter is too aggressive |
+| `extract.f0.analysis_hop_s` | `0.02` | **grounded** | MEASURED across four hops. Not monotonic, which is the point: 10 ms was both slower *and* worse (6.3% false, 25.9% octave-low) than 20 ms, and 50 ms collapsed — the party track's median f0 fell from 222 Hz to **81 Hz** with **41%** of authored-silence frames given a pitch. 20 ms was the best on every accuracy measure and must divide the 100 ms storage period, which it does exactly | A different machine or librosa release moving the optimum. The sweep is cheap to re-run |
+| `extract.f0.analysis_frame_s` | `0.128` | **grounded** | librosa's default, and YIN's floor is two periods of fmin (31 ms). MEASURED that 64 ms is not simply coarser: combined with a long hop it produced octave errors, median f0 falling to 83 Hz, at no time saving | — |
+| `extract.f0.resolution` | `0.1` | **grounded** | librosa's default. MEASURED that coarsening it is a false economy — it drives the Viterbi's cost directly, but 0.2 took the mic hit rate from 79.1% to 44.5% and 0.5 took it to 12.9% | — |
+| `extract.f0.chunk_s` / `overlap_s` | `300` / `2.0` | **plausible** | Forced, not chosen: pyin allocates `2 x 315 x n_frames` float64, which is **3.6 GB** over a 4-hour stream at a 20 ms hop. 300 s holds it to ~75 MB and is what makes the stage heartbeat. MEASURED that chunking at 17 s, 10 s and 7.3 s reproduced the single-pass values **exactly** (0.0000 Hz) wherever both were voiced; the overlap is what buys that | Memory pressure on the streaming PC (lower it), or a boundary artefact appearing in a real pitch track (raise the overlap) |
+
+**Three things measured that are not parameters**, recorded so nobody re-derives
+them the hard way:
+
+- **pyin CANNOT be run at §5.4's own 10 Hz hop.** Its HMM transition window is
+  `round(35.92 · 12 · hop/sr) · bins_per_semitone + 1` states and must fit inside
+  the pitch grid; at a 100 ms hop that is 431 against 315 and librosa raises. Even
+  where it does not raise, a window that wide spans the whole 65–400 Hz range, so
+  the Viterbi smoothing that distinguishes pyin from plain yin does nothing.
+  Pitch is therefore tracked at 20 ms and the median of each five frames stored.
+- **Aggregating to 10 Hz improves the signal, it does not just shrink it.** On the
+  speech fixture the frame-level hit rate was 79.1% (mic) / 77.7% (party); after
+  taking the median of each bucket it was **88.8% / 88.3%**, with false positives
+  still 0.4% / 0.0%. A bucket is voiced if any frame in it was, which is C2.
+- **~79% of authored-speech frames carrying pitch is the right answer, not a
+  shortfall.** Every s, f, t and k is genuinely unvoiced. A test demanding 100%
+  would be demanding a wrong number, so the assertions compare speech against
+  silence rather than against 1.0.
+
+**The cost, stated plainly:** roughly **16 minutes for a 4-hour stream across both
+tracks** on the build machine, recorded per role as `f0_seconds_per_audio_hour`
+(INVENTED — §14 has no extraction-cost row that can attribute time *within* a
+stage). §1.3 budgets 20–40 minutes for all unattended processing, so this is the
+largest single consumer after WhisperX and the proxy. `extract.f0.roles: [mic]`
+roughly halves it.
+
+**And the thing that was not a parameter at all.** `mic_f0` is the first signal
+in this project with genuine *gaps* — every earlier one was defined at every
+instant, because RMS has a value even over silence. Three places assumed that
+without saying so, and all three were silent failures rather than errors:
+
+- **A9's weight-0 loading became a poison pill.** `build_tracks` loads every
+  stored signal at weight 0 so the feature vector is complete; `0.0 * NaN` is
+  NaN, so an unweighted, unscored, archive-only pitch track turned the whole
+  composite into NaN and every stream produced **zero candidates**. The symptom
+  was 75 unrelated tests reporting "nothing rated 2 or above". `composite_of`
+  now skips unweighted tracks and counts a missing sample as contributing zero
+  — which is what adds nothing to a sum of weighted z-scores, and is explicitly
+  not a claim that the value was average.
+- **`json.dumps` writes a bare `NaN`**, which is not valid JSON. The review UI's
+  `JSON.parse` rejects the entire payload, so one unvoiced sample would have
+  taken the whole review screen down rather than blanking one number. Feature
+  vectors and the `?` panel's context now write **null**, which is what
+  `feature_schema.yaml` already means by "not computed".
+- **A cumulative sum never recovers from a NaN**, so `rolling_zscore` would not
+  have degraded *near* a gap — every sample after the first unvoiced consonant,
+  for the rest of the stream, would have been NaN. Both it and `resample` take a
+  masked path when the input has gaps and the byte-identical original path when
+  it does not, so no existing signal's numbers move.
+
+`resample` also **never bridges a gap**: interpolating across four unvoiced
+seconds would draw a smooth pitch glide between two words and hand it to
+`mic_f0_variance` as prosody.
+
 ## Extraction and media
 
 | Parameter | Value | Confidence | Rationale | Falsified by |

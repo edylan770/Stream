@@ -101,6 +101,74 @@ def test_window_truncates_at_the_edges():
     assert mean[0] < mean[50] < mean[-1]
 
 
+# --------------------------------------------------------------------------
+# signals with gaps (Phase 3: mic_f0 is unvoiced wherever nobody is speaking)
+# --------------------------------------------------------------------------
+
+
+def test_a_gap_does_not_poison_the_rest_of_the_stream():
+    """The failure this guards against is not local.
+
+    A cumulative sum never recovers from a NaN, so the naive path does not
+    degrade *near* a gap — every sample after the first missing one is NaN. On a
+    pitch track that is one unvoiced consonant three seconds in, and the other
+    three hours of the stream.
+    """
+    values = np.concatenate([np.full(50, 1.0), [np.nan], np.full(50, 5.0)])
+    z, mean, std = grid.rolling_zscore(values, window_samples=21, std_floor=0.1)
+
+    assert np.isnan(z[50]), "the missing sample itself has no z-score"
+    assert np.isfinite(z[51:]).all(), "and nothing after it is damaged"
+    assert np.isfinite(mean[51:]).all()
+    assert z[-1] == pytest.approx(0.0, abs=1e-9)   # a constant tail
+
+
+def test_the_gapless_path_is_untouched():
+    """No existing signal's numbers may move: `mic_rms` has no gaps and its
+    z-scores decide every candidate already rated."""
+    rng = np.random.default_rng(20260817)
+    values = rng.normal(-40.0, 3.0, 400)
+
+    z, mean, std = grid.rolling_zscore(values, window_samples=101, std_floor=0.5)
+    # Recomputed the slow, obvious way over the same truncated windows.
+    for i in (0, 7, 200, 399):
+        lo, hi = max(i - 50, 0), min(i + 51, 400)
+        window = values[lo:hi]
+        assert mean[i] == pytest.approx(float(np.mean(window)), abs=1e-9)
+        assert std[i] == pytest.approx(float(np.std(window)), abs=1e-9)
+
+
+def test_a_window_with_no_observation_has_no_baseline():
+    """NaN, not zero. "The pitch here was average" is a claim, and there was
+    nothing here to average."""
+    values = np.full(40, np.nan)
+    values[:5] = 100.0
+    _z, mean, _std = grid.rolling_zscore(values, window_samples=5, std_floor=0.1)
+    assert np.isfinite(mean[0])
+    assert np.isnan(mean[-1])
+
+
+def test_resample_never_bridges_a_gap():
+    """Interpolating across four unvoiced seconds would draw a smooth pitch
+    glide between two words and hand it to mic_f0_variance as prosody."""
+    series = Series(kind="mic_f0", values=np.array([100.0, np.nan, np.nan, 200.0]),
+                    sample_rate_hz=10.0, t0=0.05)
+    out = grid.resample(series, np.array([0.05, 0.15, 0.25, 0.35]))
+
+    assert out[0] == pytest.approx(100.0)
+    assert np.isnan(out[1]) and np.isnan(out[2])
+    assert out[3] == pytest.approx(200.0)
+
+
+def test_resample_of_a_gapless_series_is_unchanged():
+    series = Series(kind="mic_rms", values=np.array([1.0, 2.0, 3.0]),
+                    sample_rate_hz=10.0, t0=0.05)
+    g = np.array([0.05, 0.10, 0.15])
+    np.testing.assert_allclose(
+        grid.resample(series, g), np.interp(g, series.times(), series.values)
+    )
+
+
 def test_empty_input():
     z, mean, std = grid.rolling_zscore(np.zeros(0), 10, 0.5)
     assert z.size == mean.size == std.size == 0
@@ -554,3 +622,75 @@ def test_unweighted_signals_still_reach_the_feature_vector():
     vector = features.vector(schema, tracks, 0)
     assert vector["speech_rate"] == pytest.approx(3.0)
     assert vector["mic_rms"] == pytest.approx(2.0)
+
+
+# --------------------------------------------------------------------------
+# A9's weight-0 loading meets a signal with gaps
+# --------------------------------------------------------------------------
+
+
+def test_an_unweighted_gap_cannot_reach_the_composite():
+    """THE bug this commit found, and it was silent in the worst way.
+
+    A9 loads every stored signal at weight 0 so the vector is complete. `0.0 *
+    NaN` is NaN, so the first signal with genuine gaps — `mic_f0`, unvoiced
+    wherever nobody is speaking — turned the entire composite into NaN through a
+    track that is not scored, not weighted, and exists only for the archive. The
+    stream then produced no peaks and no candidates, and the only symptom was
+    the export tests reporting "nothing rated 2 or above".
+    """
+    from clipforge.score import runner
+
+    tracks = features_with_gap(weight=0.0)
+    composite = runner.composite_of(tracks, 3)
+    assert np.isfinite(composite).all()
+    np.testing.assert_allclose(composite, [1.0, 2.0, 3.0])
+
+
+def test_a_weighted_gap_contributes_nothing_rather_than_everything():
+    """In a sum of weighted z-scores, zero is what adds nothing — which is what
+    "not observed" should do. It is NOT a claim that the value was average: the
+    feature vector still records null for the same sample."""
+    from clipforge.score import runner
+
+    tracks = features_with_gap(weight=2.0)
+    composite = runner.composite_of(tracks, 3)
+    np.testing.assert_allclose(composite, [1.0 + 2.0 * 4.0, 2.0, 3.0 + 2.0 * 6.0])
+
+
+def test_a_missing_sample_is_null_in_the_vector_never_nan():
+    """`json.dumps` writes a bare `NaN`, which is not valid JSON — the review
+    UI's `JSON.parse` rejects the whole payload, so one unvoiced sample would
+    have taken the review screen down rather than blanking one number."""
+    import json
+
+    from clipforge import config
+
+    schema = config.load().feature_schema
+    tracks = [features.SignalTrack(name="mic_f0", values=np.array([np.nan]), weight=0.0)]
+    vector = features.vector(schema, tracks, 0)
+    assert vector["mic_f0"] is None
+
+    def refuse(literal):
+        raise AssertionError(f"invalid JSON literal {literal!r} in a feature vector")
+
+    json.loads(json.dumps(vector), parse_constant=refuse)
+
+
+def test_the_breakdown_still_adds_up_when_a_signal_is_missing():
+    """A breakdown that does not equal the score beside it is worse than none,
+    and `composite_of` counts a gap as zero — so this must too."""
+    tracks = features_with_gap(weight=2.0)
+    detail = features.breakdown(tracks, 1, smoothed_value=2.0)
+    assert detail.contributions["mic_f0"] == pytest.approx(0.0)
+    assert detail.total_raw == pytest.approx(2.0)
+
+
+def features_with_gap(weight: float):
+    """mic_rms defined throughout; mic_f0 unvoiced in the middle."""
+    return [
+        features.SignalTrack(name="mic_rms", values=np.array([1.0, 2.0, 3.0]),
+                             weight=1.0),
+        features.SignalTrack(name="mic_f0", values=np.array([4.0, np.nan, 6.0]),
+                             weight=weight),
+    ]

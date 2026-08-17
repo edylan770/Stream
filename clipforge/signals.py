@@ -157,15 +157,23 @@ def _from_row(row: sqlite3.Row) -> Series:
 
 
 def summarize(series: Series) -> dict[str, float]:
-    """Stats for `clipforge signals` and for instrumentation."""
+    """Stats for `clipforge signals` and for instrumentation.
+
+    `observed` is not the same as `n` once a signal can have gaps: `mic_f0` is
+    unvoiced wherever nobody is speaking, so a stream of 144k samples might
+    carry 20k observations, and every statistic below describes only those. A
+    reader who sees `n` alone would take a median over a fifth of the stream for
+    a median over all of it.
+    """
     if len(series) == 0:
-        return {"n": 0}
+        return {"n": 0, "observed": 0}
     values = series.values.astype(np.float64)
     finite = values[np.isfinite(values)]
     if finite.size == 0:
-        return {"n": len(series)}
+        return {"n": len(series), "observed": 0}
     return {
         "n": len(series),
+        "observed": int(finite.size),
         "min": float(np.min(finite)),
         "p05": float(np.percentile(finite, 5)),
         "median": float(np.median(finite)),

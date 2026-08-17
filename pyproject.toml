@@ -19,6 +19,12 @@ dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
     "soundfile>=0.12",
+    # §5.4.1 names librosa.pyin for mic_f0/party_f0, and Phase 3 is where it
+    # earns the numba/llvmlite install it drags in (~100 MB). Deliberately NOT
+    # used for frame RMS, which is a few lines of numpy -- see
+    # extract/features.py. Imported inside the pitch functions rather than at
+    # module scope, so every Phase 1 stage keeps starting without it.
+    "librosa>=0.10",
     "PyYAML>=6.0",
     "fastapi>=0.110",
     # Plain uvicorn, not uvicorn[standard]: the extras pull uvloop (no Windows

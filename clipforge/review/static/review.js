@@ -404,10 +404,19 @@ function renderSignals(c) {
   contextLine(c);
 }
 
+// The unit is the key's own suffix, because signals are no longer all in dBFS:
+// mic_f0 is hertz, and a context line reading "mic_f0 166.2 dB" would be a
+// label stating something false. A null is a signal that had no observation at
+// this instant — an unvoiced frame — and is dropped rather than printed.
+const CONTEXT_UNITS = { db: "dB", hz: "Hz" };
+
 function contextLine(c) {
   const bits = Object.entries(c.context)
-    .filter(([k]) => k.endsWith("_db"))
-    .map(([k, v]) => `${k.replace(/_db$/, "")} ${v} dB`);
+    .filter(([k, v]) => v !== null && k.slice(k.lastIndexOf("_") + 1) in CONTEXT_UNITS)
+    .map(([k, v]) => {
+      const cut = k.lastIndexOf("_");
+      return `${k.slice(0, cut)} ${v} ${CONTEXT_UNITS[k.slice(cut + 1)]}`;
+    });
   return bits.length ? `<div class="sig-context">${escape(bits.join("  ·  "))}</div>` : "";
 }
 

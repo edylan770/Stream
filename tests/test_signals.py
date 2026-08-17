@@ -165,4 +165,24 @@ def test_summarize_reports_the_distribution():
 
 
 def test_summarize_handles_an_empty_series():
-    assert signals.summarize(make([])) == {"n": 0}
+    assert signals.summarize(make([])) == {"n": 0, "observed": 0}
+
+
+def test_summarize_separates_samples_from_observations():
+    """`n` and `observed` came apart the moment a signal could have gaps. A
+    reader given only `n` would take a median over a fifth of a pitch track for
+    a median over all of it."""
+    values = np.array([100.0, np.nan, np.nan, 200.0], dtype=np.float32)
+    stats = signals.summarize(make(values))
+    assert stats["n"] == 4
+    assert stats["observed"] == 2
+    assert stats["median"] == pytest.approx(150.0)
+    assert stats["min"] == 100.0 and stats["max"] == 200.0
+
+
+def test_summarize_of_an_all_absent_series_reports_no_observations():
+    """What a party.wav with nobody in Discord produces. A normal result, and
+    the caller has to be able to tell it apart from a full one without
+    KeyError-ing on the percentiles."""
+    stats = signals.summarize(make(np.full(10, np.nan, dtype=np.float32)))
+    assert stats == {"n": 10, "observed": 0}

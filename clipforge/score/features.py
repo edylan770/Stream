@@ -15,6 +15,7 @@ disagreeing with the score it is supposed to explain.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -36,12 +37,24 @@ class SignalTrack:
     is_event: bool = False
     baseline: np.ndarray | None = None   # rolling mean, continuous only
     raw: np.ndarray | None = None        # pre-z values, continuous only
+    #: What `raw` and `baseline` are in. Every Phase 1 signal was dBFS, so this
+    #: was a literal in the context key. `mic_f0` is hertz, and "_mic_f0_db"
+    #: holding 166.2 is a label stating something false.
+    unit: str = "dB"
 
     def at(self, index: int) -> float:
         return float(self.values[index])
 
     def contribution(self, index: int) -> float:
-        return self.weight * self.at(index)
+        """What this signal added to the composite here.
+
+        `nan_to_num` rather than NaN so the breakdown adds up to the number it
+        is explaining: `composite_of` treats an unobserved sample as adding
+        nothing, and a breakdown that disagreed with the score beside it would
+        be worse than no breakdown.
+        """
+        value = self.at(index)
+        return self.weight * (value if math.isfinite(value) else 0.0)
 
 
 @dataclass
@@ -94,11 +107,18 @@ def vector(schema, tracks: list[SignalTrack], index: int) -> dict[str, float | N
     Values follow what `feature_schema.yaml` documents — the rolling z-score for
     continuous signals, the decayed kernel level for events — so the numbers
     mean the same thing in Phase 3 as they do now.
+
+    Signals with gaps record **null**, not NaN and not zero. `json.dumps` writes
+    a bare `NaN`, which is not valid JSON and which the review UI's `JSON.parse`
+    rejects outright — so one unvoiced sample would have taken the whole review
+    screen down. Null is also what `feature_schema.yaml` already means by "not
+    computed", and "there was no pitch here" is exactly that.
     """
     out = schema.empty_vector()
     for track in tracks:
         if track.name in out:
-            out[track.name] = round(track.at(index), 6)
+            value = track.at(index)
+            out[track.name] = round(value, 6) if math.isfinite(value) else None
     return out
 
 
@@ -114,10 +134,18 @@ def unweighted_context(tracks: list[SignalTrack], index: int) -> dict[str, float
     holds exactly the keys `feature_schema.yaml` declares and nothing else.
     This belongs with the human-facing breakdown.
     """
-    context: dict[str, float] = {}
+    context: dict[str, float | None] = {}
     for track in tracks:
+        suffix = track.unit.lower()
         if track.raw is not None:
-            context[f"_{track.name}_db"] = round(float(track.raw[index]), 2)
+            context[f"_{track.name}_{suffix}"] = _finite(track.raw[index])
         if track.baseline is not None:
-            context[f"_{track.name}_baseline_db"] = round(float(track.baseline[index]), 2)
+            context[f"_{track.name}_baseline_{suffix}"] = _finite(track.baseline[index])
     return context
+
+
+def _finite(value) -> float | None:
+    """Null rather than NaN — this dict is serialised to JSON and read by a
+    browser, and `JSON.parse` refuses a bare NaN."""
+    number = float(value)
+    return round(number, 2) if math.isfinite(number) else None

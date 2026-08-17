@@ -1,4 +1,4 @@
-"""`audio_features` — frame RMS at 10 Hz (§5.1 stage 5, §5.4.1).
+"""`audio_features` — frame RMS and pitch at 10 Hz (§5.1 stage 5, §5.4.1).
 
 §5.4.1 specifies `librosa.feature.rms, hop 1600` and notes: *"Convert to dB.
 Use delta vs. rolling baseline, not absolute."*
@@ -10,11 +10,25 @@ here would freeze it into every stream ever processed, and retuning it would
 mean re-extracting the entire back catalogue. C3 draws the line exactly here:
 extraction is expensive and runs once, scoring is cheap and re-runnable.
 
-**numpy rather than librosa.** Frame RMS is a few lines over an array, and
-librosa's only Phase 1 use would be this one function at the cost of a numba
-dependency — heavy, and historically slow to support new Python releases, which
-matters while the target machine's interpreter is still an open question.
-Phase 3's `mic_f0` (pyin) is where librosa genuinely earns its place.
+**numpy rather than librosa, for RMS.** Frame RMS is a few lines over an array,
+and librosa's only Phase 1 use would have been this one function at the cost of a
+numba dependency. Phase 3's `mic_f0` is where librosa genuinely earns its place,
+and that is where it now sits — `rms_series` is unchanged and still does not
+import it.
+
+**Pitch is tracked finely and stored coarsely, and that is not a preference.**
+§5.4.1 puts every continuous signal at 10 Hz, but pyin's HMM sizes its transition
+window from the hop: at 100 ms the window is 431 states against a 315-state pitch
+grid and librosa raises outright. So pitch runs at `analysis_hop_s` (20 ms,
+measured best on both accuracy and false-positive rate) and each 100 ms bucket
+stores the median of the five frames inside it. `signal_series.params` records
+both rates, so nothing downstream has to infer which one produced the number.
+
+**Unvoiced is NaN, never zero.** Roughly a fifth of speech frames are genuinely
+unvoiced — every s, f, t and k — and silence is unvoiced entirely. Zero would be
+a pitch of 0 Hz, which is a measurement rather than an absence, and it would drag
+every mean, z-score and rolling variance downstream toward it. The NaN is the
+honest value and `score/grid.py` is what has to cope with it.
 
 **No centering.** `librosa.feature.rms` defaults to `center=True`, padding the
 signal so frame *i* is centred at *i·hop*. Rather than fabricate zeros at the
@@ -26,7 +40,10 @@ convention that Phase 3 would have to rediscover.
 
 from __future__ import annotations
 
+import json
 import math
+import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +57,17 @@ from clipforge.pipeline.context import StageContext
 #: role -> signal kind, per §5.4.1. `mixed` has no entry: it is never
 #: extracted (§5.3 maps a:1/2/3) and nothing scores it.
 SIGNAL_FOR_ROLE = {"mic": "mic_rms", "game": "game_rms", "party": "party_rms"}
+
+#: role -> pitch kind. §5.4.1 declares `mic_f0` and `party_f0` and no game
+#: equivalent, which is right: game audio has no voice, so a pitch track of an
+#: explosion is a number with no referent.
+F0_FOR_ROLE = {"mic": "mic_f0", "party": "party_f0"}
+
+#: Warn when more than this share of voiced pitch samples sits on the edge of
+#: the configured search range. Not config: it is a display heuristic on a
+#: diagnostic, like `doctor`'s stale-backup threshold, and the number it is
+#: judging (`extract.f0.fmin_hz`/`fmax_hz`) is the tunable.
+RAIL_WARN_FRACTION = 0.25
 
 #: Samples read per iteration. Bounds peak memory: a 4-hour 16 kHz mono WAV is
 #: 460 MB as int16 and 920 MB as float32, which is not something to load whole
@@ -156,6 +184,10 @@ def rms_series(
             # is visible rather than a silent overwrite of incomparable data.
             "source": path.name,
             "role": role,
+            # Explicit rather than left to a default, now that not every signal
+            # is in decibels. Scoring reads this to label the review UI's `?`
+            # panel, and a wrong label there is worse than none.
+            "unit": "dB",
             "source_sample_rate": framing.sample_rate,
             "frame_samples": framing.frame,
             "hop_samples": framing.hop,
@@ -165,6 +197,269 @@ def rms_series(
             "source_frames": total_frames,
         },
     )
+
+
+# --------------------------------------------------------------------------
+# pitch (§5.4.1's mic_f0 / party_f0)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class F0Settings:
+    """Everything `f0_series` needs, read from config in one place."""
+
+    fmin_hz: float
+    fmax_hz: float
+    analysis_rate_hz: int
+    analysis_hop_s: float
+    analysis_frame_s: float
+    resolution: float
+    chunk_s: float
+    overlap_s: float
+
+    @classmethod
+    def from_config(cls, cfg) -> F0Settings:
+        return cls(
+            fmin_hz=float(cfg.get("extract.f0.fmin_hz")),
+            fmax_hz=float(cfg.get("extract.f0.fmax_hz")),
+            analysis_rate_hz=int(cfg.get("extract.f0.analysis_rate_hz")),
+            analysis_hop_s=float(cfg.get("extract.f0.analysis_hop_s")),
+            analysis_frame_s=float(cfg.get("extract.f0.analysis_frame_s")),
+            resolution=float(cfg.get("extract.f0.resolution")),
+            chunk_s=float(cfg.get("extract.f0.chunk_s")),
+            overlap_s=float(cfg.get("extract.f0.overlap_s")),
+        )
+
+    def frames_per_bucket(self, signal_hz: float) -> int:
+        """How many analysis frames land in one stored sample.
+
+        Checked rather than assumed: a hop that does not divide the storage
+        period leaves each bucket holding a different number of frames, so the
+        series' declared sample rate stops describing its own contents.
+        """
+        period = 1.0 / float(signal_hz)
+        count = period / self.analysis_hop_s
+        if abs(count - round(count)) > 1e-9:
+            raise FeatureError(
+                f"extract.f0.analysis_hop_s={self.analysis_hop_s} does not divide "
+                f"1/extract.signal_hz={period:g}. Each stored sample would aggregate "
+                f"a different number of analysis frames."
+            )
+        return int(round(count))
+
+
+def track_pitch(
+    audio: np.ndarray, sample_rate: int, settings: F0Settings
+) -> np.ndarray:
+    """pyin over one contiguous span. NaN where unvoiced.
+
+    Imported here rather than at module scope so that `rms_series` — every
+    Phase 1 stream's only requirement — does not pay librosa's import cost, and
+    so a broken numba install fails in the stage that needs it rather than at the
+    top of a module the whole pipeline imports.
+    """
+    import librosa
+
+    frame = int(round(sample_rate * settings.analysis_frame_s))
+    hop = int(round(sample_rate * settings.analysis_hop_s))
+    if audio.size < frame:
+        return np.zeros(0, dtype=np.float64)
+
+    f0, _voiced, _prob = librosa.pyin(
+        audio, sr=sample_rate,
+        fmin=settings.fmin_hz, fmax=settings.fmax_hz,
+        frame_length=frame, hop_length=hop,
+        resolution=settings.resolution,
+        # Same convention as `rms_series`: no fabricated padding at the start.
+        # Frame j covers [j*hop, j*hop+frame) and is timestamped at its centre.
+        center=False,
+    )
+    return np.asarray(f0, dtype=np.float64)
+
+
+def f0_series(
+    path: Path, kind: str, *, signal_hz: float, settings: F0Settings,
+    role: str | None = None, on_progress=None,
+) -> signals.Series:
+    """Stream a WAV and produce its pitch track, aggregated to `signal_hz`.
+
+    Chunked for three independent reasons, any one of which would force it:
+    pyin's observation matrix is `2 * n_pitch_bins * n_frames` float64 (3.6 GB
+    over a 4-hour stream at a 20 ms hop); the stage must heartbeat or a run
+    lasting a quarter of an hour looks crashed; and the operator deserves
+    progress on the slowest thing in extraction.
+
+    `overlap_s` of real audio is read either side of every chunk and then
+    discarded, so no frame that survives was decoded by a Viterbi that started
+    inside speech.
+    """
+    frames_per_bucket = settings.frames_per_bucket(signal_hz)
+
+    with sf.SoundFile(path) as handle:
+        if handle.channels != 1:
+            raise FeatureError(
+                f"{path.name} has {handle.channels} channels; audio_split writes mono"
+            )
+        source_rate = handle.samplerate
+        total_samples = int(handle.frames)
+        duration_s = total_samples / source_rate
+
+        n_buckets = int(np.floor(duration_s * signal_hz))
+        # One column per analysis frame, so the medians are a single vectorised
+        # pass at the end. A 4-hour stream is 144k buckets of five, which is
+        # 5.8 MB — where 144k Python lists would not be.
+        collected = np.full((max(n_buckets, 0), frames_per_bucket), np.nan)
+        # How many frames each bucket has taken so far. Carried ACROSS chunks:
+        # `chunk_s` is not required to be a whole number of buckets, so the
+        # bucket straddling a chunk boundary is filled by two calls and the
+        # second must not overwrite the first.
+        fill = np.zeros(max(n_buckets, 0), dtype=np.int64)
+
+        overlap_samples = int(round(settings.overlap_s * source_rate))
+        chunk_samples = max(int(round(settings.chunk_s * source_rate)), 1)
+
+        for chunk_start in range(0, total_samples, chunk_samples):
+            chunk_end = min(chunk_start + chunk_samples, total_samples)
+            read_start = max(0, chunk_start - overlap_samples)
+            read_end = min(total_samples, chunk_end + overlap_samples)
+
+            handle.seek(read_start)
+            block = handle.read(read_end - read_start, dtype="float32",
+                                always_2d=False)
+            if block.size == 0:
+                continue
+
+            audio, rate = _resample_for_pitch(block, source_rate, settings)
+            pitch = track_pitch(audio, rate, settings)
+            if pitch.size == 0:
+                continue
+
+            # Absolute time of each analysis frame's centre, in VOD seconds.
+            hop = int(round(rate * settings.analysis_hop_s))
+            frame = int(round(rate * settings.analysis_frame_s))
+            times = (read_start / source_rate
+                     + (np.arange(pitch.size) * hop + frame / 2.0) / rate)
+
+            # Keep only frames belonging to this chunk, so the discarded overlap
+            # cannot contribute twice or contribute a boundary artefact.
+            keep = (times >= chunk_start / source_rate) & (times < chunk_end / source_rate)
+            _accumulate(collected, fill, times[keep], pitch[keep], signal_hz)
+
+            if on_progress is not None:
+                on_progress(chunk_end / source_rate)
+
+    values = _bucket_median(collected)
+    return signals.Series(
+        kind=kind,
+        values=values,
+        sample_rate_hz=signal_hz,
+        # The centre of the bucket, matching rms_series' rule that a timestamp
+        # describes the middle of what was measured.
+        t0=0.5 / signal_hz,
+        params={
+            "source": path.name,
+            "role": role,
+            "method": "librosa.pyin",
+            "unit": "Hz",
+            "unvoiced": "nan",
+            "source_sample_rate": source_rate,
+            "analysis_rate_hz": settings.analysis_rate_hz,
+            "analysis_hop_s": settings.analysis_hop_s,
+            "analysis_frame_s": settings.analysis_frame_s,
+            "frames_per_sample": frames_per_bucket,
+            "aggregate": "median",
+            "fmin_hz": settings.fmin_hz,
+            "fmax_hz": settings.fmax_hz,
+            "resolution": settings.resolution,
+            "chunk_s": settings.chunk_s,
+            "overlap_s": settings.overlap_s,
+        },
+    )
+
+
+def _resample_for_pitch(
+    block: np.ndarray, source_rate: int, settings: F0Settings
+) -> tuple[np.ndarray, int]:
+    """Decimate to the analysis rate. Measured to improve accuracy, not just speed."""
+    target = int(settings.analysis_rate_hz)
+    if target >= source_rate:
+        return block.astype(np.float32), source_rate
+
+    import librosa
+
+    return (
+        librosa.resample(block.astype(np.float32), orig_sr=source_rate,
+                         target_sr=target, res_type="soxr_hq"),
+        target,
+    )
+
+
+def _accumulate(
+    collected: np.ndarray, fill: np.ndarray, times: np.ndarray,
+    pitch: np.ndarray, signal_hz: float,
+) -> None:
+    """File each analysis frame into a free column of its storage bucket."""
+    if times.size == 0 or collected.size == 0:
+        return
+    index = np.floor(times * signal_hz).astype(np.int64)
+    inside = (index >= 0) & (index < collected.shape[0])
+    index, values = index[inside], pitch[inside]
+    if index.size == 0:
+        return
+
+    # Rank within this call's run of equal indices — times ascend, so a run is
+    # contiguous — plus whatever earlier chunks already put in that bucket.
+    order = np.arange(index.size)
+    slot = fill[index] + (order - np.searchsorted(index, index, side="left"))
+    room = slot < collected.shape[1]
+    collected[index[room], slot[room]] = values[room]
+    fill += np.bincount(index, minlength=fill.size)
+
+
+def _bucket_median(collected: np.ndarray) -> np.ndarray:
+    """Median of the voiced frames in each bucket; NaN when none were voiced."""
+    if collected.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    with warnings.catch_warnings():
+        # An all-unvoiced bucket is the expected case over silence, and NaN is
+        # the answer we want; numpy's warning about it is noise, several times a
+        # second, for hours.
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        return np.nanmedian(collected, axis=1)
+
+
+def voiced_fraction(series: signals.Series) -> float:
+    """Share of samples that carry a pitch. Reported, and used by `verify`."""
+    if len(series) == 0:
+        return 0.0
+    return float(np.mean(np.isfinite(series.values)))
+
+
+def rail_fraction(series: signals.Series, settings: F0Settings) -> tuple[float, float]:
+    """Share of voiced samples sitting at the bottom and top of the search range.
+
+    MEASURED, and the reason this exists: content BELOW `fmin_hz` does not come
+    back as "no pitch". A 32 Hz tone is reported as exactly 65.0 Hz on every
+    frame, confidently voiced — pyin pins it to the lowest bin, because the grid
+    it searches has no way to express "lower than this". The same must be assumed
+    at the top.
+
+    That matters twice over. §5.4.1's 65/400 range is a guess, and the falsifier
+    written beside it in config is "f0 seen pinned at fmax during peaks" — which
+    is only a falsifier if somebody is counting. And a rumble under the mic
+    produces a *constant* 65 Hz, which is a flat signal rather than a loud one,
+    so `mic_f0_variance` would quietly read it as the calmest stretch of the
+    stream.
+    """
+    values = series.values[np.isfinite(series.values)]
+    if values.size == 0:
+        return 0.0, 0.0
+    # Within one pitch bin of the rail: pyin quantises to `resolution` semitones,
+    # so an exact equality test would miss by rounding.
+    edge = 2.0 ** (settings.resolution / 12.0)
+    at_min = float(np.mean(values <= settings.fmin_hz * edge))
+    at_max = float(np.mean(values >= settings.fmax_hz / edge))
+    return at_min, at_max
 
 
 # --------------------------------------------------------------------------
@@ -185,9 +480,25 @@ def _roles(ctx: StageContext) -> dict[str, str]:
     }
 
 
-def _track_map(ctx: StageContext) -> dict:
-    import json
+def _f0_roles(ctx: StageContext) -> dict[str, str]:
+    """Roles that get a pitch track, as role -> kind.
 
+    The intersection of three things: what §5.4.1 defines a pitch signal for,
+    what this recording actually has, and what `extract.f0.roles` asks for. The
+    last is a real knob rather than a formality — pitch is the most expensive
+    thing in extraction and no §6.5 profile weights `party_f0`.
+    """
+    if not bool(ctx.cfg.get("extract.f0.enabled")):
+        return {}
+    wanted = set(ctx.cfg.get("extract.f0.roles") or [])
+    return {
+        role: F0_FOR_ROLE[role]
+        for role in _roles(ctx)
+        if role in F0_FOR_ROLE and role in wanted
+    }
+
+
+def _track_map(ctx: StageContext) -> dict:
     raw = ctx.stream["audio_track_map"]
     return json.loads(raw) if raw else {}
 
@@ -196,7 +507,9 @@ def params(ctx: StageContext) -> dict:
     return {
         "signal_hz": ctx.cfg.get("extract.signal_hz"),
         "rms": ctx.cfg.get("extract.rms"),
+        "f0": ctx.cfg.get("extract.f0"),
         "kinds": sorted(_roles(ctx).values()),
+        "f0_kinds": sorted(_f0_roles(ctx).values()),
     }
 
 
@@ -221,6 +534,17 @@ def verify(ctx: StageContext) -> tuple[bool, str]:
             return False, f"{kind} is empty"
         if not math.isclose(series.sample_rate_hz, ctx.cfg.get("extract.signal_hz")):
             return False, f"{kind} was stored at {series.sample_rate_hz} Hz"
+
+    # Pitch is checked for PRESENCE and shape, never for voicing. A `party.wav`
+    # with nobody in Discord is legitimately unvoiced end to end, and a verify
+    # that demanded voiced frames would re-run a 16-minute stage forever on a
+    # solo stream.
+    for kind in _f0_roles(ctx).values():
+        series = signals.load(ctx.conn, ctx.stream_id, kind)
+        if series is None:
+            return False, f"no signal_series for {kind}"
+        if len(series) == 0:
+            return False, f"{kind} is empty"
     return True, ""
 
 
@@ -263,6 +587,9 @@ def run(ctx: StageContext) -> None:
         )
         ctx.metric(f"signal_samples.{series.kind}", float(len(series)))
 
+    # After the RMS summary, so the log reads in the order the work happened.
+    _run_pitch(ctx, signal_hz)
+
     # A quiet mic here is the same diagnosis audio_split makes about a silent
     # file, one layer further on: nothing downstream will find anything, and
     # the cause is upstream.
@@ -272,3 +599,111 @@ def run(ctx: StageContext) -> None:
             "    WARNING  mic_rms never rises above the noise floor. Scoring will "
             "find nothing. Check the track mapping in `clipforge status`."
         )
+
+
+def _run_pitch(ctx: StageContext, signal_hz: float) -> None:
+    """§5.4.1's pitch tracks. The slowest thing in extraction, by a distance."""
+    roles = _f0_roles(ctx)
+    if not roles:
+        if bool(ctx.cfg.get("extract.f0.enabled")):
+            ctx.log("    f0: no configured role is present in this recording")
+        else:
+            ctx.log("    f0: disabled (extract.f0.enabled)")
+        return
+
+    settings = F0Settings.from_config(ctx.cfg)
+    # Raises here, before a 16-minute run, rather than producing a series whose
+    # declared rate does not describe its contents.
+    settings.frames_per_bucket(signal_hz)
+    _warm_up_pitch(settings)
+
+    for role, kind in roles.items():
+        path = ctx.paths.audio(role)
+        if not path.is_file():
+            raise FeatureError(
+                f"{path.name} is missing. audio_split should have written it; "
+                f"re-run with --force audio_split."
+            )
+
+        started = time.monotonic()
+        series = f0_series(
+            path, kind, signal_hz=signal_hz, settings=settings, role=role,
+            on_progress=lambda _s: ctx.heartbeat(),
+        )
+        elapsed = time.monotonic() - started
+
+        with db.transaction(ctx.conn):
+            signals.store(ctx.conn, ctx.stream_id, series)
+
+        voiced = voiced_fraction(series)
+        stats = signals.summarize(series)
+        median = stats.get("median")
+        ctx.log(
+            f"    {kind:<10} {len(series)} samples @ {series.sample_rate_hz:g} Hz, "
+            f"{100 * voiced:.1f}% voiced"
+            + (f", median {median:.0f} Hz" if median is not None else "")
+            + f"  ({elapsed:.1f}s)"
+        )
+        ctx.metric(f"signal_samples.{kind}", float(len(series)))
+        # §1.3 budgets 20-40 minutes for ALL unattended processing and this is
+        # the largest single consumer after WhisperX. Recorded per role so the
+        # operator can see what dropping one would buy. INVENTED metric name --
+        # §14's table has no extraction-cost row beyond stage_duration_s, which
+        # cannot attribute time within a stage.
+        ctx.metric(
+            f"f0_seconds_per_audio_hour.{role}",
+            round(elapsed / max(len(series) / signal_hz / 3600.0, 1e-9), 1),
+        )
+
+        # The falsifier for fmin_hz/fmax_hz, made countable. Also INVENTED.
+        at_min, at_max = rail_fraction(series, settings)
+        ctx.metric(f"f0_rail_fraction.{role}", round(max(at_min, at_max), 4),
+                   json.dumps({"at_fmin": round(at_min, 4),
+                               "at_fmax": round(at_max, 4),
+                               "fmin_hz": settings.fmin_hz,
+                               "fmax_hz": settings.fmax_hz}))
+        if at_max > RAIL_WARN_FRACTION:
+            ctx.log(
+                f"    WARNING  {100 * at_max:.0f}% of {kind}'s voiced samples sit at "
+                f"fmax ({settings.fmax_hz:g} Hz). Pitch above the search range is "
+                f"reported AS the range, so this is excitement being clipped. "
+                f"Raise extract.f0.fmax_hz."
+            )
+        if at_min > RAIL_WARN_FRACTION:
+            ctx.log(
+                f"    WARNING  {100 * at_min:.0f}% of {kind}'s voiced samples sit at "
+                f"fmin ({settings.fmin_hz:g} Hz). Content below the range is pinned "
+                f"there rather than reported as unvoiced, so this usually means "
+                f"rumble on the track rather than a very low voice."
+            )
+
+        if voiced == 0.0:
+            # Role-aware, because the same observation means opposite things.
+            # The first draft printed the party-track sentence under `mic_f0`,
+            # which reads as a contradiction at the exact moment the operator
+            # needs a straight answer.
+            ctx.log(
+                f"    note: {kind} found no voiced frames at all. "
+                + ("Normal when nobody was in Discord."
+                   if role == "party" else
+                   "On the mic that is either genuinely no speech, or §4.2's "
+                   "track mapping is wrong — check `clipforge status`.")
+            )
+
+
+def _warm_up_pitch(settings: F0Settings) -> None:
+    """Pay numba's compile before anything is timed.
+
+    MEASURED: the first pyin call in a process spends several seconds compiling,
+    and it lands inside whichever role runs first — 7.5 s against 3.1 s for two
+    identical 60 s tracks. That is noise at stream scale and ruinous at fixture
+    scale, and `f0_seconds_per_audio_hour` exists precisely to answer "does pitch
+    fit §1.3's budget", so it must not carry a one-off compile in the numerator
+    for one role and not the other.
+    """
+    rate = int(settings.analysis_rate_hz)
+    samples = int(rate * max(settings.analysis_frame_s * 3, 0.5))
+    try:
+        track_pitch(np.zeros(samples, dtype=np.float32), rate, settings)
+    except Exception:  # noqa: BLE001 - a warm-up must never fail a run
+        pass
