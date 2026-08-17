@@ -150,6 +150,49 @@ without saying so, and all three were silent failures rather than errors:
 seconds would draw a smooth pitch glide between two words and hand it to
 `mic_f0_variance` as prosody.
 
+## Laughter (Phase 3, §5.5)
+
+§5.5 offers this as "cheap, no model, works surprisingly well" and every number
+below was measured against a fixture that authors amplitude modulation in and out
+of the band. **What that can show is the mechanism; what it cannot show is
+laughter.** The fixture proves the detector responds to envelope periodicity
+inside 4–7 Hz and not outside it, and not to loudness. Whether real laughter has
+that signature is unmeasured, and §5.5's own fallback — "a small pretrained audio
+event classifier (YAMNet or similar)" — is the path if it does not.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `extract.laughter.band_hz` | `[4.0, 7.0]` | **grounded** | §5.5 and §17 both state it. Moved out of `deferred:` now that something reads it | Laughter detection precision/recall on real footage — §17's own tuning target for this row |
+| `extract.laughter.envelope_hz` | `100` | **grounded** | Forced, not chosen: the stored 10 Hz grid has a Nyquist of 5 Hz, *below the band's own top edge*, so content at 5–7 Hz has already aliased by the time it is sampled and `scipy.signal.butter` refuses to design the filter at all. Must also be a whole multiple of `extract.signal_hz` | — |
+| `extract.laughter.frame_s` | `0.02` | **plausible** | 2× the hop, the same overlap rule `extract.rms.frame_s` uses | — |
+| `extract.laughter.score_window_s` | `2.0` | **grounded** | MEASURED as the gap between the worst in-band region and the best non-in-band one: 1.0 s/order 4 gave 0.247, 2.0 s/order 6 gave **0.369**. Longer windows mostly help the denominator — unmodulated noise wanders into the band by chance, and averaging pulls that ceiling down | A laugh shorter than the window being smeared into its surroundings |
+| `extract.laughter.filter_order` | `6` | **grounded** | MEASURED better than 4 at every window length, and the reason generalises: a Butterworth's cutoffs are its **−3 dB points**, not the edges of a flat passband, so modulation at exactly 7 Hz is half-power attenuated by a filter "at 4–7 Hz". At order 4 the band-edge region scored 0.70 against mid-band's 1.00 | — |
+| `extract.laughter.min_depth` | `0.1` | **grounded** | MEASURED, and the fix for a real failure: the share is scale-free, so a noise floor fluctuating in-band scored as high as a real laugh, and the SPEECH fixture produced **ten laugh events** with no laughter in it. Depth is the band component's swing relative to the local level — authored depths 0.3 and 0.8 read 0.21 and 0.55, while noise, out-of-band regions and the floor all read 0.013–0.017 | Shallow real laughter being missed |
+| `extract.laughter.floor_db` | `-55.0` | **arbitrary** | Below this the score is a ratio of two noise floors, so it is NaN. An absolute threshold, which `sudden_silence` deliberately avoids — defensible here only because the question is "is there enough signal to form a ratio", not "is this loud for this stream" | A quiet recording scoring NaN throughout |
+| `score.derived.laughter.threshold` | `0.60` | **grounded** | The midpoint of the measured gap: worst in-band 0.791 (6.8 Hz, at the band edge), best non-in-band 0.422 (unmodulated noise) | C2 argues for lowering it once real footage exists — a missed laugh costs a clip, a false one three seconds of review |
+| `score.derived.laughter.min_duration_s` | `3.0` | **grounded**, and **the cost is real** | THE gate that separates laughter from speech. MEASURED: on the speech fixture the score crosses the threshold 13 times, every run between 0.1 s and 2.2 s and each about 1.7 s after an utterance ENDS — an offset transient, which looks periodic for about one smoothing window. The laughter fixture's 6 s regions produce runs of 4.8–7.5 s. 3.0 sits above every false run and below every true one | **A laugh shorter than three seconds is not detected**, which C2 would normally refuse. Real laughter is what prices that trade |
+
+**The measured result, both directions**: on the laughter fixture all four
+in-band regions produce an event and none of the six out-of-band or unmodulated
+regions does; on the speech fixture, which authors no laughter, **zero** events
+on either track.
+
+**Two things measured that are not parameters:**
+
+- **Speech's syllable rate is inside the band and that turns out not to matter.**
+  4–6 Hz syllables sit squarely in 4–7 Hz, but speech spreads its envelope
+  fluctuation across the spectrum rather than concentrating it, and the score is
+  a *share*: TTS speech measured 0.46 mean against 0.98+ for sustained
+  modulation. The scores that do cross are transients, which is what
+  `min_duration_s` removes.
+- **The score must be detrended LOCALLY.** Subtracting the file's global mean
+  made the value at one instant depend on unrelated material elsewhere in the
+  recording — identical 5.5 Hz modulation scored 0.77 in a file with other
+  content and 0.99 in one without. A rolling mean fixed it. A signal whose value
+  depends on what else is in the stream is not a local measurement, and §6.2's
+  rolling z-score would then be normalising something already normalised by the
+  wrong thing.
+
 ## Derived signals (Phase 3, §5.4.1 / §5.4.3)
 
 Computed at score time, not stored — each is a pure function of a stored

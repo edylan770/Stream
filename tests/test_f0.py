@@ -239,6 +239,51 @@ def test_chunking_does_not_lose_voiced_samples(tmp_path, settings):
 # --------------------------------------------------------------------------
 
 
+def test_a_bucket_ignores_its_unvoiced_frames_rather_than_being_poisoned():
+    """C2, and a bug that shipped for one commit.
+
+    A 100 ms bucket holds five analysis frames and speech is voiced in bursts,
+    so a bucket with one unvoiced frame is the normal case, not the exception.
+    Its median must be the median of what WAS observed.
+
+    The regression this pins: `np.median` silently IGNORES a masked array's
+    mask — it warns "'partition' will ignore the 'mask'" and then takes the
+    median of the raw data, NaN included, so every mixed bucket came back
+    unvoiced. The suite passed anyway because the hit-rate assertions were
+    loose enough to accept the lower number.
+    """
+    collected = np.array([
+        [100.0, 200.0, np.nan, np.nan, np.nan],   # two observations
+        [np.nan] * 5,                             # none at all
+        [150.0, 150.0, 150.0, 150.0, 150.0],      # all five
+    ])
+    out = features._bucket_median(collected)
+
+    assert out[0] == pytest.approx(150.0), "the median of the observed pair"
+    assert np.isnan(out[1]), "no observations is an absence, not a value"
+    assert out[2] == pytest.approx(150.0)
+
+
+def test_bucket_median_raises_no_warnings():
+    """`warnings.catch_warnings` mutates a PROCESS-WIDE filter and is documented
+    as not thread-safe, and `review/jobs` runs stages on background threads. So
+    the all-absent case must not raise a warning that has to be silenced."""
+    import warnings as warnings_module
+
+    with warnings_module.catch_warnings():
+        warnings_module.simplefilter("error")
+        features._bucket_median(np.full((3, 5), np.nan))
+        features._downsample_mean(np.full(50, np.nan), 100.0, 10.0)
+
+
+def test_downsample_keeps_partial_buckets_and_drops_empty_ones():
+    values = np.array([1.0, np.nan, 3.0, np.nan] * 5)
+    out = features._downsample_mean(values, 100.0, 50.0)   # 2 samples per bucket
+    assert out[0] == pytest.approx(1.0), "the mean of what was observed"
+
+    assert np.isnan(features._downsample_mean(np.full(10, np.nan), 100.0, 50.0)).all()
+
+
 def test_series_records_both_rates(tmp_path, settings, cfg):
     """A reader has to be able to tell what produced the number without knowing
     which extraction module wrote it."""

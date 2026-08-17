@@ -43,7 +43,6 @@ from __future__ import annotations
 import json
 import math
 import time
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +61,11 @@ SIGNAL_FOR_ROLE = {"mic": "mic_rms", "game": "game_rms", "party": "party_rms"}
 #: equivalent, which is right: game audio has no voice, so a pitch track of an
 #: explosion is a number with no referent.
 F0_FOR_ROLE = {"mic": "mic_f0", "party": "party_f0"}
+
+#: role -> laughter kind. §5.5: "run independently on the mic track and the
+#: party track. Party laughter is the more valuable of the two because it is
+#: external validation." No game entry, for the same reason as pitch.
+LAUGHTER_FOR_ROLE = {"mic": "mic_laughter", "party": "party_laughter"}
 
 #: Warn when more than this share of voiced pitch samples sits on the edge of
 #: the configured search range. Not config: it is a display heuristic on a
@@ -131,24 +135,27 @@ def to_db(rms: np.ndarray, db_floor: float) -> np.ndarray:
     return 20.0 * np.log10(np.maximum(rms, floor_amplitude))
 
 
-def rms_series(
-    path: Path, kind: str, *, signal_hz: float, frame_s: float, db_floor: float,
-    role: str | None = None, on_progress=None,
-) -> signals.Series:
-    """Stream a WAV and produce its RMS envelope in dBFS.
+def stream_frame_rms(
+    path: Path, *, signal_hz: float, frame_s: float, on_progress=None,
+) -> tuple[np.ndarray, Framing, int]:
+    """Stream a WAV and return its LINEAR RMS envelope, plus the framing used.
 
     Overlap-save: each read block is prefixed with the tail the previous one
     could not complete a frame from, so frames spanning a block boundary are
     computed exactly once and correctly.
+
+    Factored out of `rms_series` because §5.5's laughter detector needs the same
+    envelope at a much higher rate, and in LINEAR amplitude rather than dB —
+    amplitude modulation is a multiplicative envelope, and taking the logarithm
+    first turns the modulation the band-pass is looking for into a different
+    shape. One streaming loop, two consumers.
     """
     with sf.SoundFile(path) as handle:
         if handle.channels != 1:
             raise FeatureError(
                 f"{path.name} has {handle.channels} channels; audio_split writes mono"
             )
-        framing = framing_for(
-            handle.samplerate, signal_hz=signal_hz, frame_s=frame_s
-        )
+        framing = framing_for(handle.samplerate, signal_hz=signal_hz, frame_s=frame_s)
 
         chunks: list[np.ndarray] = []
         tail = np.zeros(0, dtype=np.float32)
@@ -174,6 +181,17 @@ def rms_series(
         total_frames = int(handle.frames)
 
     rms = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float64)
+    return rms, framing, total_frames
+
+
+def rms_series(
+    path: Path, kind: str, *, signal_hz: float, frame_s: float, db_floor: float,
+    role: str | None = None, on_progress=None,
+) -> signals.Series:
+    """Stream a WAV and produce its RMS envelope in dBFS."""
+    rms, framing, total_frames = stream_frame_rms(
+        path, signal_hz=signal_hz, frame_s=frame_s, on_progress=on_progress
+    )
     return signals.Series(
         kind=kind,
         values=to_db(rms, db_floor),
@@ -197,6 +215,214 @@ def rms_series(
             "source_frames": total_frames,
         },
     )
+
+
+# --------------------------------------------------------------------------
+# laughter (§5.5)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LaughterSettings:
+    """§5.5's envelope-periodicity heuristic, from config in one place."""
+
+    band_hz: tuple[float, float]
+    envelope_hz: float
+    frame_s: float
+    score_window_s: float
+    floor_db: float
+    filter_order: int
+    min_depth: float
+
+    @classmethod
+    def from_config(cls, cfg) -> LaughterSettings:
+        band = cfg.get("extract.laughter.band_hz")
+        return cls(
+            band_hz=(float(band[0]), float(band[1])),
+            envelope_hz=float(cfg.get("extract.laughter.envelope_hz")),
+            frame_s=float(cfg.get("extract.laughter.frame_s")),
+            score_window_s=float(cfg.get("extract.laughter.score_window_s")),
+            floor_db=float(cfg.get("extract.laughter.floor_db")),
+            filter_order=int(cfg.get("extract.laughter.filter_order")),
+            min_depth=float(cfg.get("extract.laughter.min_depth")),
+        )
+
+    def check_nyquist(self, rate: float, what: str) -> None:
+        """Refuse a band the sample rate cannot represent.
+
+        THE reason this signal does not reuse the stored `mic_rms`. §5.4 stores
+        every continuous signal at 10 Hz, whose Nyquist is 5 Hz — below the
+        band's own top edge. Two separate things go wrong there and both matter:
+        content at 5-7 Hz has already ALIASED down to 5-3 Hz by the time it is
+        sampled at 10 Hz, and `scipy.signal.butter` cannot even design the filter
+        (it raises "critical frequencies must be 0 < Wn < 1"). So the failure is
+        loud rather than silent, but only if something checks — hence this.
+        """
+        if self.band_hz[1] >= rate / 2.0:
+            raise FeatureError(
+                f"§5.5's laughter band tops out at {self.band_hz[1]:g} Hz, which is at "
+                f"or above the Nyquist frequency of {what} ({rate:g} Hz -> "
+                f"{rate / 2:g} Hz). Modulation in that band cannot be represented "
+                f"there at all, let alone filtered. Raise "
+                f"extract.laughter.envelope_hz above {2 * self.band_hz[1]:g} Hz."
+            )
+
+
+def band_share(
+    envelope: np.ndarray, settings: LaughterSettings
+) -> tuple[np.ndarray, np.ndarray]:
+    """`(share, depth)` — how much of the envelope's fluctuation sits in §5.5's
+    band, and how far that component actually swings.
+
+    §5.5: "band-pass the RMS envelope at 4-7 Hz, threshold the energy. Cheap, no
+    model, works surprisingly well."
+
+    A SHARE rather than an absolute band energy, because absolute energy tracks
+    how loud the moment was — which `mic_rms` already measures and §6.5 already
+    weights. The question here is different: is the fluctuation *concentrated* at
+    laughter rates? That is scale-free, so it needs no level calibration and does
+    not double-count loudness.
+
+    Zero-phase (`sosfiltfilt`): these become events, and an ordinary IIR pass
+    would shift them later in time by its own group delay.
+    """
+    from scipy.signal import butter, sosfiltfilt
+
+    settings.check_nyquist(settings.envelope_hz, "the laughter envelope")
+
+    n = envelope.size
+    window = max(int(round(settings.score_window_s * settings.envelope_hz)), 3)
+    # `sosfiltfilt` pads by 3 * (order * 2), and refuses a signal shorter than
+    # that. A clip too short to hold a few cycles has no periodicity to measure.
+    if n < max(window, 12 * settings.filter_order + 1):
+        blank = np.full(n, np.nan)
+        return blank, blank.copy()
+
+    nyquist = settings.envelope_hz / 2.0
+    sos = butter(
+        settings.filter_order,
+        [settings.band_hz[0] / nyquist, settings.band_hz[1] / nyquist],
+        btype="band", output="sos",
+    )
+
+    # Detrended LOCALLY, against a rolling mean rather than the file's own.
+    #
+    # MEASURED: subtracting the global mean made the score depend on what else
+    # was in the recording. Every region of the laughter fixture is authored at
+    # one level, and a global detrend still left the silence-to-region steps in
+    # the denominator as "fluctuation" — so identical 5.5 Hz modulation scored
+    # 0.77 in that file and 0.99 in a file containing nothing else. A signal
+    # whose value at t depends on unrelated material elsewhere in the stream is
+    # not a local measurement, and §6.2's rolling z-score would then be
+    # normalising something that had already been normalised by the wrong thing.
+    kernel = np.ones(window) / window
+    local_mean = np.convolve(envelope, kernel, mode="same")
+    detrended = envelope - local_mean
+
+    filtered = sosfiltfilt(sos, detrended)
+
+    band = np.sqrt(np.convolve(np.square(filtered), kernel, mode="same"))
+    total = np.sqrt(np.convolve(np.square(detrended), kernel, mode="same"))
+
+    share = np.divide(band, total, out=np.zeros_like(band), where=total > 1e-12)
+
+    # A SHARE ALONE IS NOT ENOUGH, and this was measured rather than reasoned.
+    #
+    # The share is scale-free, so a noise floor whose tiny random fluctuation
+    # happens to sit in the band scores exactly as high as a real laugh. On the
+    # speech fixture — which authors no laughter at all — that produced TEN
+    # laugh events, most of them in the gaps between utterances.
+    #
+    # §5.5's own words are "rapid periodic BURSTS", and a burst has depth. So
+    # the second half of the test is how far the band component actually swings
+    # relative to the local level: modulation authored at depth 0.3 and 0.8
+    # measured 0.21 and 0.55, while noise floor and out-of-band regions measured
+    # 0.013-0.017 — more than an order of magnitude apart.
+    depth = np.divide(band, local_mean, out=np.zeros_like(band),
+                      where=local_mean > 1e-12)
+    return share, depth
+
+
+def laughter_series(
+    path: Path, kind: str, *, signal_hz: float, settings: LaughterSettings,
+    role: str | None = None, on_progress=None,
+) -> signals.Series:
+    """§5.5's envelope-periodicity score, on the standard signal grid.
+
+    The envelope is computed HERE at `envelope_hz` rather than reusing the
+    stored `mic_rms` — see `check_nyquist`. Everything else is arithmetic over
+    that envelope, so re-tuning the band costs a re-extraction only because the
+    envelope itself is not kept; the threshold that turns this into events is a
+    score-time tunable and lives in `score/derived.py`.
+    """
+    envelope, framing, _total = stream_frame_rms(
+        path, signal_hz=settings.envelope_hz, frame_s=settings.frame_s,
+        on_progress=on_progress,
+    )
+    share, depth = band_share(envelope, settings)
+
+    # Concentrated in the band AND actually swinging. Zero rather than NaN where
+    # the modulation is too shallow: that is a measurement saying "nothing
+    # periodic here", not an absence of measurement.
+    score = np.where(depth >= settings.min_depth, share, 0.0)
+    # ...but a comparison against NaN is False, so the gate would have quietly
+    # converted "not measured" into "measured as zero" — which is a claim. Put
+    # the absences back.
+    score = np.where(np.isfinite(share) & np.isfinite(depth), score, np.nan)
+
+    # Where there is no sound at all, the score is a ratio of two noise floors —
+    # a number with no referent. NaN, not zero: commit 31's convention, and
+    # `score/grid.py` knows what to do with it.
+    floor = 10.0 ** (settings.floor_db / 20.0)
+    score = np.where(envelope >= floor, score, np.nan)
+
+    values = _downsample_mean(score, settings.envelope_hz, signal_hz)
+    return signals.Series(
+        kind=kind,
+        values=values,
+        sample_rate_hz=signal_hz,
+        t0=framing.t0,
+        params={
+            "source": path.name,
+            "role": role,
+            "method": "envelope band share",
+            # No unit: it is a ratio, and the review UI's context line is for
+            # absolute levels in a unit a human already reads.
+            "unit": "",
+            "band_hz": list(settings.band_hz),
+            "envelope_hz": settings.envelope_hz,
+            "envelope_frame_s": settings.frame_s,
+            "score_window_s": settings.score_window_s,
+            "floor_db": settings.floor_db,
+            "filter_order": settings.filter_order,
+            "aggregate": "mean",
+            "source_sample_rate": framing.sample_rate,
+        },
+    )
+
+
+def _downsample_mean(values: np.ndarray, from_hz: float, to_hz: float) -> np.ndarray:
+    """Average whole buckets down to the storage grid.
+
+    Mean rather than max: the score already carries a `score_window_s` of
+    smoothing, so neighbouring samples are near-duplicates and a max would only
+    bias every bucket upward by the local noise.
+    """
+    step = from_hz / to_hz
+    if not np.isclose(step, round(step)) or round(step) < 1:
+        raise FeatureError(
+            f"extract.laughter.envelope_hz ({from_hz:g}) must be a whole multiple "
+            f"of extract.signal_hz ({to_hz:g}); it is {step:g}x"
+        )
+    step = int(round(step))
+    usable = (values.size // step) * step
+    if usable == 0:
+        return np.zeros(0, dtype=np.float64)
+    # Masked rather than `nanmean`, for the reason in `_bucket_median`: an
+    # all-absent bucket is expected over silence, and silencing the warning it
+    # raises would mean touching a process-wide filter from library code.
+    buckets = np.ma.masked_invalid(values[:usable].reshape(-1, step))
+    return np.ma.mean(buckets, axis=1).filled(np.nan)
 
 
 # --------------------------------------------------------------------------
@@ -417,15 +643,30 @@ def _accumulate(
 
 
 def _bucket_median(collected: np.ndarray) -> np.ndarray:
-    """Median of the voiced frames in each bucket; NaN when none were voiced."""
+    """Median of the voiced frames in each bucket; NaN when none were voiced.
+
+    The all-unvoiced rows are excluded before the median rather than filtered
+    out of the warning afterwards. `warnings.catch_warnings` mutates a
+    PROCESS-WIDE filter and is documented as not thread-safe, and `review/jobs`
+    runs stages on background threads — so suppressing there both leaks into
+    other work and, worse, could hide a warning that mattered. Not raising it is
+    cheaper than silencing it.
+    """
     if collected.size == 0:
         return np.zeros(0, dtype=np.float64)
-    with warnings.catch_warnings():
-        # An all-unvoiced bucket is the expected case over silence, and NaN is
-        # the answer we want; numpy's warning about it is noise, several times a
-        # second, for hours.
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        return np.nanmedian(collected, axis=1)
+    out = np.full(collected.shape[0], np.nan)
+    observed = np.isfinite(collected).any(axis=1)
+    if observed.any():
+        # `np.ma.median`, NOT `np.median`. The latter IGNORES a masked array's
+        # mask — it warns "'partition' will ignore the 'mask'" and then takes
+        # the median of the raw data, NaNs included, so every bucket holding one
+        # unvoiced frame would come back unvoiced. Found by running the suite
+        # with `-W error::RuntimeWarning`; the existing assertions were loose
+        # enough to pass either way.
+        out[observed] = np.ma.median(
+            np.ma.masked_invalid(collected[observed]), axis=1
+        ).filled(np.nan)
+    return out
 
 
 def voiced_fraction(series: signals.Series) -> float:
@@ -498,6 +739,18 @@ def _f0_roles(ctx: StageContext) -> dict[str, str]:
     }
 
 
+def _laughter_roles(ctx: StageContext) -> dict[str, str]:
+    """Roles that get a laughter score, as role -> kind."""
+    if not bool(ctx.cfg.get("extract.laughter.enabled")):
+        return {}
+    wanted = set(ctx.cfg.get("extract.laughter.roles") or [])
+    return {
+        role: LAUGHTER_FOR_ROLE[role]
+        for role in _roles(ctx)
+        if role in LAUGHTER_FOR_ROLE and role in wanted
+    }
+
+
 def _track_map(ctx: StageContext) -> dict:
     raw = ctx.stream["audio_track_map"]
     return json.loads(raw) if raw else {}
@@ -508,8 +761,10 @@ def params(ctx: StageContext) -> dict:
         "signal_hz": ctx.cfg.get("extract.signal_hz"),
         "rms": ctx.cfg.get("extract.rms"),
         "f0": ctx.cfg.get("extract.f0"),
+        "laughter": ctx.cfg.get("extract.laughter"),
         "kinds": sorted(_roles(ctx).values()),
         "f0_kinds": sorted(_f0_roles(ctx).values()),
+        "laughter_kinds": sorted(_laughter_roles(ctx).values()),
     }
 
 
@@ -539,7 +794,7 @@ def verify(ctx: StageContext) -> tuple[bool, str]:
     # with nobody in Discord is legitimately unvoiced end to end, and a verify
     # that demanded voiced frames would re-run a 16-minute stage forever on a
     # solo stream.
-    for kind in _f0_roles(ctx).values():
+    for kind in (*_f0_roles(ctx).values(), *_laughter_roles(ctx).values()):
         series = signals.load(ctx.conn, ctx.stream_id, kind)
         if series is None:
             return False, f"no signal_series for {kind}"
@@ -588,6 +843,7 @@ def run(ctx: StageContext) -> None:
         ctx.metric(f"signal_samples.{series.kind}", float(len(series)))
 
     # After the RMS summary, so the log reads in the order the work happened.
+    _run_laughter(ctx, signal_hz)
     _run_pitch(ctx, signal_hz)
 
     # A quiet mic here is the same diagnosis audio_split makes about a silent
@@ -599,6 +855,47 @@ def run(ctx: StageContext) -> None:
             "    WARNING  mic_rms never rises above the noise floor. Scoring will "
             "find nothing. Check the track mapping in `clipforge status`."
         )
+
+
+def _run_laughter(ctx: StageContext, signal_hz: float) -> None:
+    """§5.5's envelope-periodicity score, per §4.2 track."""
+    roles = _laughter_roles(ctx)
+    if not roles:
+        if bool(ctx.cfg.get("extract.laughter.enabled")):
+            ctx.log("    laughter: no configured role is present in this recording")
+        else:
+            ctx.log("    laughter: disabled (extract.laughter.enabled)")
+        return
+
+    settings = LaughterSettings.from_config(ctx.cfg)
+    # Fail here, before reading a four-hour WAV, rather than inside the filter
+    # designer with a message about normalised critical frequencies.
+    settings.check_nyquist(settings.envelope_hz, "the laughter envelope")
+
+    for role, kind in roles.items():
+        path = ctx.paths.audio(role)
+        if not path.is_file():
+            raise FeatureError(
+                f"{path.name} is missing. audio_split should have written it; "
+                f"re-run with --force audio_split."
+            )
+
+        series = laughter_series(
+            path, kind, signal_hz=signal_hz, settings=settings, role=role,
+            on_progress=lambda _s: ctx.heartbeat(),
+        )
+        with db.transaction(ctx.conn):
+            signals.store(ctx.conn, ctx.stream_id, series)
+
+        stats = signals.summarize(series)
+        measured = stats.get("observed", 0)
+        ctx.log(
+            f"    {kind:<14} {len(series)} samples @ {series.sample_rate_hz:g} Hz, "
+            f"{100 * measured / max(len(series), 1):.0f}% above the floor"
+            + (f", median {stats['median']:.2f}, p95 {stats['p95']:.2f}"
+               if measured else "")
+        )
+        ctx.metric(f"signal_samples.{kind}", float(len(series)))
 
 
 def _run_pitch(ctx: StageContext, signal_hz: float) -> None:

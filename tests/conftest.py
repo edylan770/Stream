@@ -13,6 +13,7 @@ import pytest
 
 from clipforge import config, ffmpeg
 from tests.fixtures.make_fixture import (
+    LAUGHTER_DURATION_S,
     SPEECH_DURATION_S,
     FixtureSpec,
     generate,
@@ -151,3 +152,33 @@ def speech_fixture_dir(needs_ffmpeg, needs_piper):
 def speech_manifest(speech_fixture_dir) -> dict:
     """Ground truth by construction: exact text, exact placement, known speaker."""
     return load_manifest(speech_fixture_dir)
+
+
+# --------------------------------------------------------------------------
+# laughter (Phase 3, §5.5)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def laughter_fixture_dir(needs_ffmpeg):
+    """Authored amplitude modulation, in and out of §5.5's 4-7 Hz band.
+
+    Its own kind rather than extra regions in the noise fixture: adding loud
+    regions to `short`/`long`/`ntsc` would move every candidate count in the
+    existing suite, which is churn and risk for no gain. Needs no Piper — it is
+    band-limited noise with a sine on its envelope.
+    """
+    return generate(FixtureSpec(
+        name="laughter", kind="laughter", duration_s=LAUGHTER_DURATION_S
+    ))
+
+
+@pytest.fixture(scope="session")
+def laughter_manifest(laughter_fixture_dir) -> dict:
+    """Every region's modulation rate, depth and level, authored.
+
+    Tests decide which regions are "in band" by comparing `mod_hz` against
+    `extract.laughter.band_hz` from config, so neither number is written down in
+    a test — move the band and the expectations move with it.
+    """
+    return load_manifest(laughter_fixture_dir)

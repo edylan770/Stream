@@ -222,8 +222,16 @@ def test_one_series_per_extracted_track(extracted):
             f"{role}_f0" for role in cfg.get("extract.f0.roles")
             if role in features.F0_FOR_ROLE
         }
+    if cfg.get("extract.laughter.enabled"):
+        expected |= {
+            f"{role}_laughter" for role in cfg.get("extract.laughter.roles")
+            if role in features.LAUGHTER_FOR_ROLE
+        }
     assert set(signals.kinds(conn, "fx")) == expected
+    # §5.4.1 defines no pitch for the game track and §5.5 no laughter: game
+    # audio has no voice, and a laugh track is not what an explosion is.
     assert "game_f0" not in expected
+    assert "game_laughter" not in expected
 
 
 def test_series_are_stored_at_the_configured_rate(extracted, manifest):

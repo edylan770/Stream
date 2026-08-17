@@ -420,6 +420,95 @@ extract:
     chunk_s: 300.0
     overlap_s: 2.0
 
+  # §5.5's laughter detection: "Whisper transcribes laughter poorly, but the
+  # acoustic signature is distinctive: rapid periodic bursts, 4-7 Hz envelope
+  # modulation. Band-pass the RMS envelope at 4-7 Hz, threshold the energy.
+  # Cheap, no model, works surprisingly well."
+  #
+  # THIS SIGNAL COMPUTES ITS OWN ENVELOPE, and that is not an optimisation.
+  # §5.4 stores every continuous signal at 10 Hz, whose Nyquist is 5 Hz -- below
+  # this band's own top edge. Two things go wrong there: content at 5-7 Hz has
+  # already ALIASED down to 5-3 Hz by the time it is sampled at 10 Hz, and
+  # scipy cannot even design the filter ("critical frequencies must be
+  # 0 < Wn < 1"). Reusing mic_rms would have produced a number that looks like a
+  # laughter score and is an artefact, with nothing downstream able to tell.
+  #
+  # MEASURED, at equal level, on synthetic amplitude modulation:
+  #
+  #   modulation        band share
+  #   4.5 / 5.5 / 6.5 Hz  0.92-0.99   (in band)
+  #   1 / 2 / 9 / 12 Hz   0.03        (out of band)
+  #   none (noise)        0.33
+  #   TTS speech          0.31 mean, 0.62 max
+  #
+  # Speech sits with unmodulated noise rather than with laughter, which is the
+  # result this heuristic needed: a syllable rate of 4-6 Hz IS inside the band,
+  # but speech spreads its envelope fluctuation across the spectrum instead of
+  # concentrating it, and the score is a SHARE.
+  laughter:
+    enabled: true
+
+    # §5.5: "run independently on the mic track and the party track. Party
+    # laughter is the more valuable of the two because it is external
+    # validation." No game entry -- §5.5 names neither, and a laugh track is not
+    # what an explosion is.
+    roles: [mic, party]
+
+    # §17's `laughter_band_hz`, moved here from `deferred:` now that something
+    # reads it.
+    band_hz: [4.0, 7.0]
+
+    # The envelope's own sample rate. Must be a whole multiple of
+    # extract.signal_hz (so buckets aggregate evenly) and must clear twice
+    # band_hz[1] with room to spare. 100 Hz is 10 samples per stored sample.
+    envelope_hz: 100.0
+    # Analysis window per envelope sample, at 2x the hop -- the same overlap
+    # rule extract.rms.frame_s uses.
+    frame_s: 0.02
+
+    # How much envelope the share is measured over. Two seconds is eight cycles
+    # at the bottom of the band and fourteen at the top. MEASURED on the
+    # laughter fixture -- the gap between the worst in-band region and the best
+    # non-in-band one, which is what a threshold has to fit inside:
+    #
+    #   window  order   worst in-band   best other    gap
+    #     1.0     4         0.700          0.453     0.247
+    #     1.0     6         0.775          0.459     0.316
+    #     2.0     4         0.709          0.416     0.293
+    #     2.0     6         0.791          0.422     0.369   <-- shipped
+    #
+    # Longer windows mostly help the DENOMINATOR: unmodulated noise wanders in
+    # and out of the band by chance, and averaging over more of it pulls the
+    # false-positive ceiling down.
+    score_window_s: 2.0
+
+    # Below this the score is a ratio of two noise floors -- a number with no
+    # referent -- so it is stored as NaN rather than as a value.
+    floor_db: -55.0
+
+    # A SHARE ALONE IS NOT ENOUGH. The share is scale-free, so a noise floor
+    # whose tiny random fluctuation happens to sit in the band scores exactly as
+    # high as a real laugh. MEASURED: without this gate the SPEECH fixture --
+    # which authors no laughter at all -- produced ten laugh events.
+    #
+    # §5.5's own words are "rapid periodic BURSTS", and a burst has depth. This
+    # is the band component's swing relative to the local level, so it is still
+    # scale-free and still says nothing about loudness. MEASURED on the laughter
+    # fixture: modulation authored at depth 0.3 and 0.8 read 0.21 and 0.55;
+    # unmodulated noise, out-of-band regions and the floor all read 0.013-0.017.
+    # 0.1 sits an order of magnitude clear of the noise and below the shallowest
+    # modulation the fixture authors.
+    min_depth: 0.1
+
+    # Butterworth order. MEASURED above: 6 beats 4 on every window length, and
+    # the reason is worth knowing -- a Butterworth's cutoffs are its -3 dB
+    # POINTS, not the edges of a flat passband. Modulation at exactly 7 Hz is
+    # therefore half-power attenuated by a filter "at 4-7 Hz", and at order 4 the
+    # band-edge region scored 0.70 against mid-band's 1.00. A sharper filter
+    # narrows that penalty; it does not remove it, which is why the threshold
+    # below is set from the worst in-band case rather than from the typical one.
+    filter_order: 6
+
   rms:
     # Analysis window per sample. Longer is smoother and less responsive; at
     # 2x the hop each sample overlaps its neighbours by half.
@@ -579,6 +668,44 @@ score:
       window_s: 2.0          # §5.4.3's own "within 2 s"
       silence_level: 0.5     # how far sudden_silence must have ramped
       party_spike_z: 1.0
+
+    # §5.4.2's laugh_operator / laugh_party events, from extract.laughter's
+    # continuous score. The THRESHOLD lives here rather than in extraction for
+    # the same reason as everything else in this block: it is a tunable, and
+    # baking it into a stored series would make retuning it a re-extraction.
+    #
+    # 0.60 is the midpoint of the MEASURED gap on the laughter fixture: the
+    # worst in-band region scored 0.791 (6.8 Hz, at the band edge where a
+    # Butterworth is already -3 dB) and the best non-in-band one 0.422
+    # (unmodulated noise wandering into the band by chance).
+    #
+    # C2 (recall over precision) argues for lowering it once there is real
+    # footage: a missed laugh costs a clip, a false one costs three seconds of
+    # review. It is at the midpoint rather than lower because nothing here has
+    # ever seen a real laugh, and inventing recall against synthetic material
+    # would be a guess dressed as a measurement.
+    laughter:
+      threshold: 0.60
+      # THE gate that separates laughter from speech, and the number is measured
+      # rather than chosen. §5.5 says "rapid periodic bursts" -- periodic means
+      # SUSTAINED, and this is what tests for it.
+      #
+      # What crosses the threshold and for how long, MEASURED:
+      #
+      #   speech fixture, mic (no laughter authored anywhere):
+      #     13 runs, every one between 0.1 s and 2.2 s, each landing about
+      #     1.7 s after an utterance ENDS -- the offset transient, smeared by
+      #     score_window_s. A step is not periodic; it just looks like one for
+      #     about a window.
+      #   laughter fixture (6 s authored regions):
+      #     runs of 4.8, 6.8, 7.4 and 7.5 s.
+      #
+      # 3.0 sits above every false run and below every true one. THE COST IS
+      # REAL: a laugh shorter than three seconds is not detected, which C2 would
+      # normally refuse. It is the honest setting anyway, because the material
+      # that would price that trade -- actual laughter -- does not exist yet,
+      # and admitting every speech transient is not recall, it is noise.
+      min_duration_s: 3.0
 
   # §6.2 step 6.
   smoothing_sigma_s: 2.0
@@ -1063,8 +1190,7 @@ deferred:
   negatives:          # §6.4, Phase 3/7
     menu_grace_period_s: 8
     afk_threshold_s: 60
-  laughter:           # §5.5, Phase 3
-    band_hz: [4.0, 7.0]
+  # laughter.band_hz moved to extract.laughter.band_hz -- something reads it now.
   trends:             # §11, Phase 6
     hdbscan_min_cluster_size: 5
     ngram_recency_halflife_days: 30

@@ -391,5 +391,18 @@ voice models once, and tests skip cleanly without them:
 .venv\Scripts\python tests\fixtures\make_fixture.py --kind speech --name speech
 ```
 
+The **laughter** fixture is the third kind, for §5.5. It is band-limited noise
+with a sine written onto its envelope — modulation inside 4–7 Hz and outside it
+on both sides, every region at the same level so nothing can be told apart by
+loudness. Needs no voice models, and is generated automatically by the tests:
+
+```powershell
+.venv\Scripts\python tests\fixtures\make_fixture.py --kind laughter --name laughter
+```
+
+It validates that the detector responds to envelope periodicity in the band and
+not outside it. It cannot show that real laughter has that signature — that needs
+a hand-labelled clip, and `spec/GUESSES.md` records it as the open falsifier.
+
 Layout follows spec §2.3. Directories for unbuilt phases (`digest/`, `ideate/`,
 `trends/`) exist as a visible roadmap and contain no code.

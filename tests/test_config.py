@@ -35,7 +35,10 @@ SPEC_17_PARAMETERS = {
     "menu_grace_period_s": "deferred.negatives.menu_grace_period_s",
     "afk_threshold_s": "deferred.negatives.afk_threshold_s",
     "combined_score_alpha": "score.combined.alpha",
-    "laughter_band_hz": "deferred.laughter.band_hz",
+    # Moved out of `deferred:` in commit 33, now that §5.5's detector reads it.
+    # That is what the deferred block is for: a §17 row is parked there until
+    # something consumes it, and moving it out is part of building the phase.
+    "laughter_band_hz": "extract.laughter.band_hz",
     "hdbscan_min_cluster_size": "deferred.trends.hdbscan_min_cluster_size",
     "ngram_recency_halflife_days": "deferred.trends.ngram_recency_halflife_days",
 }
@@ -59,7 +62,9 @@ def test_spec_17_defaults_match_the_table(cfg):
     assert cfg.get("score.combined.alpha") == 0.5
     assert cfg.get("deferred.negatives.menu_grace_period_s") == 8
     assert cfg.get("deferred.negatives.afk_threshold_s") == 60
-    assert cfg.get("deferred.laughter.band_hz") == [4.0, 7.0]
+    # Read through SPEC_17_PARAMETERS rather than by path, so a key that moves
+    # out of `deferred:` as its phase gets built stays checked in one place.
+    assert cfg.get(SPEC_17_PARAMETERS["laughter_band_hz"]) == [4.0, 7.0]
     assert cfg.get("deferred.trends.hdbscan_min_cluster_size") == 5
     assert cfg.get("deferred.trends.ngram_recency_halflife_days") == 30
 
@@ -288,7 +293,19 @@ def test_feature_schema_covers_every_spec_signal(cfg):
         # §5.4.3 composite
         "flick_signature", "multikill_with_ult", "reaction_onset",
     }
-    assert set(schema.keys) == expected
+    assert expected <= set(schema.keys), sorted(expected - set(schema.keys))
+
+    # Signals the spec DESCRIBES but does not tabulate. §5.4's tables are the
+    # catalogue, and §5.5 is prose that sits outside them: it specifies a
+    # continuous envelope-periodicity score, while §5.4.2 lists only the
+    # laugh_operator / laugh_party events that score is thresholded into. Both
+    # belong in the vector — the event says a laugh was called, the score says
+    # how strongly, and tuning the threshold between them needs the second.
+    #
+    # An allowlist rather than a loosened assertion, so a signal appearing here
+    # by accident still fails.
+    described_but_untabulated = {"mic_laughter", "party_laughter"}
+    assert set(schema.keys) == expected | described_but_untabulated
 
 
 def test_empty_vector_is_full_width_and_null(cfg):

@@ -17,7 +17,12 @@
 # Adding a signal = append it here and bump `version`. Never renumber or reuse a
 # key: five months of vectors depend on the names being stable.
 
-version: 1
+# v2 (Phase 3, commit 33): appended mic_laughter / party_laughter. §5.5 produces
+# a CONTINUOUS envelope-periodicity score, where §5.4.2 lists only the discrete
+# laugh_operator / laugh_party events — those are the score thresholded at score
+# time, and both halves belong in the vector: the event says "a laugh was
+# called", the score says how strongly, which is what tuning the threshold needs.
+version: 2
 
 # §5.4.1 — value recorded is the rolling z-score at t_peak.
 continuous:
@@ -34,6 +39,8 @@ continuous:
   input_rate:       {phase: 3, track: input}
   mouse_velocity:   {phase: 3, track: input,     note: "flick detection input"}
   input_stillness:  {phase: 3, track: derived,   note: "gated inverse of input_rate"}
+  mic_laughter:     {phase: 3, track: mic,       note: "§5.5 envelope band share, 4-7 Hz. Its own envelope: 10 Hz cannot carry the band"}
+  party_laughter:   {phase: 3, track: party,     note: "§5.5, and the more valuable of the two — external validation"}
 
 # §5.4.2 — value recorded is the decayed event kernel at t_peak (peak 1.0).
 events:

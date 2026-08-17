@@ -129,10 +129,20 @@ class Region:
     text: str = ""
     speaker: str = ""
     voice: str = ""
+    #: §5.5's laughter signature: amplitude modulation of the region's envelope.
+    #: `mod_hz` 0 means unmodulated, which is what every other region is. Applied
+    #: BEFORE `scale_to_rms`, so the region's declared dBFS still holds exactly
+    #: and a modulated region is not quietly louder or quieter than its label.
+    mod_hz: float = 0.0
+    mod_depth: float = 0.0
 
     @property
     def is_speech(self) -> bool:
         return bool(self.text)
+
+    @property
+    def is_modulated(self) -> bool:
+        return self.mod_hz > 0.0 and self.mod_depth > 0.0
 
 
 @dataclass
@@ -244,6 +254,93 @@ def build_pattern(spec: FixtureSpec) -> None:
     spec.regions = regions
     spec.markers = markers
     spec.floors_dbfs = dict(FLOORS_DBFS)
+
+
+# --------------------------------------------------------------------------
+# the laughter pattern (§5.5)
+# --------------------------------------------------------------------------
+
+#: (track, start, end, dbfs, mod_hz, mod_depth, label)
+#:
+#: Every region is at the SAME level, so nothing here can be told apart by
+#: loudness — only by the periodicity of its envelope, which is the one thing
+#: §5.5's heuristic claims to measure. The in-band rates bracket the band rather
+#: than sitting in its middle, because an edge is where a filter is weakest, and
+#: the out-of-band controls sit either side of it for the same reason.
+#:
+#: `mod_hz` and `mod_depth` land in the manifest, so tests decide which regions
+#: are "in band" by comparing them against `extract.laughter.band_hz` from config
+#: rather than by having either number written down.
+LAUGHTER_LEVEL_DBFS = -18.0
+LAUGHTER_REGIONS = [
+    ("mic", 5.0, 11.0, 5.5, 0.8, "mic_in_band_mid"),
+    ("mic", 14.0, 20.0, 1.0, 0.8, "mic_below_band"),
+    ("mic", 23.0, 29.0, 12.0, 0.8, "mic_above_band"),
+    ("mic", 32.0, 38.0, 0.0, 0.0, "mic_unmodulated"),
+    ("mic", 41.0, 47.0, 5.5, 0.3, "mic_in_band_shallow"),
+
+    ("party", 5.0, 11.0, 4.2, 0.8, "party_in_band_low_edge"),
+    ("party", 14.0, 20.0, 6.8, 0.8, "party_in_band_high_edge"),
+    ("party", 23.0, 29.0, 2.5, 0.8, "party_below_band"),
+    ("party", 32.0, 38.0, 9.0, 0.8, "party_above_band"),
+    ("party", 41.0, 47.0, 0.0, 0.0, "party_unmodulated"),
+]
+
+#: Long enough for the regions plus a trailing silence that nothing modulates.
+LAUGHTER_DURATION_S = 55.0
+
+
+def build_laughter_pattern(spec: FixtureSpec) -> None:
+    """Authored amplitude modulation, in and out of §5.5's band.
+
+    No markers: this fixture exists to measure one signal, and marker kernels
+    would put a pedestal under every window in a scoring test that used it.
+    """
+    spec.regions = [
+        Region(track=track, t_start=start, t_end=end, dbfs=LAUGHTER_LEVEL_DBFS,
+               label=label, mod_hz=mod_hz, mod_depth=depth)
+        for track, start, end, mod_hz, depth, label in LAUGHTER_REGIONS
+        if end <= spec.duration_s
+    ]
+    spec.markers = []
+    spec.floors_dbfs = dict(FLOORS_DBFS)
+
+
+def _laughter_manifest(spec: FixtureSpec) -> dict:
+    """Ground truth for §5.5, by construction."""
+    if spec.kind != "laughter":
+        return {}
+    return {
+        "modulation": [
+            {
+                "label": region.label,
+                "track": region.track,
+                "t_start": region.t_start,
+                "t_end": region.t_end,
+                "mod_hz": region.mod_hz,
+                "mod_depth": region.mod_depth,
+                "dbfs": region.dbfs,
+            }
+            for region in spec.regions
+        ],
+        "modulation_level_dbfs": LAUGHTER_LEVEL_DBFS,
+        "why_one_level": (
+            "Every region is authored at the same level, so no region can be "
+            "distinguished from another by loudness — only by the periodicity of "
+            "its envelope, which is the one thing §5.5's heuristic measures."
+        ),
+        "why_sine": (
+            "A sine puts all its modulation energy at one frequency. A burst "
+            "train is harmonically rich, so a 2 Hz train would leak into 4, 6 and "
+            "8 Hz and the out-of-band controls would stop being controls."
+        ),
+        "what_this_cannot_show": (
+            "Whether the detector fires on real laughter. This validates the "
+            "MECHANISM — response to envelope periodicity inside the band and not "
+            "outside it — and nothing else. §5.5's claim that the mechanism finds "
+            "laughter needs a hand-labelled clip."
+        ),
+    }
 
 
 # --------------------------------------------------------------------------
@@ -450,6 +547,28 @@ def scale_to_rms(signal: np.ndarray, target_rms: float) -> np.ndarray:
     return signal * (target_rms / current) if current > 0 else signal
 
 
+def amplitude_modulate(
+    signal: np.ndarray, sr: int, mod_hz: float, depth: float
+) -> np.ndarray:
+    """Multiply by `1 + depth·sin(2π·mod_hz·t)`, normalised back to unit peak.
+
+    §5.5 describes laughter as "rapid periodic bursts, 4-7 Hz envelope
+    modulation". This is that signature, authored — which is exactly as far as a
+    synthetic fixture can honestly go. It validates that the detector responds to
+    envelope periodicity in the band and not outside it; whether real laughter
+    looks like this is a question only a hand-labelled clip can answer.
+
+    A sine rather than a burst train, because a sine has all its modulation
+    energy at ONE frequency. A burst train is rich in harmonics, so a 2 Hz burst
+    train would put energy at 4, 6 and 8 Hz and the out-of-band controls would
+    quietly stop being controls.
+    """
+    t = np.arange(signal.size) / sr
+    modulated = signal * (1.0 + float(depth) * np.sin(2.0 * np.pi * float(mod_hz) * t))
+    peak = float(np.max(np.abs(modulated)))
+    return modulated / peak if peak > 0 else modulated
+
+
 def apply_edge_fade(signal: np.ndarray, sr: int) -> np.ndarray:
     """Raised-cosine in/out, so region boundaries do not click."""
     fade = int(EDGE_FADE_S * sr)
@@ -491,6 +610,9 @@ def build_track(
             chunk = periodic_band_limited_noise(
                 end - start, sr, BAND_LIMIT_HZ, track_seed + 1000 + index
             )
+
+        if region.is_modulated:
+            chunk = amplitude_modulate(chunk, sr, region.mod_hz, region.mod_depth)
 
         chunk = scale_to_rms(chunk, dbfs_to_rms(region.dbfs))
         # Replace rather than add: the region's level is then exactly its
@@ -664,6 +786,8 @@ def generate(
 
             renderer = PiperRenderer()
         build_speech_pattern(spec, renderer, rendered)
+    elif spec.kind == "laughter":
+        build_laughter_pattern(spec)
     else:
         build_pattern(spec)
 
@@ -718,6 +842,7 @@ def generate(
         "regions": measure_regions(spec, tracks),
         "markers": spec.markers,
         **_speech_manifest(spec, tracks),
+        **_laughter_manifest(spec),
         "notes": {
             "band_limit_hz": BAND_LIMIT_HZ,
             "why_band_limited": (
@@ -802,8 +927,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--force", action="store_true", help="regenerate even if cached")
     parser.add_argument(
-        "--kind", default="noise", choices=("noise", "speech"),
-        help="'speech' authors TTS dialogue for Phase 2 (§5.6-§5.8)",
+        "--kind", default="noise", choices=("noise", "speech", "laughter"),
+        help="'speech' authors TTS dialogue for Phase 2 (§5.6-§5.8); "
+             "'laughter' authors amplitude modulation in and out of §5.5's band",
     )
     parser.add_argument(
         "--download-voices", action="store_true",
@@ -823,6 +949,8 @@ def main(argv: list[str] | None = None) -> int:
     duration = args.duration
     if args.kind == "speech":
         duration = max(duration, SPEECH_DURATION_S)
+    elif args.kind == "laughter":
+        duration = max(duration, LAUGHTER_DURATION_S)
 
     spec = FixtureSpec(
         name=args.name,

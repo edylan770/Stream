@@ -376,9 +376,44 @@ def _reaction_onset(inputs: Inputs) -> np.ndarray:
     return inputs.timeline[onsets] if onsets.size else np.zeros(0, dtype=np.float64)
 
 
+def _laugh_events(inputs: Inputs, source: str) -> np.ndarray:
+    """§5.4.2's laugh events, thresholded out of §5.5's continuous score.
+
+    The threshold is a §17-class tunable, so it lives at score time and not in
+    the stored series — the same rule as everything else in this module. What
+    extraction stores is the observation ("this much of the envelope's
+    fluctuation was at laughter rates"); what scoring decides is whether that
+    counts as a laugh.
+
+    One event per run, at its start. §5.5 describes "rapid periodic bursts", so
+    a three-second laugh is one moment; an event per sample would hand
+    `score.events.combine: sum` thirty overlapping kernels for it.
+    """
+    score = np.asarray(inputs.get(source), dtype=np.float64)
+    over = np.isfinite(score) & (score >= inputs.opt("laughter.threshold"))
+    over = drop_short_runs(over, inputs.samples(inputs.opt("laughter.min_duration_s")))
+
+    onsets = np.flatnonzero(over & ~np.concatenate(([False], over[:-1])))
+    return inputs.timeline[onsets] if onsets.size else np.zeros(0, dtype=np.float64)
+
+
+def _laugh_operator(inputs: Inputs) -> np.ndarray:
+    return _laugh_events(inputs, "mic_laughter")
+
+
+def _laugh_party(inputs: Inputs) -> np.ndarray:
+    return _laugh_events(inputs, "party_laughter")
+
+
 #: Every derived signal, in dependency order — `reaction_onset` reads two of the
 #: others, so they have to exist first.
 DERIVATIONS: tuple[Derivation, ...] = (
+    # §5.4.2 names these events; §5.5 produces a continuous score. The threshold
+    # between them is the tunable, hence score time.
+    Derivation("laugh_operator", ("mic_laughter",), _laugh_operator,
+               emits_events=True),
+    Derivation("laugh_party", ("party_laughter",), _laugh_party,
+               emits_events=True),
     Derivation("mic_f0_variance", ("mic_f0",), _mic_f0_variance, unit="st"),
     Derivation("sudden_silence", ("mic_rms",), _sudden_silence),
     Derivation("overlap_speech", ("mic_rms", "party_rms"), _overlap_speech),
