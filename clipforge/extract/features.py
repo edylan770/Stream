@@ -325,6 +325,13 @@ def band_share(
     total = np.sqrt(np.convolve(np.square(detrended), kernel, mode="same"))
 
     share = np.divide(band, total, out=np.zeros_like(band), where=total > 1e-12)
+    # Clipped, because a "share" above 1 is not a share. MEASURED on the noise
+    # fixture, whose regions start and stop abruptly: the band-passed component
+    # rings at a step and can locally exceed the detrended total it is a
+    # fraction of, which reached 3.8. Nothing downstream was harmed — the
+    # duration gate discards a transient — but a signal documented as 0..1 has
+    # to actually be 0..1, or the threshold beside it stops meaning what it says.
+    np.clip(share, 0.0, 1.0, out=share)
 
     # A SHARE ALONE IS NOT ENOUGH, and this was measured rather than reasoned.
     #

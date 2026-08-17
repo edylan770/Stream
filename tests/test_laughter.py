@@ -173,6 +173,32 @@ def test_the_depth_gate_is_what_rejects_quiet_noise(tmp_path, settings):
     assert float(np.median(depth[np.isfinite(depth)])) > settings.min_depth
 
 
+def test_the_score_stays_inside_the_range_it_claims(tmp_path, settings):
+    """A "share" above 1 is not a share.
+
+    MEASURED on the noise fixture, whose regions start and stop abruptly: the
+    band-passed component rings at a step and can locally exceed the detrended
+    total it is a fraction of — 3.8 in that case. Nothing downstream broke,
+    because the duration gate discards a transient, but a signal documented as
+    0..1 has to be 0..1 or the threshold beside it stops meaning what it says.
+    """
+    stepped = np.concatenate([
+        np.zeros(16000, dtype=np.float32),
+        modulated_noise(2.0, 5.5, 0.9),
+        np.zeros(16000, dtype=np.float32),
+        modulated_noise(2.0, 0.0, 0.0),
+    ])
+    series = features.laughter_series(
+        write_wav(tmp_path / "steps.wav", stepped), "mic_laughter",
+        signal_hz=10.0, settings=settings,
+    )
+    values = series.values[np.isfinite(series.values)]
+
+    assert values.size
+    assert float(np.max(values)) <= 1.0
+    assert float(np.min(values)) >= 0.0
+
+
 def test_silence_is_absent_not_zero(tmp_path, settings):
     """Commit 31's convention. Zero would be a measurement — "no periodicity
     here" — where the truth is that there was nothing to measure."""

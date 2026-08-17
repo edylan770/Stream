@@ -150,6 +150,55 @@ without saying so, and all three were silent failures rather than errors:
 seconds would draw a smooth pitch glide between two words and hand it to
 `mic_f0_variance` as prosody.
 
+## Input signals (Phase 3, §4.4 / §5.4.1)
+
+Almost nothing here is a guess, which is unusual for this file: §4.4 fixes the
+record shape and the 10 Hz rate, §4.1 fixes the conversion, and §5.4.1 defines
+`input_rate` as "keys+clicks per second". What there is instead is a **structural
+decision** that matters more than any number.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `contract.INPUT_HZ` | `10` | **grounded** | §4.4 states it, and it is the logger's own aggregation rate | — |
+| `input_rate` = keys + clicks | — | **grounded** | §5.4.1 names ONE signal, "keys+clicks per second", not two | Wanting to weight a click differently from a keypress, which would need two signals and a §6.5 row for each |
+| bucket reduction | `mean` | **grounded** | Two 10 Hz records inside one 100 ms bucket describe the same tenth of a second twice, not twice as much input. Summing would make the value depend on the logger's rate rather than on the operator | — |
+
+**The structural decision: a gap is not a zero.** The logger can start late,
+crash, or be restarted mid-session. Reading an unlogged stretch as "no input
+activity" is wrong in the most damaging direction available, because §6.4's AFK
+penalty fires on *no input AND no speech* — so a quiet passage of a stream whose
+logger was down, or of a stream with no log at all, would be penalised for
+something nobody observed. The rates are therefore **NaN** where nothing was
+recorded and `input_coverage` is **0**, and `score/derived.py`'s
+`input_stillness` will not claim stillness without coverage.
+
+`input_coverage` is itself never NaN: "the logger was not running here" is an
+observation about the logger, and it is always known.
+
+**Two things worth knowing that are not parameters:**
+
+- **The log is DAILY, not per-recording.** `input_logger.input_path` writes
+  `input-YYYY-MM-DD.jsonl` into a capture directory because §4.5 forbids the
+  capture daemons from depending on OBS to learn where it is writing. A day with
+  three streams has one file covering all three, so the stage slices it by the
+  anchor and drops what falls outside — the rule `marker_events` already follows,
+  and for the same reason: clamping would invent activity at second zero of every
+  stream that shares a log.
+- **`score` does not depend on this stage, deliberately.** A DEFERRED stage never
+  enters the runner's `satisfied` set, so anything requiring it is BLOCKED. No
+  stream in existence has an input log, so making `score` depend on it would take
+  candidate production to zero everywhere. It is the same reason `score.requires`
+  has never included `whisperx`.
+
+**Still true, and the reason this stage cannot be validated yet:** §4.4's logger
+has never run on a real stream (HANDOFF's "untested, and only a real machine can
+test it"). Everything above is exercised against logs written through
+`capture/contract.py`'s own record builder, which proves the parsing and the
+arithmetic and says nothing about whether `mouse_velocity` discriminates a flick.
+§6.5 weights it 1.5 in the gameplay profile on the strength of §4.4's claim that
+this is "arguably the second-strongest gameplay signal after markers" — a claim
+ten streams would settle.
+
 ## Laughter (Phase 3, §5.5)
 
 §5.5 offers this as "cheap, no model, works surprisingly well" and every number

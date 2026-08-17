@@ -164,7 +164,10 @@ STAGE_LIST: list[StageSpec] = [
         name="input_signals",
         summary="parse input JSONL -> signal_series",
         phase=3,
-        requires=("register_stream",),
+        # `probe` as well as registration: the stage slices a DAILY log down to
+        # this recording, which needs the duration.
+        requires=("register_stream", "probe"),
+        module="clipforge.extract.input_signals",
     ),
     StageSpec(
         name="marker_events",

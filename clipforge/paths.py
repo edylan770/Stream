@@ -118,6 +118,16 @@ class StreamPaths:
         return self.raw_dir / "markers.jsonl"
 
     @property
+    def input_jsonl(self) -> Path:
+        """§4.4's activity log, copied in beside the markers.
+
+        Named without the daemon's date stamp for the same reason `markers.jsonl`
+        is: inside a stream directory the date is already the stream's, and the
+        file here is the one that belongs to THIS recording.
+        """
+        return self.raw_dir / "input.jsonl"
+
+    @property
     def exports_dir(self) -> Path:
         return self.dir / "exports"
 

@@ -72,13 +72,39 @@ class AlreadyRegistered(RegisterError):
 
 
 def find_capture_file(master: Path, explicit: str | None, *names: str) -> Path | None:
-    """Explicit path wins; otherwise look beside the master."""
+    """Explicit path wins; otherwise look beside the master.
+
+    A name containing `*` is a glob, and that is not decoration: **the capture
+    daemons do not write the bare names.** `marker_daemon` writes
+    `markers-YYYY-MM-DD.jsonl` and `input_logger` writes `input-YYYY-MM-DD.jsonl`,
+    both into a capture directory, because §4.5 forbids them from depending on
+    OBS to learn where it is writing. Only `obs_anchor` knows the recording's own
+    folder, because `RecordStateChanged` hands it `outputPath`.
+
+    So the bare name is what a copied-and-renamed file is called, the glob is
+    what the daemon actually produces, and both are looked for. Newest match
+    wins: a capture directory accumulates one file per day, and the recording
+    being registered is the recent one.
+
+    A daily file legitimately spans several recordings — `input_signals` and
+    `marker_events` each slice it by the anchor rather than assuming it belongs
+    to one stream.
+    """
     if explicit:
         path = Path(explicit).expanduser()
         if not path.is_file():
             raise RegisterError(f"file not found: {path}")
         return path
+
     for name in names:
+        if "*" in name:
+            matches = sorted(
+                (p for p in master.parent.glob(name) if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+            )
+            if matches:
+                return matches[-1]
+            continue
         candidate = master.parent / name
         if candidate.is_file():
             return candidate
@@ -162,6 +188,10 @@ class RegisterSpec:
     notes: str | None = None
     anchor: str | None = None
     markers: str | None = None
+    #: §4.4's activity log. Same shape of option as `markers` for the same
+    #: reason: the daemon writes it to a capture directory, not beside the
+    #: recording, so it cannot always be found automatically.
+    input: str | None = None
     force: bool = False
 
     @classmethod
@@ -175,6 +205,7 @@ class RegisterSpec:
             notes=args.notes,
             anchor=args.anchor,
             markers=args.markers,
+            input=getattr(args, "input", None),
             force=bool(args.force),
         )
 
@@ -195,6 +226,7 @@ class Preflight:
     anchor_path: Path | None
     anchor_ms: int | None
     markers_path: Path | None
+    input_path: Path | None
     marker_time_base: str
     warnings: list[str] = field(default_factory=list)
     #: §4.2's track map, read from the container header. See `audio_summary`.
@@ -209,6 +241,7 @@ class Preflight:
             "anchor": str(self.anchor_path) if self.anchor_path else None,
             "anchor_ms": self.anchor_ms,
             "markers": str(self.markers_path) if self.markers_path else None,
+            "input": str(self.input_path) if self.input_path else None,
             "marker_time_base": self.marker_time_base,
             "warnings": list(self.warnings),
             "audio": self.audio,
@@ -317,7 +350,12 @@ def preflight(cfg, conn, spec: RegisterSpec, *, with_audio: bool = False) -> Pre
         already = False
 
     anchor_path = find_capture_file(spec.master, spec.anchor, "anchor.json")
-    markers_path = find_capture_file(spec.master, spec.markers, "markers.jsonl")
+    markers_path = find_capture_file(
+        spec.master, spec.markers, "markers.jsonl", "markers-*.jsonl"
+    )
+    input_path = find_capture_file(
+        spec.master, spec.input, "input.jsonl", "input-*.jsonl"
+    )
     anchor_ms = read_anchor(anchor_path) if anchor_path else None
     time_base = "epoch" if anchor_ms is not None else "vod"
 
@@ -333,6 +371,7 @@ def preflight(cfg, conn, spec: RegisterSpec, *, with_audio: bool = False) -> Pre
         anchor_path=anchor_path,
         anchor_ms=anchor_ms,
         markers_path=markers_path,
+        input_path=input_path,
         marker_time_base=time_base,
         warnings=warnings,
         # Off by default: `clipforge register` is about to run `probe` anyway,
@@ -359,8 +398,12 @@ def register_stream(cfg, conn, spec: RegisterSpec, pre: Preflight | None = None)
         "SELECT * FROM streams WHERE id = ?", (pre.stream_id,)
     ).fetchone()
 
-    copied = _copy_capture_files(stream_paths, pre.anchor_path, pre.markers_path)
-    _write_sources(stream_paths, pre.master, pre.anchor_path, pre.markers_path)
+    copied = _copy_capture_files(
+        stream_paths, pre.anchor_path, pre.markers_path, pre.input_path
+    )
+    _write_sources(
+        stream_paths, pre.master, pre.anchor_path, pre.markers_path, pre.input_path
+    )
 
     with db.transaction(conn):
         conn.execute(
@@ -410,6 +453,9 @@ def add_arguments(parser) -> None:
     parser.add_argument("--anchor", help="anchor.json (default: beside the master)")
     parser.add_argument("--markers", help="markers.jsonl (default: beside the master)")
     parser.add_argument(
+        "--input", help="§4.4 activity log (default: beside the master)"
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="re-register an existing stream id, re-running everything built from it",
     )
@@ -446,7 +492,8 @@ def _material_change(previous, master: Path, anchor_ms: int | None, time_base: s
 
 
 def _copy_capture_files(
-    stream_paths: paths.StreamPaths, anchor: Path | None, markers: Path | None
+    stream_paths: paths.StreamPaths, anchor: Path | None, markers: Path | None,
+    activity: Path | None = None,
 ) -> list[str]:
     """Bring the small capture artifacts into the stream directory.
 
@@ -460,11 +507,19 @@ def _copy_capture_files(
     if markers is not None:
         shutil.copy2(markers, stream_paths.markers_jsonl)
         copied.append("markers.jsonl")
+    if activity is not None:
+        # Copied WHOLE even though it is a daily file covering other
+        # recordings too. Slicing here would bake the anchor into the copy,
+        # and `input_signals` has to slice at parse time anyway; a day of
+        # 10 Hz records is a few MB against a 4 GB proxy.
+        shutil.copy2(activity, stream_paths.input_jsonl)
+        copied.append("input.jsonl")
     return copied
 
 
 def _write_sources(
-    stream_paths: paths.StreamPaths, master: Path, anchor: Path | None, markers: Path | None
+    stream_paths: paths.StreamPaths, master: Path, anchor: Path | None,
+    markers: Path | None, activity: Path | None = None,
 ) -> None:
     """Provenance sidecar, in place of §2.3's symlinks.
 
@@ -480,6 +535,7 @@ def _write_sources(
         },
         "anchor_source": str(anchor) if anchor else None,
         "markers_source": str(markers) if markers else None,
+        "input_source": str(activity) if activity else None,
         "registered_at": datetime.now().isoformat(timespec="seconds"),
     }
     stream_paths.sources_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -499,6 +555,7 @@ def _report(result: RegisterResult) -> None:
     else:
         print("  anchor    none — marker times will be read as VOD seconds")
     print(f"  markers   {'markers.jsonl' if 'markers.jsonl' in result.copied else 'none found'}")
+    print(f"  input     {'input.jsonl' if 'input.jsonl' in result.copied else 'none found'}")
 
     for warning in pre.warnings:
         print()
