@@ -841,6 +841,18 @@ review:
     # A recording drive directory can hold thousands of files, sometimes over a
     # network. Cap the listing rather than stat()ing all of them.
     max_entries: 500
+
+    # Extra directories to search when a file is DROPPED onto the add screen.
+    #
+    # Dropping does not upload anything: a browser hands a page `File.name` and
+    # `File.size` but never a path, and §13.1 puts a master at 40-55 GB that is
+    # already on this machine's disk. So the name and size are sent instead and
+    # the server finds the file -- in the folders recordings have been
+    # registered from before, then whatever folder is open, then these.
+    #
+    # Usually empty is right: the first two cover it once one stream exists.
+    # Point this at an OBS output folder to make the very first drop work too.
+    search_dirs: []
     # What counts as a recording worth offering. §4.2 mandates MKV or
     # fragmented MP4; the rest are here because footage arrives in them.
     media_extensions: ['.mkv', '.mp4', '.mov', '.flv', '.ts', '.m2ts', '.webm']

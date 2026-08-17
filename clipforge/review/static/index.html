@@ -93,11 +93,32 @@
 <!-- ADD — the server-side file browser. A browser will not hand a page a
      filesystem path, so the listing comes from the server (review/browse.py). -->
 <section id="view-add" class="pane" hidden>
+  <!-- Dropping a file NEVER uploads it. The browser gives a page File.name and
+       File.size but deliberately never a path, and a master is 40-55 GB already
+       sitting on this machine's disk (§13.1) — so the name and size are sent and
+       the server finds the file where recordings have come from before. -->
+  <div id="add-drop" class="dropzone">
+    <strong>Drag a recording here</strong>
+    <span class="muted small">
+      or browse below. Nothing is uploaded — the file stays where it is and
+      ClipForge just notes the path.
+    </span>
+    <p id="add-drop-note" class="muted small" hidden></p>
+  </div>
+
   <div class="browse">
     <div class="browse-bar">
       <input id="add-path" class="path" spellcheck="false"
              aria-label="Path — type or paste one and press Enter">
       <span id="add-roots" class="roots"></span>
+    </div>
+
+    <div class="browse-bar">
+      <input id="add-filter" class="field" spellcheck="false"
+             placeholder="filter this folder…" aria-label="Filter the listing">
+      <button id="add-sort" class="btn btn--ghost" type="button"
+              title="Newest first is usually what you want: the recording you
+                     are adding is the one you just made">newest first</button>
     </div>
 
     <p id="add-error" class="error" hidden></p>
@@ -109,6 +130,7 @@
     </p>
 
     <p id="add-capture" class="muted small"></p>
+    <p id="add-recent" class="muted small"></p>
   </div>
 
   <div class="add-form">

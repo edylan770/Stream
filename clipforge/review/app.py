@@ -223,7 +223,55 @@ def create_app(cfg) -> FastAPI:
             media_extensions=cfg.get("review.browse.media_extensions", ()),
             max_entries=int(cfg.get("review.browse.max_entries", 500)),
         )
-        return JSONResponse(listing.to_json())
+        conn = connect()
+        try:
+            recent = browse.registered_directories(conn)
+        finally:
+            conn.close()
+        # "Recent locations" with no new state to keep: the answer is already in
+        # `streams.master_path`, and a derived list cannot go stale.
+        return JSONResponse({**listing.to_json(), "recent": recent})
+
+    @app.post("/api/browse/locate")
+    async def api_locate(request: Request) -> JSONResponse:
+        """Find a dropped file on disk, by name and size. NOTHING IS UPLOADED.
+
+        The page sends `File.name` and `File.size` — metadata every browser
+        exposes without reading a byte — and gets back the path the operator
+        would otherwise have navigated to. §13.1 puts a master at 40-55 GB and
+        it is already on this machine's disk; copying it to `data/` to discover
+        where it lives would be minutes of I/O for nothing.
+
+        A POST rather than a GET because a filename is the operator's data and
+        does not belong in a URL, a log line, or a browser history entry.
+        """
+        body = await request.json()
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="no file name given")
+
+        size = body.get("size")
+        conn = connect()
+        try:
+            directories = [
+                # Where recordings have come from before is the best guess by a
+                # distance, and it costs nothing to keep.
+                *browse.registered_directories(conn),
+                str(body.get("path") or "") or None,
+                *(cfg.get("review.browse.search_dirs", []) or []),
+                # Last: a guess about somebody else's OBS configuration, which
+                # is only there so the FIRST drop on a fresh install — no
+                # history, nothing browsed yet — has somewhere to look.
+                *browse.default_search_dirs(),
+            ]
+        finally:
+            conn.close()
+
+        found = browse.locate(
+            name, int(size) if isinstance(size, (int, float)) else None,
+            directories=directories,
+        )
+        return JSONResponse(found.to_json())
 
     def _spec(body: dict) -> register.RegisterSpec:
         master = str(body.get("master") or "").strip()
@@ -249,7 +297,14 @@ def create_app(cfg) -> FastAPI:
         """
         conn = connect()
         try:
-            pre = register.preflight(cfg, conn, _spec(await request.json()))
+            # `with_audio`: §4.2's track map, read from the container header
+            # before anything is written. Two or three audio tracks are refused
+            # by `audio_split` rather than guessed at, and §4.2 calls confusing
+            # game audio for the mic unrecoverable — so the operator sees which
+            # tracks the file actually carries while the choice is still theirs.
+            pre = register.preflight(
+                cfg, conn, _spec(await request.json()), with_audio=True
+            )
         except register.RegisterError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         finally:

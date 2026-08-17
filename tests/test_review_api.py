@@ -164,25 +164,65 @@ def test_no_module_declares_the_same_name_twice_in_one_scope(client):
     on the machine this project is built on and a check that always skips is not
     a check. Deliberately conservative: same brace depth only, so it reports the
     failure that happened and cannot fire on legitimate shadowing.
+
+    A declaration inside PARENTHESES is skipped, because `for (const x of ...)`
+    binds `x` to the loop's own scope — two such loops side by side are legal
+    and were a false positive until commit 34 hit it.
     """
     for name in MODULES:
         source = _strip_literals(client.get(f"/static/{name}").text)
 
         depth = 0
+        parens = 0
         seen: dict[int, set[str]] = {}
-        for token in re.finditer(r"[{}]|\b(?:const|let)\s+([A-Za-z_$][\w$]*)", source):
-            if token.group(0) == "{":
+        for token in re.finditer(
+            r"[{}()]|\b(?:const|let)\s+([A-Za-z_$][\w$]*)", source
+        ):
+            text = token.group(0)
+            if text == "{":
                 depth += 1
-            elif token.group(0) == "}":
+            elif text == "}":
                 seen.pop(depth, None)
                 depth -= 1
-            else:
+            elif text == "(":
+                parens += 1
+            elif text == ")":
+                parens = max(parens - 1, 0)
+            elif parens == 0:
                 names = seen.setdefault(depth, set())
                 assert token.group(1) not in names, (
                     f"{name} declares {token.group(1)!r} twice at the same brace "
                     f"depth — that is a SyntaxError and the module will not load"
                 )
                 names.add(token.group(1))
+
+
+def test_the_scope_checker_allows_two_loops_over_the_same_variable():
+    """The false positive that commit 34 hit. `for (const name of ...)` twice in
+    one scope is legal JS — each binds to its own loop — and a checker that
+    refuses it teaches people to rename around it rather than trust it."""
+    legal = (
+        'for (const name of ["a", "b"]) { use(name); }\n'
+        'for (const name of ["c", "d"]) { use(name); }\n'
+    )
+    depth, parens, seen = 0, 0, {}
+    for token in re.finditer(
+        r"[{}()]|\b(?:const|let)\s+([A-Za-z_$][\w$]*)", _strip_literals(legal)
+    ):
+        text = token.group(0)
+        if text == "{":
+            depth += 1
+        elif text == "}":
+            seen.pop(depth, None)
+            depth -= 1
+        elif text == "(":
+            parens += 1
+        elif text == ")":
+            parens = max(parens - 1, 0)
+        elif parens == 0:
+            names = seen.setdefault(depth, set())
+            assert token.group(1) not in names, "false positive on a for-of loop"
+            names.add(token.group(1))
 
 
 def test_the_scope_checker_actually_catches_the_bug_it_was_written_for():

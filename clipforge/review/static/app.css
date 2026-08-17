@@ -409,6 +409,29 @@ code {
 /* ---------------------------------------------------------- file browser */
 
 .browse { margin: var(--s5) 0; }
+/* Drop-to-locate. A real drop target that never uploads: the page reads
+   File.name and File.size and the server finds the file where it already is.
+   Sized to read as the primary affordance without pushing the browser — which
+   is still the reliable path — below the fold. */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  align-items: center;
+  text-align: center;
+  padding: var(--s5) var(--s4);
+  margin-bottom: var(--s4);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.dropzone.over { border-color: var(--accent); background: var(--panel-3); }
+.dropzone strong { font-size: var(--tmd); }
+.dropzone .error { margin: 0; }
+
+.btn--tiny { padding: var(--s1) var(--s3); font-size: var(--tsm); }
+
 .browse-bar { display: flex; gap: var(--s4); align-items: center; margin-bottom: var(--s4); }
 .path, .field {
   background: var(--panel-2);

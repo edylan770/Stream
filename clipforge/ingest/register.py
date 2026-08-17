@@ -197,6 +197,8 @@ class Preflight:
     markers_path: Path | None
     marker_time_base: str
     warnings: list[str] = field(default_factory=list)
+    #: §4.2's track map, read from the container header. See `audio_summary`.
+    audio: dict | None = None
 
     def to_json(self) -> dict:
         return {
@@ -209,7 +211,63 @@ class Preflight:
             "markers": str(self.markers_path) if self.markers_path else None,
             "marker_time_base": self.marker_time_base,
             "warnings": list(self.warnings),
+            "audio": self.audio,
         }
+
+
+def audio_summary(master: Path, cfg, ffprobe: str | None = None) -> dict:
+    """What §4.2 tracks this file carries, before anything is written.
+
+    THE question this answers is the one a new operator asks first: where does
+    the mic audio go? It does not go anywhere — OBS records §4.2's four tracks as
+    four audio streams inside the one file, which is why §5.3 pulls them with
+    `-map 0:a:1/2/3` from a single master. There is nothing else to supply.
+
+    That only holds if OBS was actually configured for multi-track, and §4.2 is
+    blunt about the cost of it not being: "mic RMS analysis is garbage if game
+    audio is mixed in [...] This is unrecoverable after the fact." Two or three
+    tracks are REFUSED by `audio_split` rather than guessed at. Learning that
+    from the `probe` stage means learning it after the row exists, so it is read
+    here instead.
+
+    Deliberately `probe_container`, not `probe.analyse`: the container header is
+    one seek, where `analyse` samples presentation timestamps to classify the
+    frame rate and that is the part which costs real time on a 40 GB file.
+    """
+    from clipforge import ffmpeg
+    from clipforge.ingest import probe
+
+    try:
+        container = probe.probe_container(master, ffprobe=ffprobe)
+        streams = [s for s in container.get("streams", [])
+                   if s.get("codec_type") == "audio"]
+        track_map = probe.resolve_track_roles(
+            streams, cfg.get("ingest.audio.track_roles", {})
+        )
+    except (probe.ProbeError, ffmpeg.FFmpegError, OSError) as exc:
+        # Never fatal, and `FFmpegError` is the one that matters: a truncated or
+        # non-container file makes ffprobe exit non-zero, and without it here a
+        # corrupt drop would return 500 from the preflight route instead of a
+        # preflight saying what is wrong. The `probe` stage will refuse the same
+        # file later with a better message than this function could give.
+        #
+        # The short sentence is what the screen shows. VERIFIED in a browser:
+        # the raw text is an ffprobe invocation complete with argv, which is the
+        # right thing to keep and the wrong thing to put in front of somebody
+        # who has just dragged in the wrong file.
+        return {
+            "error": f"could not read the audio layout of {master.name}"
+                     f" — it may not be a video file",
+            "detail": str(exc),
+        }
+
+    return {
+        "track_count": len(streams),
+        "roles": dict(track_map.roles),
+        "titles": {str(k): v for k, v in track_map.titles.items()},
+        "source": track_map.source,
+        "warnings": list(track_map.warnings),
+    }
 
 
 @dataclass(frozen=True)
@@ -234,7 +292,7 @@ class RegisterResult:
         }
 
 
-def preflight(cfg, conn, spec: RegisterSpec) -> Preflight:
+def preflight(cfg, conn, spec: RegisterSpec, *, with_audio: bool = False) -> Preflight:
     """Resolve the id, date and capture files without writing anything.
 
     Raises for anything that would stop registration outright — a missing
@@ -277,6 +335,11 @@ def preflight(cfg, conn, spec: RegisterSpec) -> Preflight:
         markers_path=markers_path,
         marker_time_base=time_base,
         warnings=warnings,
+        # Off by default: `clipforge register` is about to run `probe` anyway,
+        # where the same map is resolved and stored. It is the app shell that
+        # needs it *before* the row exists.
+        audio=audio_summary(spec.master, cfg, cfg.ffprobe_override) if with_audio
+        else None,
     )
 
 
