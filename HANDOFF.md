@@ -84,13 +84,15 @@ Phase 2.
 | 36 | `8c37ac7` | §6.4's gated negatives, and a penalty that removes nothing |
 | 37 | `4a5fca1` | §6.5's two profiles, and a combined ranking that agrees exactly |
 | 38 | `3188777` | §7.2's preview assets — **§7.3's autoplay is real**; §7.2's own preset is 9.5× too slow |
-| 39 | *this* | `scene_events` — **Phase 3 complete**, and the one unvalidated parser in the project |
+| 39 | `4a6f5a3` | `scene_events` — **Phase 3 complete**, and the one unvalidated parser in the project |
+| 40 | *this* | §11.6's pull search — and the config value that was changing its results |
 
 1547 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
-**What is not built, by design:** no digests (Phase 5); no trends (Phase 6); no vision
-(Phase 7).
+**What is not built, by design:** no chapters or digests (the rest of Phase 5); no
+trends (Phase 6); no vision (Phase 7). §11.6's pull search is built (commit 40) —
+it was the one Phase 5 item testable against ground truth with no footage.
 
 ---
 
@@ -387,6 +389,70 @@ looks correct and is not.
   review link is: rendering needs approved moments, and nothing can be approved
   before there are candidates. Otherwise the operator's first render is an
   error message.
+
+**Semantic search (Phase 5, §11.6)**
+
+- **§5.10's "~50 ms over 200k vectors" is verified and its implied
+  implementation is wrong.** MEASURED at 768 dims: the matmul is 47 ms, but
+  loading the rows first costs 1004 ms and 614 MB — the read dominates the
+  arithmetic 20:1, which §5.10 does not mention. Streaming in 4096-row chunks
+  with a running top-K is **716 ms and 12.6 MB**: faster AND 49× lighter, so
+  there was nothing to trade off.
+- **`search.chunk_size` was silently changing the results.** THE finding of this
+  commit, and it was a failing test that produced it. The speech fixture's three
+  identical `"Let's go, Hawkeye."` lines hold identical vectors, and their
+  scores came back `0.462986` at chunk=1 and `0.462985` at chunk=2. Not a
+  tie-break bug: `matrix @ vector` takes a different BLAS path depending on how
+  many rows it is handed, and float32 accumulation over 768 terms is not
+  associative. Ranking is now computed on scores **quantised to 5 decimals**
+  (`_RANK_DECIMALS`, deliberately not config) with `segment_id` breaking the
+  rest — 1e-5 is far above the ~1e-6 of observed noise and far below anything
+  meaningful. The unrounded score is still returned and displayed.
+- **…so `test_results_are_ranked_by_descending_score` asserts descending at the
+  RANKING's precision, not at full float precision.** Two hits here differ at
+  the seventh decimal and come back very slightly out of raw order. Asserting
+  strict descending on the raw value would be asserting that `chunk_size`
+  changes results, which is the property the quantisation exists to remove.
+- **There is no `min_similarity`, and that is a measurement.** MEASURED over 65
+  query–document pairs: scores span **0.345–0.610** (mean 0.477, sd 0.060). A
+  threshold anywhere in that band keeps roughly half of everything, related or
+  not, while reading like a relevance filter. It was the obvious knob to add and
+  it would have been actively harmful. A test asserts it stays absent.
+- **The retrieval tests use queries sharing NO content words with their
+  targets**, because that is what §11.6 claims and a "search Hawkeye, find
+  Hawkeye" test would pass against a `LIKE` query. A second test asserts the
+  probes share no content words, so a reworded probe cannot quietly turn the
+  suite into a keyword test.
+- **Asserted at recall@3, not recall@1.** MEASURED: 4 of 5 probes rank their
+  target first, one ranks it third out of thirteen. Trimming the probe set until
+  everything hit rank 1 would be tuning until it passes; the rank-3 case is kept
+  and recorded. Thirteen lines says the mechanism works, not that retrieval is
+  good — that needs a real transcript.
+- **Segments are seeded from the fixture manifest, NOT transcribed.** Running
+  WhisperX to test search would couple two unrelated things and let ASR errors
+  decide whether retrieval passes, and would make the test depend on a multi-GB
+  download. The manifest's `utterances` are authored ground truth.
+- **`search:` is a top-level config subtree**, not under `extract`/`score`: a
+  search parameter must never invalidate a candidate or force a re-score. Same
+  reasoning as `render:` and `previews:`.
+- **Search returns SEGMENTS and `candidate_id` is nullable by design.** They
+  exist independently of scoring, so a memorable line is frequently nowhere near
+  a detected peak. Opening a result focuses the covering candidate when there is
+  one and otherwise focuses the nearest **and says so** — silently landing on an
+  unrelated moment would misreport what was found. VERIFIED in a browser both
+  ways.
+- **`review.enter` now takes a stream id OR `{streamId, at}`**, so every existing
+  caller — the library, the run view, boot's `?stream=` resume — is unchanged.
+- **Three empty states, three sentences.** Nothing indexed, embedder
+  unreachable, and nothing matched are different answers; showing "no results"
+  for all three is how a broken search looks healthy. On shipped defaults the
+  first is the COMMON case, because §5.7's transcription is off. The unreachable
+  case is a 503 rather than a 500, because the operator can fix it.
+- **Submit on Enter, never search-as-you-type.** A query costs an embedding round
+  trip plus an index scan (~0.7 s at 200k segments), so per-keystroke querying
+  would fire a dozen to answer one question. The router already refuses to
+  swallow keys aimed at an `INPUT`, so the box and the library's `j`/`k` coexist
+  with no second global handler.
 
 **Scene events (Phase 3, §5.1 stage 11) — BUILT BLIND, AND SAYS SO**
 

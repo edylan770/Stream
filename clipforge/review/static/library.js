@@ -98,7 +98,9 @@ export function onKey(event) {
     case "k": case "ArrowUp": event.preventDefault(); move(-1); break;
     case "Enter": event.preventDefault(); open(cursor); break;
     case "a": event.preventDefault(); router.show("add"); break;
+    case "/": event.preventDefault(); router.show("search"); break;
   }
 }
 
 $("add-recording").onclick = () => router.show("add");
+$("library-search").onclick = () => router.show("search");

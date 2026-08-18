@@ -22,7 +22,22 @@
       <span class="crumb">streams</span>
     </div>
     <div class="bar-right">
+      <button id="library-search" class="btn">Search <kbd>/</kbd></button>
       <button id="add-recording" class="btn btn--primary">Add a recording <kbd>a</kbd></button>
+    </div>
+  </div>
+
+  <!-- §11.6's pull search. Its own bar block rather than a global one, for the
+       reason commit 25a established: a bar stacked above the views would cost
+       the review screen video height on the one screen where it matters. -->
+  <div class="bar" id="bar-search" hidden>
+    <div class="bar-left">
+      <button id="search-back" class="btn btn--quiet" title="Back to the library"
+              aria-label="Back">&larr;</button>
+      <span class="brand"><span class="brand-mark">▮</span>Search</span>
+    </div>
+    <div class="bar-right">
+      <span id="search-corpus" class="muted small"></span>
     </div>
   </div>
 
@@ -88,6 +103,27 @@
 <section id="view-library" class="pane" hidden>
   <ul id="stream-list" class="stream-list"></ul>
   <div id="library-state"></div>
+</section>
+
+<!-- SEARCH — §11.6's pull search. Free text in, transcript segments out,
+     across every stream. The query is embedded and matched by cosine
+     similarity: "the operator remembers the vibe, not the words". -->
+<section id="view-search" class="pane" hidden>
+  <form id="search-form" class="search-form" autocomplete="off">
+    <input id="search-input" class="field search-field" type="search"
+           spellcheck="false"
+           placeholder="describe the moment — &ldquo;that time I did the sad voice&rdquo;"
+           aria-label="Search transcripts">
+    <button id="search-go" class="btn btn--primary" type="submit">Search
+      <kbd>enter</kbd></button>
+  </form>
+  <p class="hint">
+    Searches what was <em>said</em>, by meaning rather than by keyword. Needs a
+    transcript, so it only covers streams processed with
+    <code>extract.whisperx.enabled: true</code>.
+  </p>
+  <ol id="search-results" class="results"></ol>
+  <div id="search-state"></div>
 </section>
 
 <!-- ADD — the server-side file browser. A browser will not hand a page a

@@ -33,7 +33,9 @@ normalised to −14 LUFS, and a hook line you chose.
 *which* moments surface, and §8's renderer was worth more — then built out in
 commits 31–39: pitch, laughter, derived signals, §4.4's input log, §6.4's gated
 negatives, §6.5's two profiles with the combined ranking, §7.2's preview assets
-and `scene_events`. Phases 5, 6 and 7 are unbuilt.
+and `scene_events`. **Phase 5 has started**: commit 40 built §11.6's pull
+search, the one item in it testable against ground truth with no footage.
+Phases 6 and 7 are unbuilt.
 
 `git log --format='%s%n%n%b'` is the real archive; every deviation is argued
 there. Three worth knowing before touching anything:

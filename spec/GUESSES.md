@@ -452,6 +452,63 @@ bisection landed and not a moment found or lost.
 | `ingest.probe.rate_sample_seconds` | `4.0` | **plausible** | Enough PTS to fit a constant rate and check the residual; two windows are sampled | A recording that starts CFR and degrades later being classified constant |
 | `ingest.audio.verify.silence_peak_dbfs` | `-80.0` | **plausible** | Below this counts as digital silence. Warns, never fails — a silent `party.wav` just means nobody was in Discord | A quiet-but-real track being flagged |
 
+## Semantic search (Phase 5, §11.6)
+
+Unusually little here is a guess, because the two decisions that mattered were
+both settled by measurement rather than reasoning — and both came out against
+the obvious choice.
+
+**§5.10's performance claim is verified, and its implied implementation is
+wrong.** MEASURED at 768 dims over 200k vectors:
+
+| | time | peak memory |
+|---|---|---|
+| the matmul alone — §5.10's "~50 ms" | **47 ms** | — |
+| load every row, then one matmul | 1004 ms | 614 MB |
+| **stream in 4096-row chunks, running top-K** | **716 ms** | **12.6 MB** |
+
+So "brute-force cosine over 200k vectors in numpy is ~50 ms; no vector database
+is required" is true about the *matmul* and silent about the *read*, which
+dominates it 20:1. Streaming is faster **and** 49× lighter, which is not a
+trade-off. None of it matters at today's scale; it is built this way because the
+shape is cheaper to get right now than to retrofit.
+
+**Retrieval works, on thirteen lines.** Hand-written queries sharing no content
+words with their targets: 4 of 5 put the target at rank 1, the fifth at rank 3.
+That says the *mechanism* does what §11.6 claims — "the operator remembers the
+vibe, not the words" — and says nothing about whether retrieval is good on a real
+transcript, which needs footage.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `search.limit` | `20` | **arbitrary** | §11.6 gives no number. Low deliberately: this is "I remember a moment, find it", not a browse list — a wanted result at rank 30 means the query was wrong, not the limit | Routinely paging past the end looking for something that is there |
+| `search.chunk_size` | `4096` | **grounded** | The table above. Also beat 16384 and 65536 on both time and memory | Memory pressure on a much larger corpus (lower it); or a machine where fewer, larger reads win (raise it) |
+| `search.snippet_chars` | `240` | **arbitrary** | Enough to recognise a line without wrapping the result list | Results routinely elided mid-sentence so you cannot tell them apart |
+| `_RANK_DECIMALS` | `5` | **grounded**, and NOT in config | See below — it exists so `chunk_size` cannot change what a query returns | Two segments genuinely 1e-5 apart in meaning, which the 0.345–0.610 band makes impossible |
+| **no** `search.min_similarity` | — | **grounded** | MEASURED over 65 query–document pairs: scores span **0.345–0.610** (mean 0.477, sd 0.060). A threshold anywhere in that band keeps roughly half of *everything* while reading like a relevance filter. These scores support rank and nothing else | A model whose scores actually separate related from unrelated. Re-measure before adding one |
+
+**Three things that are not parameters:**
+
+- **Chunk size was silently changing the results, and that was a real bug.**
+  MEASURED: the three identical `"Let's go, Hawkeye."` lines in the speech
+  fixture scored `0.462986` at chunk=1 and `0.462985` at chunk=2. Not a
+  tie-break problem — `matrix @ vector` dispatches to a different BLAS path
+  depending on how many rows it is given, and float32 accumulation over 768
+  terms is not associative. So a config value with no business affecting output
+  was reordering results. Ranking is therefore computed on scores **quantised to
+  5 decimals**, with `segment_id` breaking what remains: 1e-5 sits far above the
+  observed ~1e-6 of FP noise and far below anything meaningful. The *unrounded*
+  score is still what gets returned and displayed.
+- **A query must use `QUERY_PREFIX`, and a search must filter by `model`.** Both
+  fail silently otherwise — the first degrades retrieval with no error, the
+  second returns a finite, ordered, meaningless ranking across two unrelated
+  geometries. A test asserts `search.py` imports the prefix rather than
+  restating it.
+- **Search returns SEGMENTS, and `candidate_id` is nullable by design.** A
+  memorable line is frequently nowhere near a detected peak, so the UI says "no
+  candidate covers this" rather than focusing an unrelated moment and presenting
+  it as the match.
+
 ## Scene events (Phase 3, §5.1 stage 11 / §4.2)
 
 **Everything in this section is unvalidated in a way nothing else in this file

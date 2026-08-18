@@ -1014,6 +1014,47 @@ previews:
   # candidate payload and review.js draws it as inline SVG -- vector,
   # theme-aware, no files, no stage cost. See clipforge/review/previews.py.
 
+# ---------------------------------------------------------------------------
+# SEARCH -- §11.6's pull search: free text in, segments out.
+#
+# TOP-LEVEL, not under `extract` or `score`, which are config.py's
+# VERSIONED_SUBTREES and feed `config_version`. Changing how many results a
+# search returns must never invalidate a candidate or force a re-score. Same
+# reasoning that put `render:` and `previews:` outside.
+search:
+  # Results per query. §11.6 gives no number.
+  #
+  # ARBITRARY, and low deliberately: this is the "I remember a moment, find it"
+  # tool, not a browse-everything list. If the thing you wanted is at rank 30
+  # the query was wrong, not the limit.
+  limit: 20
+
+  # Rows pulled from SQLite per chunk while scoring.
+  #
+  # MEASURED, and the reason this streams at all. §5.10 says "brute-force cosine
+  # similarity over 200k vectors in numpy is ~50 ms", which is true of the
+  # MATMUL and silent about the read -- and the read dominates it 20:1. Over
+  # 200k x 768 vectors:
+  #
+  #   load every row, then one matmul      1004 ms    614 MB peak
+  #   stream in 4096-row chunks             716 ms   12.6 MB peak
+  #
+  # Faster AND 49x lighter, which is not a trade-off. 4096 also beat 16384 and
+  # 65536 on both. Irrelevant at today's scale -- zero real streams -- and here
+  # so the shape is right before the corpus arrives.
+  chunk_size: 4096
+
+  # How much of a segment's text a result row shows before eliding.
+  # ARBITRARY: enough to recognise a line without wrapping the result list.
+  snippet_chars: 240
+
+  # NOTE: there is deliberately NO `min_similarity`. It is the obvious knob and
+  # it would be actively harmful. MEASURED over 65 query-document pairs on the
+  # speech fixture, cosine scores span 0.345 to 0.610 (mean 0.477, sd 0.060) --
+  # a band so compressed that a threshold anywhere inside it keeps roughly half
+  # of EVERYTHING, related or not, while reading like a relevance filter. These
+  # scores support rank and nothing else, so rank is all the search returns.
+
 review:
   host: 127.0.0.1
   port: 8765

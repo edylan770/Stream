@@ -57,7 +57,12 @@ const isAdjusted = (c) => c.adjusted_start !== null && c.adjusted_start !== unde
 
 /* ------------------------------------------------------------- lifecycle */
 
-export async function enter(id) {
+/* `arg` is a stream id, or `{streamId, at}` when §11.6's search deep-links into
+ * a moment. Accepting both keeps every existing caller — the library, the run
+ * view, boot's `?stream=` resume — unchanged. */
+export async function enter(arg) {
+  const id = typeof arg === "string" ? arg : arg.streamId;
+  const at = typeof arg === "string" ? null : arg.at;
   const data = await get(`/api/streams/${encodeURIComponent(id)}/candidates`);
 
   state.streamId = id;
@@ -98,7 +103,41 @@ export async function enter(id) {
   setUpTranscript(data.stream);
   setUpSections();
   applyFilter();
+  if (at !== null && at !== undefined) focusNearest(at);
   history.replaceState(null, "", `?stream=${encodeURIComponent(id)}`);
+}
+
+/* Land on the candidate covering `seconds`, or the nearest one.
+ *
+ * §11.6 returns SEGMENTS, which exist independently of scoring — a memorable
+ * line is frequently nowhere near a detected peak. So "nearest" is often not
+ * "the one you searched for", and the screen says which of the two happened
+ * rather than quietly presenting an unrelated moment as the match. */
+function focusNearest(seconds) {
+  if (!state.view.length) return;
+  const covering = state.view.findIndex(
+    (c) => c.t_start <= seconds && c.t_end >= seconds);
+
+  let index = covering;
+  if (index < 0) {
+    let best = Infinity;
+    state.view.forEach((c, i) => {
+      const distance = Math.min(Math.abs(c.t_start - seconds),
+                                Math.abs(c.t_end - seconds));
+      if (distance < best) { best = distance; index = i; }
+    });
+  }
+  if (index < 0) return;
+  focusCandidate(index);
+
+  if (covering < 0) {
+    const note = $("window-note");
+    if (note) {
+      note.textContent =
+        `nearest candidate to ${fmt(seconds)} — no candidate covers that moment`;
+      note.className = "window-note is-adjusted";
+    }
+  }
 }
 
 /* §7.3 wants the transcript beside the window. Phase 2 ships

@@ -29,7 +29,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from clipforge import db, paths
+from clipforge import db, paths, search
 from clipforge.ingest import register
 from clipforge.pipeline import runner
 from clipforge.review import browse, guard, jobs, media, queries
@@ -407,6 +407,56 @@ def create_app(cfg) -> FastAPI:
         if job is None:
             raise HTTPException(status_code=404, detail=f"no job {job_id!r}")
         return JSONResponse(job.snapshot(since=since))
+
+    # -- §11.6's pull search ----------------------------------------------
+
+    @app.get("/api/search/corpus")
+    def api_search_corpus() -> JSONResponse:
+        """What is searchable, before anything is typed.
+
+        A separate call from the search itself so the screen can say "nothing is
+        indexed" up front rather than looking ready and explaining afterwards.
+        On shipped defaults that IS the state — §5.7's transcription is off — so
+        it is the common answer, not an edge case.
+        """
+        conn = connect()
+        try:
+            corpus = search.survey(conn)
+            model = search.default_model(conn, cfg)
+        finally:
+            conn.close()
+        return JSONResponse({
+            "segments": corpus.segments,
+            "embedded": corpus.embedded,
+            "streams": corpus.streams,
+            "models": corpus.models,
+            "model": model,
+            "searchable": corpus.searchable,
+        })
+
+    @app.get("/api/search")
+    def api_search(q: str, limit: int | None = None,
+                   stream: str | None = None) -> JSONResponse:
+        conn = connect()
+        try:
+            hits, corpus, model = search.run_query(
+                conn, cfg, q, limit=limit, stream_id=stream)
+        except search.Unavailable as exc:
+            # 503, not 500: the search did not run, and the operator can fix it
+            # by starting Ollama. A generic error would send them to the logs.
+            raise HTTPException(status_code=503, detail=str(exc)) from None
+        except search.SearchError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        finally:
+            conn.close()
+
+        return JSONResponse({
+            "query": q,
+            "model": model,
+            "searchable": corpus.searchable,
+            "embedded": corpus.embedded,
+            "hits": [hit.to_json() for hit in hits],
+        })
 
     # -- media ------------------------------------------------------------
 

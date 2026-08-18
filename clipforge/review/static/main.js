@@ -10,12 +10,14 @@ import * as library from "./library.js";
 import * as add from "./add.js";
 import * as run from "./run.js";
 import * as review from "./review.js";
+import * as search from "./search.js";
 import { get } from "./api.js";
 
 router.register("library", library);
 router.register("add", add);
 router.register("run", run);
 router.register("review", review);
+router.register("search", search);
 router.register("error", shell);
 shell.useRouter(router);
 router.startKeyboard();
@@ -23,6 +25,8 @@ router.startKeyboard();
 async function boot() {
   const params = new URLSearchParams(location.search);
   const wanted = params.get("stream");
+
+  if (params.get("view") === "search") return router.show("search");
 
   if (wanted) {
     const { streams } = await get("/api/streams");

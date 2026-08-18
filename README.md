@@ -309,7 +309,7 @@ fixture with the smallest model on CPU: 2.9% word error rate, and vocabulary
 seeding took hero-name accuracy from 7/11 to 11/11.
 | ~~**3** Full signals~~ | **Built** — pitch, laughter, silence, overlap, input signals, dual profiles + combined score, gated negatives, preview assets, scene events | Nothing to download. Previews cost ~40 MB and ~3 min per stream, measured on real 720p footage. `scene_events` wants one `--check` run against a real OBS log |
 | **4** Auto-finish | Burned-in captions, vertical reframe, loudness normalisation, export presets | Nothing new; re-encode time per clip |
-| **5** Digests | Per-stream structured summaries, semantic search, video ideation, cross-stream compilations | An API key would be ~$0.10–0.30 per stream, but the paste round trip `clipforge hook` already uses needs none. Search needs no model at all |
+| **5** Digests | Per-stream structured summaries, video ideation, cross-stream compilations. **§11.6's semantic search is already built** (`clipforge search`, and a Search screen in the app) | An API key would be ~$0.10–0.30 per stream, but the paste round trip `clipforge hook` already uses needs none. Search needs no API key — just Ollama and a transcript |
 | **6** Trends | Recurring-bit detection, clustering, an idea dashboard | Ollama for embeddings; **60+ streams before it finds anything real** |
 | **7** Vision | Kill feed, multikill, clutch detection | OpenCV, plus per-game UI templates you capture yourself |
 

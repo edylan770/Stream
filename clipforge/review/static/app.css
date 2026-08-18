@@ -863,3 +863,46 @@ video { width: 100%; height: 100%; object-fit: contain; }
   .layout { grid-template-columns: 1fr; grid-template-rows: 170px 1fr; }
   .rail { border-right: none; border-bottom: 1px solid var(--line); }
 }
+
+/* -------------------------------------------------- §11.6's search screen */
+
+.search-form { display: flex; gap: var(--s3); margin-bottom: var(--s3); }
+.search-field {
+  flex: 1;
+  font-size: var(--tmd);
+  padding: var(--s3) var(--s4);
+}
+/* The hint sits under the box rather than inside it as placeholder text: the
+ * placeholder has to model the QUERY ("describe the moment"), and the caveat
+ * about needing a transcript is a different fact that must stay visible after
+ * typing starts. */
+.pane .hint { color: var(--muted); font-size: var(--txs); margin: 0 0 var(--s4); }
+
+.results { list-style: none; margin: 0; padding: 0; }
+.results li { margin-bottom: var(--s2); }
+.results button {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s4);
+  text-align: left;
+  padding: var(--s3) var(--s4);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+.results button:hover { border-color: var(--accent); background: var(--panel-2); }
+.results button.current { border-color: var(--accent); background: var(--panel-2); }
+.results .grow { flex: 1; min-width: 0; }
+/* Wraps rather than truncating: the matched line IS the result, and a search
+ * that hides the thing it found makes the operator click to find out. */
+.result-text { display: block; line-height: 1.45; }
+.result-meta {
+  flex: none;
+  font-size: var(--t2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding-top: 2px;
+}

@@ -36,6 +36,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
         "check an OBS log against the (UNVALIDATED) scene patterns (§5.1 stage 11)",
     ),
     "score": ("clipforge.score.cmd_score", "re-score a stream without touching extraction"),
+    "search": ("clipforge.cmd_search", "find a moment by describing it (§11.6)"),
     "signals": ("clipforge.extract.cmd_signals", "inspect extracted signal series"),
     "status": ("clipforge.pipeline.cmd_status", "show pipeline state for a stream"),
     "synth-markers": (

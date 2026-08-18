@@ -24,6 +24,7 @@ const BARS = {
   add: "bar-add",
   run: "bar-run",
   review: "bar-review",
+  search: "bar-search",
 };
 
 export function setBar(name) {
