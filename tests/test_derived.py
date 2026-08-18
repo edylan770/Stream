@@ -661,7 +661,7 @@ def test_a_derived_signal_can_be_weighted_like_any_other(scored_speech):
     ])
     timeline = grid.build(float(ctx.stream["duration_s"]),
                           float(weighted.get("score.score_grid_hz")))
-    tracks, _missing = score_runner.build_tracks(
+    tracks, _missing, _raw = score_runner.build_tracks(
         StageContext(cfg=weighted, conn=conn, stream_id=ctx.stream_id,
                      log=lambda *_: None),
         timeline,

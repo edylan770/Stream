@@ -32,8 +32,9 @@ SPEC_17_PARAMETERS = {
     "spacing_penalty_window_s": "score.spacing.window_s",
     "spacing_penalty_factor": "score.spacing.factor",
     "peak_prominence_threshold": "score.peak.prominence",
-    "menu_grace_period_s": "deferred.negatives.menu_grace_period_s",
-    "afk_threshold_s": "deferred.negatives.afk_threshold_s",
+    # Moved out of `deferred:` in commit 36, now that §6.4's gates read them.
+    "menu_grace_period_s": "score.negatives.menu_grace_period_s",
+    "afk_threshold_s": "score.negatives.afk_threshold_s",
     "combined_score_alpha": "score.combined.alpha",
     # Moved out of `deferred:` in commit 33, now that §5.5's detector reads it.
     # That is what the deferred block is for: a §17 row is parked there until
@@ -60,10 +61,10 @@ def test_spec_17_defaults_match_the_table(cfg):
     assert cfg.get("score.spacing.window_s") == 30
     assert cfg.get("score.spacing.factor") == 0.5
     assert cfg.get("score.combined.alpha") == 0.5
-    assert cfg.get("deferred.negatives.menu_grace_period_s") == 8
-    assert cfg.get("deferred.negatives.afk_threshold_s") == 60
     # Read through SPEC_17_PARAMETERS rather than by path, so a key that moves
     # out of `deferred:` as its phase gets built stays checked in one place.
+    assert cfg.get(SPEC_17_PARAMETERS["menu_grace_period_s"]) == 8
+    assert cfg.get(SPEC_17_PARAMETERS["afk_threshold_s"]) == 60
     assert cfg.get(SPEC_17_PARAMETERS["laughter_band_hz"]) == [4.0, 7.0]
     assert cfg.get("deferred.trends.hdbscan_min_cluster_size") == 5
     assert cfg.get("deferred.trends.ngram_recency_halflife_days") == 30

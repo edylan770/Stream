@@ -288,6 +288,69 @@ promises is free, rather than a re-extraction of the library.
   `overlap_windows`, and the entire imprecision is the hangover overrunning the
   authored end by 0.34 s. Zero firings across the 19.4 s of authored silence.
 
+## Negative signals (Phase 3, §6.4)
+
+§6.4 is the most prescriptive section in the spec — "this is a specific
+requirement and must be implemented exactly as described" — and it supplies two
+of the seven numbers below. The other five had to be invented, because §6.4
+describes a *shape* (gate, wait, ramp, remove) and never a magnitude.
+
+**The honest headline is that neither penalty has ever removed a candidate.**
+MEASURED on `fixture_long` with a synthesised §4.4 input log, idle across every
+gap in the fixture's own speech:
+
+| `afk_threshold_s` | share of stream held down | calibrated prominence | candidates | without §6.4 | peaks suppressed |
+|---|---|---|---|---|---|
+| 60 (default) | 0% — never fires | 1.918 | 7 | — | — |
+| 15 | 13.0% | 2.651 | 8 | 7 | **0** |
+| 10 | 21.3% | 3.631 | 8 | 7 | **0** |
+
+Two things follow, and both are recorded rather than tidied away. The penalty
+lands where nothing was scoring anyway — a stretch with no input and no speech
+has a composite at or below zero already, and `score.min_peak_value` discards a
+local maximum in negative territory before any penalty is applied. And digging a
+trough *raises* the calibrated prominence by 38% and 89%, because
+`scipy.signal.find_peaks` measures a peak above the higher of its two flanking
+cols: a hole between two peaks makes both more prominent, and §6.7's
+auto-calibration then bisects the threshold upward to compensate. Both candidate
+counts sit inside §6.7's own target band, so the 7-vs-8 difference is where
+bisection landed and not a moment found or lost.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `score.negatives.menu_grace_period_s` | `8` | **plausible** | §17 and §6.4 both state it. Moved out of `deferred:` — `score/gates.py` reads it now | §17's own test: "whether lobby jokes ever get suppressed". Inert until Phase 7 produces `menu_screen` |
+| `score.negatives.afk_threshold_s` | `60` | **plausible** | §17 and §6.4 both state it. Moved out of `deferred:` | §17's own test: "false AFK penalties". `negative_penalty_share` in `tool_metrics` is the number — a share climbing above a few percent on a stream the operator was present for means it is too low |
+| `score.negatives.ramp_s` | `4.0` | **arbitrary** | NOT IN §6.4, which says "ramping in gradually (not a step function)" and names no duration; §17 has no row for it. One thing about it is not arbitrary: §6.2 smooths the composite with `smoothing_sigma_s` (2.0) *after* the penalty is applied, so a ramp much shorter than that sigma is smoothed into something indistinguishable from a step and the requirement becomes decorative. A test asserts `ramp_s > smoothing_sigma_s` | A penalty edge visibly truncating a window that should have run through it (too long), or the ramp being invisible in the smoothed composite (too short) |
+| `score.negatives.menu_penalty` | `2.0` | **arbitrary** | §6.4 says "apply penalty" and never says how much. The unit is the one every §6.5 weight uses — roughly one standard deviation of notability per 1.0 — so this is "about as much as two ordinary signals firing at once". **Subtracted, never multiplied**: the composite is signed, and scaling a negative composite *raises* it | A moment the operator wanted being suppressed (too high), or a menu stretch still producing candidates (too low). Nothing can price it until Phase 7 exists |
+| `score.negatives.afk_penalty` | `2.0` | **arbitrary** | As `menu_penalty`, and deliberately a separate key so the two can diverge | Same, and MEASURED so far to remove nothing at all — see the table above |
+| `score.negatives.afk_max_input_rate` | `0.0` | **plausible** | §6.4 says "no input activity" and never defines it; this is the literal reading. Configurable because a single stray keypress in sixty seconds currently restarts the timer, and ten real streams may well show that somebody sitting still still twitches | The AFK penalty never firing on a stream where the operator plainly was away |
+| `score.negatives.afk_max_mouse_velocity_px_s` | `0.0` | **plausible** | NOT IN §6.4, which names one condition where §4.4's logger writes two fields. A mouse moving with no clicks is input activity, so both must be idle — which makes the penalty *harder* to fire, the direction C2 argues for: a false AFK penalty costs a clip, a missed one costs three seconds of review | Same as above. Raising it is what to try first if AFK never fires |
+
+**Four things that are not parameters:**
+
+- **`menu_screen` is a STATE and `feature_schema.yaml` declares an EVENT.** The
+  reconciliation is `events.t_end`, which has said "NULL for instantaneous"
+  since `0001_init.sql` — so §5.9's vision writes one row per menu span and
+  nothing has to move. **It must set `t_end`**: a row without one covers a
+  single sample and can never satisfy an 8-second grace period. Until then the
+  gate is built, tested, and inert, and the run log says so on every score
+  rather than showing a column of zeros that reads as "never active".
+- **The penalties are not z-scored, unlike every other continuous track.** A
+  rolling z-score of a mostly-zero array does two wrong things at once: it makes
+  the rare firing enormous, and it makes every *unpenalised* sample slightly
+  positive — a negative signal quietly rewarding the rest of the stream. They
+  enter on the unit-peak scale the event kernels use.
+  `score.zscore_std_floor_by_signal` therefore does not apply to them.
+- **§6.4's `audio_energy < rolling_baseline` is implemented as `<=`.** A stretch
+  pinned at `extract.rms.db_floor` equals its own rolling mean whenever the
+  whole baseline window is pinned too, so the strict reading fails on digital
+  silence — the most unambiguous "nothing is happening" audio there is. The same
+  degenerate case `score.zscore_std_floor` exists for, one condition over.
+- **"ANY speech" is `derived.speech_gate`, verbatim.** §6.4's reset condition and
+  §5.4.1's "VAD on both tracks" are the same question asked twice; a second
+  energy test here could have disagreed with the first with nothing to report
+  it. A test asserts the two agree sample for sample.
+
 ## Extraction and media
 
 | Parameter | Value | Confidence | Rationale | Falsified by |
@@ -469,9 +532,12 @@ that nothing has checked.
 Present so §17 is fully represented in config and nobody hardcodes them later. All
 **plausible** at best; each is the spec's own default and none has been exercised.
 
-`deferred.negatives.menu_grace_period_s` (8), `deferred.negatives.afk_threshold_s` (60),
-`deferred.laughter.band_hz` ([4.0, 7.0]), `deferred.trends.hdbscan_min_cluster_size` (5),
+`deferred.trends.hdbscan_min_cluster_size` (5),
 `deferred.trends.ngram_recency_halflife_days` (30).
+
+Moved out as the phase consuming each was built: `laughter.band_hz` to
+`extract.laughter.band_hz` (commit 33), and `negatives.menu_grace_period_s` /
+`negatives.afk_threshold_s` to `score.negatives` (commit 36).
 
 ## Not listed
 

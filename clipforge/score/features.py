@@ -41,6 +41,11 @@ class SignalTrack:
     #: was a literal in the context key. `mic_f0` is hertz, and "_mic_f0_db"
     #: holding 166.2 is a label stating something false.
     unit: str = "dB"
+    #: True for §6.4's gated negatives. They are tracks so that A9's vector and
+    #: the review UI's `?` panel see them, but they are neither a z-score nor an
+    #: event kernel, and a penalty that did not fire here is excluded from the
+    #: breakdown for the same reason an unweighted signal is.
+    is_penalty: bool = False
 
     def at(self, index: int) -> float:
         return float(self.values[index])
@@ -86,12 +91,20 @@ def breakdown(
     so `build_tracks` loads them at weight 0 — but a row of `0.000` in the review
     UI's `?` panel is noise in the one place that explains the number beside it.
     The vector answers "what was observed"; this answers "what moved the score".
+
+    **So is a §6.4 negative that did not fire here.** Its weight is non-zero by
+    construction — that is what it would cost — so the weight test alone cannot
+    exclude it, and every candidate in a stream with an input log would otherwise
+    carry a `-0.000` row for a penalty that never applied to it.
     """
-    contributions = {
-        track.name: round(track.contribution(index), 6)
-        for track in tracks
-        if track.weight
-    }
+    contributions: dict[str, float] = {}
+    for track in tracks:
+        if not track.weight:
+            continue
+        value = round(track.contribution(index), 6)
+        if track.is_penalty and value == 0.0:
+            continue
+        contributions[track.name] = value
     ordered = dict(sorted(contributions.items(), key=lambda kv: abs(kv[1]), reverse=True))
     return Breakdown(
         contributions=ordered,

@@ -797,6 +797,70 @@ score:
   # rating onto the matching candidate in a new generation.
   rating_inherit_min_overlap: 0.5
 
+  # -------------------------------------------------------------------------
+  # §6.4's NEGATIVE signals. "This is a specific requirement and must be
+  # implemented exactly as described." Two rules carry the section:
+  #
+  #   - a negative never fires while audio says something is happening, and
+  #   - the logic is ONE shared gating helper, not per-signal ad hoc code.
+  #
+  # Both live in score/gates.py. What follows is only the numbers, and §6.4
+  # supplies two of the seven.
+  # -------------------------------------------------------------------------
+  negatives:
+    # NOT IN §6.4, WHICH SAYS "ramping in gradually (not a step function)" AND
+    # NAMES NO DURATION. §17 has no row for it either. ARBITRARY.
+    #
+    # One thing about it is not arbitrary: §6.2 smooths the composite with
+    # `smoothing_sigma_s` AFTER the penalty is applied, so a ramp much shorter
+    # than that sigma is smoothed into something indistinguishable from a step
+    # and §6.4's requirement stops meaning anything. Keep it comfortably above
+    # score.smoothing_sigma_s.
+    ramp_s: 4.0
+
+    # MENU / LOBBY. §6.4:
+    #   IF menu_screen_active AND no_speech_detected_for >= 8 seconds
+    #      AND audio_energy < rolling_baseline
+    #   THEN apply penalty, ramping in gradually
+    #   ANY speech detected -> reset the 8-second timer to zero, remove penalty
+    #
+    # "Requirement: jokes in the lobby must never be penalized."
+    #
+    # INERT TODAY, and deliberately not pretended otherwise: menu_screen is a
+    # §5.9 vision output and Phase 7 has not been built. The gate reads
+    # `menu_screen` rows from the events table as spans (events.t .. t_end), so
+    # vision has a contract to write against -- and it must set t_end, since a
+    # row without one covers a single sample and can never satisfy the grace
+    # period below.
+    menu_grace_period_s: 8       # §17 and §6.4 both state it
+    # ARBITRARY. §6.4 says "apply penalty" and never says how much. The unit is
+    # the one every weight here uses -- roughly one standard deviation of
+    # notability per 1.0 -- so 2.0 is "about as much as two ordinary signals
+    # firing at once". Subtracted, never multiplied: the composite is signed,
+    # and scaling a negative composite RAISES it.
+    menu_penalty: 2.0
+
+    # AFK. §6.4:
+    #   IF no_input_activity AND no_speech FOR >= 60 continuous seconds
+    #   THEN apply penalty
+    #   "Both conditions required. Either one alone is insufficient."
+    #
+    # AND A THIRD CONDITION THAT §6.4 DOES NOT STATE: input_coverage. §4.4's
+    # logger can start late, crash or be restarted, and every stream that exists
+    # today has no input log at all. A stretch with no records is UNKNOWN input,
+    # not idle input, and reading absence as idleness is how this penalty would
+    # hold an entire stream down for something nobody observed.
+    afk_threshold_s: 60          # §17 and §6.4 both state it
+    afk_penalty: 2.0             # ARBITRARY, as menu_penalty
+    # WHAT "no input activity" MEANS, which §6.4 does not say. §4.4's logger
+    # records keys+clicks (§5.4.1's input_rate) and mouse velocity as separate
+    # fields, and a mouse moving with no clicks is input activity. Both must be
+    # idle. 0.0 is the literal reading of "no"; raising either makes the penalty
+    # easier to fire, which is the direction C2 argues against -- a false AFK
+    # penalty costs a clip, a missed one costs three seconds of review.
+    afk_max_input_rate: 0.0            # events/s
+    afk_max_mouse_velocity_px_s: 0.0   # px/s
+
   combined:
     # §17. Unused in Phase 1: one profile exists, so score_combined mirrors
     # score_entertainment and score_gameplay is 0.
@@ -1199,9 +1263,9 @@ export:
 # this block is part of building the phase that consumes it.
 # ---------------------------------------------------------------------------
 deferred:
-  negatives:          # §6.4, Phase 3/7
-    menu_grace_period_s: 8
-    afk_threshold_s: 60
+  # negatives.{menu_grace_period_s,afk_threshold_s} moved to score.negatives --
+  # score/gates.py reads them now (§6.4). The menu gate is still inert for want
+  # of a Phase 7 producer, but the parameter is wired, not deferred.
   # laughter.band_hz moved to extract.laughter.band_hz -- something reads it now.
   trends:             # §11, Phase 6
     hdbscan_min_cluster_size: 5

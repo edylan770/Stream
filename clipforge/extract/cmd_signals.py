@@ -132,7 +132,8 @@ def _derived_series(cfg, conn: sqlite3.Connection, stream_id: str, stored: dict)
     rate is printed, because that is genuinely the grid they exist on.
     """
     from clipforge import signals as signals_mod
-    from clipforge.score import derived, grid
+    from clipforge.score import derived, gates, grid
+    from clipforge.score import runner as score_runner
 
     duration = conn.execute(
         "SELECT duration_s FROM streams WHERE id = ?", (stream_id,)
@@ -157,6 +158,23 @@ def _derived_series(cfg, conn: sqlite3.Connection, stream_id: str, stored: dict)
               + (f", first at {times[0]:.2f}s" if times else "") + ")")
     for name, needs in derived.missing_inputs(raw).items():
         print(f"  (derived {name}: not computed — needs {', '.join(needs)})")
+
+    # §6.4's negatives are score-time too, and for the same reason a derived
+    # signal is: a penalty that exists only inside a scoring run is invisible to
+    # the one command whose whole purpose is "the candidates look wrong, is the
+    # signal underneath them wrong". They are shown alongside, at the same grid
+    # rate, and a gate that could not be evaluated says so rather than showing a
+    # column of zeros that reads as "never fired".
+    menu = score_runner.load_intervals(conn, stream_id, gates.MENU)
+    penalties, reasons = gates.compute(raw, timeline, cfg, menu_intervals=menu)
+    for penalty in penalties:
+        out[f"{penalty.name} (§6.4)"] = signals_mod.Series(
+            kind=penalty.name, values=penalty.values, sample_rate_hz=grid_hz, t0=0.0,
+            params={"unit": "", "derived": True,
+                    "note": f"gated negative, weight -{penalty.weight}"},
+        )
+    for name, reason in sorted(reasons.items()):
+        print(f"  (§6.4 {name} penalty: not evaluated — {reason})")
     return out
 
 

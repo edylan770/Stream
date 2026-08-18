@@ -23,7 +23,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from clipforge import db, signals
 from clipforge.pipeline.context import StageContext
-from clipforge.score import derived, features, grid, kernels, windows
+from clipforge.score import derived, features, gates, grid, kernels, windows
 
 #: §5.4.1 continuous signals live in `signal_series`; §5.4.2 events live in
 #: `events`. A profile weight naming neither is reported rather than ignored.
@@ -44,6 +44,14 @@ class ScoreResult:
     inherited_ratings: int = 0
     replaced_generation: bool = False
     missing_weights: list[str] = field(default_factory=list)
+    #: §6.4. `penalty_shares` is the fraction of the stream each negative held
+    #: down; `gate_reasons` says why a negative was not evaluated at all, which
+    #: is a different thing from "it never fired" and must not read as one.
+    penalty_shares: dict[str, float] = field(default_factory=dict)
+    gate_reasons: dict[str, str] = field(default_factory=dict)
+    #: What the stream looks like with §6.4 switched off, independently
+    #: calibrated. None when nothing fired, so there was nothing to counterfact.
+    counterfactual: dict | None = None
 
 
 # --------------------------------------------------------------------------
@@ -85,7 +93,9 @@ def gather_raw(
     return raw, units
 
 
-def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features.SignalTrack], list[str]]:
+def build_tracks(
+    ctx: StageContext, timeline: np.ndarray
+) -> tuple[list[features.SignalTrack], list[str], dict[str, np.ndarray]]:
     """Every signal, resampled and normalized onto the grid.
 
     Continuous signals are z-scored (§6.2 step 3); event kernels are not. That
@@ -97,6 +107,12 @@ def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features
     stored ones before anything is weighted, so the profile lookup and A9's
     weight-0 sweep both see them with no special case. §6.2 puts step 5's
     composites before step 6's weighting for the same reason.
+
+    The raw pool is returned as well as the tracks. §6.4's gates read the
+    *un-normalised* arrays — "audio energy below its rolling baseline" is a
+    statement about dB, not about a z-score — and loading every BLOB a second
+    time to get them back would be the one avoidable cost in a stage §6.1
+    promises is free.
     """
     profile = ctx.cfg.profile
     baseline_samples = grid.window_samples(
@@ -157,14 +173,24 @@ def build_tracks(ctx: StageContext, timeline: np.ndarray) -> tuple[list[features
     for name in raw_values:
         if name not in weighted:
             tracks.append(continuous(name, 0.0))
+
+    # ...AND THE SAME IS TRUE OF STORED EVENTS. This loop used to read
+    # `if kind not in weighted and kind in derived_events`, which covered the
+    # events this scoring run had just derived and nothing else — so
+    # `phrase_excitement` and `phrase_repeat`, which `phrase_detect` writes to
+    # the events table, were null in every feature vector. Exactly the hole A9's
+    # sweep exists to close, one table over, and invisible only because
+    # `extract.whisperx.enabled` ships false so no stream has ever had them.
+    #
+    # Weight 0, so `composite_of` skips it and no score can move.
     for kind, times in events.items():
-        if kind not in weighted and kind in derived_events:
+        if kind not in weighted:
             tracks.append(features.SignalTrack(
                 name=kind, weight=0.0, is_event=True,
                 values=kernels.for_kind(kind, timeline, list(times), ctx.cfg),
             ))
 
-    return tracks, missing
+    return tracks, missing, raw_values
 
 
 def load_events(ctx: StageContext) -> dict[str, list[float]]:
@@ -175,6 +201,31 @@ def load_events(ctx: StageContext) -> dict[str, list[float]]:
     for row in rows:
         out.setdefault(row["kind"], []).append(float(row["t"]))
     return out
+
+
+def load_intervals(conn, stream_id: str, kind: str) -> list[tuple[float, float]] | None:
+    """Event rows of one kind as spans, or None when nothing produces them.
+
+    §6.4's `menu_screen_active` is a STATE, and `events.t_end` has carried
+    "NULL for instantaneous" since `0001_init.sql` — so a span is already
+    expressible and `feature_schema.yaml` does not have to move `menu_screen`
+    out of its `events:` group.
+
+    None rather than an empty list, deliberately: "§5.9's vision is Phase 7 and
+    nothing writes these" is a different statement from "the operator was never
+    in a menu", and only the first should read as a gate that could not be
+    evaluated.
+    """
+    rows = conn.execute(
+        "SELECT t, t_end FROM events WHERE stream_id = ? AND kind = ? ORDER BY t",
+        (stream_id, kind),
+    ).fetchall()
+    if not rows:
+        return None
+    return [
+        (float(row["t"]), float(row["t_end"] if row["t_end"] is not None else row["t"]))
+        for row in rows
+    ]
 
 
 def composite_of(tracks: list[features.SignalTrack], length: int) -> np.ndarray:
@@ -235,15 +286,32 @@ def score_stream(ctx: StageContext) -> ScoreResult:
             f"moment'. Fine for a test fixture; meaningless as a tuning signal."
         )
 
-    tracks, missing = build_tracks(ctx, timeline)
+    tracks, missing, raw_values = build_tracks(ctx, timeline)
     if not tracks:
         raise ScoreError(
             f"profile {ctx.cfg.profile.name!r} weights {sorted(ctx.cfg.profile.weights)} but none "
             f"of those signals exist for this stream. Has extraction run?"
         )
 
+    # §6.2 step 6, in the order step 6 lists it: sum, THEN apply §6.4's gated
+    # negatives, THEN smooth. Nothing here is per-profile — the gates read
+    # signals and events, never weights — so §6.5's second profile subtracts
+    # these same two arrays from its own composite.
     raw_composite = composite_of(tracks, timeline.size)
-    smoothed = smooth(raw_composite, ctx.cfg.get("score.smoothing_sigma_s"), grid_hz)
+    penalties, gate_reasons = gates.compute(
+        raw_values, timeline, ctx.cfg,
+        menu_intervals=load_intervals(ctx.conn, ctx.stream_id, gates.MENU),
+    )
+    penalised = gates.apply(raw_composite, penalties)
+
+    # After `composite_of`, never before it: a penalty track carries a negative
+    # weight, so including it in the sum would apply the penalty twice. It is
+    # appended so that A9's vector records the gate level under the key
+    # `feature_schema.yaml` already declares, and so the breakdown still adds up
+    # to the composite it is explaining.
+    tracks.extend(gates.as_tracks(penalties))
+
+    smoothed = smooth(penalised, ctx.cfg.get("score.smoothing_sigma_s"), grid_hz)
 
     calibration = calibrate_peaks(ctx, smoothed, float(duration))
     peaks = windows.find(smoothed, calibration.prominence,
@@ -270,7 +338,61 @@ def score_stream(ctx: StageContext) -> ScoreResult:
         mode=str(ctx.cfg.get("score.spacing.mode")),
     )
 
-    return write_candidates(ctx, ranked, tracks, smoothed, calibration, missing)
+    result = write_candidates(ctx, ranked, tracks, smoothed, calibration, missing)
+    result.gate_reasons = gate_reasons
+    result.penalty_shares = {p.name: p.share for p in penalties}
+    result.counterfactual = counterfactual(
+        ctx, raw_composite, penalties, grid_hz, float(duration)
+    )
+    return result
+
+
+def counterfactual(
+    ctx: StageContext, raw_composite: np.ndarray, penalties: list[gates.Penalty],
+    grid_hz: float, duration_s: float,
+) -> dict | None:
+    """What this stream looks like with §6.4 switched off — the number §17 needs.
+
+    Counting peaks on the un-penalised composite at the PENALISED run's
+    prominence would be a misleading answer, and measuring it that way was the
+    first attempt: `windows.find` measures a peak above the higher of its two
+    flanking cols, so digging a trough BETWEEN two peaks makes both of them more
+    prominent, `calibrate_peaks` then bisects the threshold upward to hit §6.7's
+    target — and at that raised threshold the un-penalised composite reported
+    ZERO candidates. That is an artefact of calibrating on one curve and
+    counting on another, not a suppression.
+
+    So the counterfactual gets its own calibration, and the number reported is
+    the one that means something: how many of the moments this stream would have
+    produced without §6.4 sit inside a stretch the penalty holds down. That is
+    "what the penalty removed", and it is what would show `afk_threshold_s` or
+    `menu_grace_period_s` to be wrong.
+
+    Only computed when something actually fired; peak-finding only, no window
+    building, no spacing, no writes.
+    """
+    if not any(penalty.fired for penalty in penalties):
+        return None
+
+    unpenalised = smooth(raw_composite, ctx.cfg.get("score.smoothing_sigma_s"), grid_hz)
+    baseline = calibrate_peaks(ctx, unpenalised, duration_s)
+    enter = float(ctx.cfg.get("score.window.hysteresis_enter"))
+    peaks = windows.merge_peaks(
+        unpenalised,
+        windows.find(unpenalised, baseline.prominence,
+                     float(ctx.cfg.get("score.min_peak_value"))),
+        enter,
+    )
+
+    held = np.zeros(raw_composite.size, dtype=bool)
+    for penalty in penalties:
+        held |= penalty.values > 0.0
+
+    return {
+        "candidates": len(peaks),
+        "prominence": round(baseline.prominence, 6),
+        "peaks_inside_a_penalty": sum(1 for peak in peaks if held[peak.index]),
+    }
 
 
 def word_boundaries(ctx: StageContext) -> tuple[np.ndarray, np.ndarray]:
@@ -560,7 +682,50 @@ def run(ctx: StageContext) -> None:
             f"(expected in Phase 1 — those arrive in later phases)"
         )
 
+    _log_negatives(ctx, result)
+
     ctx.metric("candidates_per_hour_of_stream", round(per_hour, 3))
     ctx.metric("peak_prominence", round(result.calibration.prominence, 6),
                json.dumps({"reached_target": result.calibration.reached_target,
                            "reason": result.calibration.reason}))
+
+
+def _log_negatives(ctx: StageContext, result: ScoreResult) -> None:
+    """What §6.4 did, and — as loudly — what it could not evaluate.
+
+    `negative_penalty_share` is an INVENTED metric name: §14's table has no
+    negatives row. It is written on every run, including the runs where nothing
+    fired and the runs where nothing could be evaluated, because C6 is the whole
+    argument for §17 being able to tune `menu_grace_period_s` and
+    `afk_threshold_s` later — a penalty that has never been observed to fire is
+    a fact about this configuration, and it has to be in the record to be one.
+    """
+    for name, reason in sorted(result.gate_reasons.items()):
+        ctx.log(f"    note: §6.4's {name} penalty was not evaluated — {reason}")
+
+    fired = {name: share for name, share in result.penalty_shares.items() if share}
+    for name, share in sorted(result.penalty_shares.items()):
+        ctx.log(
+            f"    §6.4 {name} penalty held {100 * share:.1f}% of the stream down"
+            if share else
+            f"    §6.4 {name} penalty evaluated and never fired"
+        )
+    if result.counterfactual is not None:
+        counter = result.counterfactual
+        ctx.log(
+            f"    without §6.4 this stream calibrates to {counter['candidates']} "
+            f"candidate(s) against {result.candidates}, and "
+            f"{counter['peaks_inside_a_penalty']} of those peak(s) sit inside a "
+            f"penalised stretch"
+        )
+
+    ctx.metric(
+        "negative_penalty_share",
+        round(max(fired.values()) if fired else 0.0, 6),
+        json.dumps({
+            "shares": {k: round(v, 6) for k, v in result.penalty_shares.items()},
+            "not_evaluated": result.gate_reasons,
+            "candidates": result.candidates,
+            "without_negatives": result.counterfactual,
+        }),
+    )

@@ -11,10 +11,13 @@ from __future__ import annotations
 import json
 import shutil
 
+import numpy as np
 import pytest
 
 from clipforge import cli, config, db, paths
 from clipforge.pipeline import runner
+from clipforge.pipeline.context import StageContext
+from clipforge.score import features, gates, grid
 from clipforge.score import runner as score_runner
 from tests.fixtures.make_fixture import FixtureSpec, generate, load_manifest
 
@@ -321,11 +324,21 @@ def test_derived_signals_are_in_the_vector_but_were_never_stored(scored):
 def test_unweighted_signals_do_not_appear_in_the_breakdown(scored):
     """The vector answers "what was observed"; contributing_signals answers
     "what moved the score". A row of 0.000 in the review UI's `?` panel is noise
-    in the one place that explains the number beside it."""
+    in the one place that explains the number beside it.
+
+    §6.4's negatives widen the rule rather than break it: a penalty carries a
+    non-zero weight by construction — that is what it would cost — so what
+    earns a row is having actually moved this candidate's score. On this stream
+    neither gate can even be evaluated, so the set is the profile's weights
+    exactly.
+    """
     cfg, conn, engine, manifest, _ = scored
     contributions = json.loads(candidates(conn)[0]["contributing_signals"])
     named = {k for k in contributions if not k.startswith("_")}
-    assert named <= set(cfg.profile.weights)
+    assert named <= set(cfg.profile.weights) | {gates.MENU, gates.AFK}
+    assert not named & {gates.MENU, gates.AFK}, (
+        "no input log and no vision, so neither negative applies here"
+    )
 
 
 def test_unweighted_signals_do_not_move_the_score(scored):
@@ -532,3 +545,118 @@ def test_a_stream_with_no_markers_still_scores_on_audio(tmp_path, long_fixture):
     assert payload["marker_definite"] == 0.0
     assert payload["mic_rms"] != 0.0
     conn.close()
+
+
+# --------------------------------------------------------------------------
+# A9 over the events table, and §6.4's gates end to end
+# --------------------------------------------------------------------------
+
+
+def _tracks_for(cfg, conn, stream_id="fx"):
+    """`build_tracks` against a scored stream, the way the stage calls it."""
+    ctx = StageContext(cfg=cfg, conn=conn, stream_id=stream_id, log=lambda *_: None)
+    duration = float(ctx.stream["duration_s"])
+    timeline = grid.build(duration, float(cfg.get("score.score_grid_hz")))
+    return ctx, timeline, score_runner.build_tracks(ctx, timeline)
+
+
+def test_a_stored_event_no_profile_weights_still_reaches_the_vector(scored):
+    """A9: feature vectors are logged in full, "even for signals not currently
+    weighted", and they cannot be reconstructed retroactively.
+
+    The weight-0 sweep did this for stored SIGNALS and, until this commit, only
+    for events it had just derived — so `phrase_excitement` and `phrase_repeat`,
+    which `phrase_detect` writes to the events table, were null in every vector.
+    Invisible only because `extract.whisperx.enabled` ships false.
+    """
+    cfg, conn, engine, manifest, _ = scored
+    kind = "phrase_excitement"
+    assert kind not in cfg.profile.weights, "the premise of the test"
+    assert kind in cfg.feature_schema.signals
+
+    _ctx, _timeline, (before, _m, _r) = _tracks_for(cfg, conn)
+    assert kind not in {track.name for track in before}
+
+    conn.execute(
+        "INSERT INTO events (stream_id, t, source, kind) VALUES ('fx', ?, 'phrase', ?)",
+        (float(manifest["regions"][0]["t_start"]), kind),
+    )
+    try:
+        _ctx, timeline, (after, _m, _r) = _tracks_for(cfg, conn)
+        by_name = {track.name: track for track in after}
+        assert kind in by_name
+        assert by_name[kind].weight == 0.0
+
+        index = int(timeline.size // 2)
+        assert features.vector(cfg.feature_schema, after, index)[kind] is not None
+
+        # ...and weight 0 means the score cannot have moved.
+        assert np.allclose(
+            score_runner.composite_of(before, timeline.size),
+            score_runner.composite_of(after, timeline.size),
+        )
+    finally:
+        conn.execute("DELETE FROM events WHERE stream_id = 'fx' AND kind = ?", (kind,))
+
+
+def test_an_unevaluable_negative_is_null_in_the_vector_not_zero(scored):
+    """"Not computed" and "computed as nothing" are different claims, and A9's
+    vector is the record §17 tunes against. This stream has no input log and no
+    vision, so both are null."""
+    cfg, conn, engine, manifest, _ = scored
+    for row in candidates(conn):
+        vector = json.loads(row["feature_vector"])
+        assert vector[gates.AFK] is None
+        assert vector[gates.MENU] is None
+
+
+def test_a_gate_that_can_be_evaluated_reaches_every_vector(scored):
+    """The other half: once something produces `menu_screen` spans, the gate
+    level is recorded on every candidate — including the candidates it did not
+    penalise, where it is 0.0 rather than null."""
+    cfg, conn, engine, manifest, _ = scored
+    duration = float(manifest["duration_s"])
+    grace = float(cfg.get("score.negatives.menu_grace_period_s"))
+
+    # Spans over the stretch between the fixture's speech blocks, which repeat
+    # every 60 s. Read off the manifest rather than written down.
+    blocks = sorted({int(r["t_start"] // 60) for r in manifest["regions"]})
+    for block in blocks:
+        start = 60.0 * block + 44.0
+        if start + 4 * grace < duration:
+            conn.execute(
+                "INSERT INTO events (stream_id, t, t_end, source, kind) "
+                "VALUES ('fx', ?, ?, 'vision', ?)",
+                (start, start + 4 * grace, gates.MENU),
+            )
+    try:
+        _rescore_with(cfg, conn)
+        rows = candidates(conn)
+        assert rows, "the stream still produces candidates with a negative live"
+        for row in rows:
+            vector = json.loads(row["feature_vector"])
+            assert vector[gates.MENU] is not None
+            assert vector[gates.AFK] is None, "the AFK gate is still unevaluable"
+
+        share = conn.execute(
+            "SELECT value FROM tool_metrics WHERE stream_id = 'fx' "
+            "AND metric = 'negative_penalty_share' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert share is not None and share["value"] > 0.0
+    finally:
+        conn.execute("DELETE FROM events WHERE stream_id = 'fx' AND kind = ?", (gates.MENU,))
+        _rescore_with(cfg, conn)
+
+
+def test_the_breakdown_still_adds_up_with_a_penalty_applied(scored):
+    """`_total_raw` is the composite the smoothing then acts on, so a penalty
+    has to be inside it. The identity is what stops the `?` panel disagreeing
+    with the number beside it."""
+    cfg, conn, engine, manifest, _ = scored
+    tracks = [
+        features.SignalTrack(name="mic_rms", values=np.array([2.0]), weight=1.5),
+        *gates.as_tracks([gates.Penalty(gates.AFK, np.array([1.0]), weight=2.0)]),
+    ]
+    detail = features.breakdown(tracks, 0, smoothed_value=0.0)
+    assert detail.total_raw == pytest.approx(1.5 * 2.0 - 2.0)
+    assert detail.contributions[gates.AFK] == pytest.approx(-2.0)

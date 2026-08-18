@@ -42,7 +42,14 @@ continuous:
   mic_laughter:     {phase: 3, track: mic,       note: "§5.5 envelope band share, 4-7 Hz. Its own envelope: 10 Hz cannot carry the band"}
   party_laughter:   {phase: 3, track: party,     note: "§5.5, and the more valuable of the two — external validation"}
 
-# §5.4.2 — value recorded is the decayed event kernel at t_peak (peak 1.0).
+# §5.4.2 — value recorded is the decayed event kernel at t_peak (peak 1.0),
+# EXCEPT for §6.4's two gated negatives (`afk`, `menu_screen`), whose recorded
+# value is the gate's ramped 0..1 level. They are not kernels and are
+# deliberately not z-scored: a rolling z-score of a mostly-zero array makes every
+# UNPENALISED sample slightly positive, which is a negative signal quietly
+# rewarding the rest of the stream. No version bump for that note — no key is
+# added, renamed or removed, and neither has ever recorded anything but null, so
+# no stored vector changes meaning.
 events:
   marker_maybe:      {phase: 1, note: "F1. Retro offset applied (§4.3)"}
   marker_definite:   {phase: 1, note: "F2. Highest weight in the system"}
@@ -51,14 +58,14 @@ events:
   laugh_operator:    {phase: 3}
   laugh_party:       {phase: 3, note: "external validation; weighted above own laugh"}
   scene_change:      {phase: 3, note: "§16 rejects as a scorer; chapter tie-breaker only"}
-  afk:               {phase: 3, note: "negative, gated (§6.4)"}
+  afk:               {phase: 3, note: "negative, gated (§6.4). Value is the gate ramp 0..1, not a kernel. Needs §4.4's input log AND input_coverage"}
   kill:              {phase: 7}
   multikill:         {phase: 7, note: ">=3 kills in 8 s"}
   clutch:            {phase: 7, note: "strongest single gameplay signal"}
   mvp_screen:        {phase: 7, note: "Marvel Rivals has MVP/SVP, not POTG"}
   ult_used:          {phase: 7, note: "§16: correlation component only, not independent"}
   headshot:          {phase: 7, note: "§16: flick signature component only, not independent"}
-  menu_screen:       {phase: 7, note: "negative, gated (§6.4)"}
+  menu_screen:       {phase: 7, note: "negative, gated (§6.4). Value is the gate ramp 0..1. A STATE, so vision writes one row per span WITH t_end set"}
 
 # §5.4.3 — computed at score time from the above.
 composite:
