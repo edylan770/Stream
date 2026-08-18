@@ -12,6 +12,7 @@ import math
 import sqlite3
 import statistics
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
 import numpy as np
 
@@ -19,9 +20,20 @@ from clipforge import signals
 from clipforge.render import words
 from clipforge.score import combined as combined_score
 
-#: Signals the sparkline can draw, in preference order. mic_rms is the one that
-#: matters in Phase 1; the others exist so the panel keeps working when Phase 3
-#: adds them.
+#: Signals the sparkline draws, in stacking order. §7.2 asks for a pre-rendered
+#: "mic + party RMS" PNG per candidate; this is that asset, drawn as SVG from
+#: data already in the database instead — see `clipforge/review/previews.py` for
+#: why the file is not written.
+#:
+#: The ROLE IS THE KIND NAME. `extract/features.py` writes one series per §4.2
+#: role (`SIGNAL_FOR_ROLE = {"mic": "mic_rms", ...}`), so provenance needs no
+#: `track_roles` lookup the way the transcript panel and the captions do — there
+#: is no track index to resolve, and a kind cannot be wrong about its own role.
+#:
+#: `game_rms` is last and is drawn like the others; it is included because A9's
+#: instinct applies to the screen too — a moment that is loud only in the game
+#: is a different moment from one that is loud on the mic, and hiding the
+#: difference makes the two look identical.
 SPARKLINE_KINDS = ("mic_rms", "party_rms", "game_rms")
 
 #: Samples in the rendered sparkline. Enough to see the shape of a 60 s window,
@@ -209,9 +221,20 @@ class CandidateView:
     context: dict = field(default_factory=dict)
     marker_anchored: bool = False
     markers: list[float] = field(default_factory=list)
-    sparkline: list[float] = field(default_factory=list)
-    sparkline_kind: str | None = None
+    #: One entry per available role: {"kind", "role", "points"}. A LIST rather
+    #: than the single track this used to carry, because §7.2's waveform asset
+    #: is specified as "mic + party" and picking whichever came first meant a
+    #: two-person moment was drawn as if one person made it.
+    sparklines: list[dict] = field(default_factory=list)
+    #: ONE range shared by every track above, and that is the whole point:
+    #: scaling each track to its own min/max would draw a silent party track at
+    #: the same height as a shouting mic, which is a lie about the only thing
+    #: the picture is for.
     sparkline_range: list[float] = field(default_factory=list)
+    #: §7.2's precomputed assets, as URLs the browser can fetch. None until the
+    #: `previews` stage has run — the screen falls back to seeking the proxy.
+    preview_url: str | None = None
+    thumbstrip_url: str | None = None
     rating: int | None = None
     rating_source: str | None = None
     note: str | None = None
@@ -248,9 +271,10 @@ class CandidateView:
             "context": self.context,
             "marker_anchored": self.marker_anchored,
             "markers": [round(t, 2) for t in self.markers],
-            "sparkline": self.sparkline,
-            "sparkline_kind": self.sparkline_kind,
+            "sparklines": self.sparklines,
             "sparkline_range": self.sparkline_range,
+            "preview_url": self.preview_url,
+            "thumbstrip_url": self.thumbstrip_url,
             "rating": self.rating,
             "rating_source": self.rating_source,
             "note": self.note,
@@ -382,7 +406,7 @@ def load_candidates(
         context = {k.lstrip("_"): v for k, v in payload.items() if k.startswith("_")}
 
         inside = [t for t in markers if row["t_start"] <= t <= row["t_end"]]
-        spark, low_high = _sparkline_for(series, row["t_start"], row["t_end"])
+        tracks, low_high = _sparklines_for(series, row["t_start"], row["t_end"])
 
         out.append(CandidateView(
             id=row["id"], index=index,
@@ -398,8 +422,13 @@ def load_candidates(
             marker_anchored=bool(inside) or contributions.get("marker_definite", 0) > 0
                             or contributions.get("marker_maybe", 0) > 0,
             markers=inside,
-            sparkline=spark, sparkline_kind=series[0] if series else None,
-            sparkline_range=low_high,
+            sparklines=tracks, sparkline_range=low_high,
+            # §7.2's assets, when `previews` has run. Served by path rather
+            # than embedded: a 2 s webm is ~250 KB and 120 of them inlined
+            # would be a 30 MB JSON payload on the screen C4 calls the
+            # critical path.
+            preview_url=_asset_url(stream_id, row["preview_path"]),
+            thumbstrip_url=_asset_url(stream_id, row["thumbstrip_path"]),
             rating=row["rating"], rating_source=row["rating_source"], note=row["note"],
             adjusted_start=row["adjusted_start"], adjusted_end=row["adjusted_end"],
             # Sliced on the DETECTOR's window, not the adjusted one. A nudge can
@@ -410,46 +439,93 @@ def load_candidates(
     return assign_sections(out, section_top_n)
 
 
-def _sparkline_series(conn: sqlite3.Connection, stream_id: str):
-    """The best available signal to draw, as (kind, Series)."""
-    available = set(signals.kinds(conn, stream_id))
-    for kind in SPARKLINE_KINDS:
-        if kind in available:
-            series = signals.load(conn, stream_id, kind)
-            if series is not None and len(series):
-                return kind, series
-    return None
+def _asset_url(stream_id: str, relative: str | None) -> str | None:
+    """A preview asset as a URL, or None when `previews` has not run.
 
-
-def _sparkline_for(series, t_start: float, t_end: float) -> tuple[list[float], list[float]]:
-    """Downsample the window to a fixed number of points, plus its dB range.
-
-    Drawn from `signal_series`, which is already in the database — no ffmpeg,
-    no files, none of §7.2's Phase 3 assets. It answers "where is the loud part"
-    without playing anything.
+    Only the file NAME travels: the route resolves it under the stream's own
+    previews directory, so a stored path that had been tampered with cannot
+    address anything outside it.
     """
-    if series is None:
+    if not relative:
+        return None
+    return f"/media/{stream_id}/preview/{PurePosixPath(str(relative)).name}"
+
+
+def _sparkline_series(conn: sqlite3.Connection, stream_id: str) -> list[tuple[str, object]]:
+    """EVERY available role signal, as [(kind, Series)] in stacking order.
+
+    This used to return the first of the three and draw it alone, which was
+    invisible while `mic_rms` was the only one that existed — and wrong the
+    moment a stream had two people in it. §7.2 specifies the waveform asset as
+    "mic + party RMS"; drawing only the mic loses the half that says whether the
+    moment was a conversation.
+    """
+    available = set(signals.kinds(conn, stream_id))
+    loaded: list[tuple[str, object]] = []
+    for kind in SPARKLINE_KINDS:
+        if kind not in available:
+            continue
+        series = signals.load(conn, stream_id, kind)
+        if series is not None and len(series):
+            loaded.append((kind, series))
+    return loaded
+
+
+#: `mic_rms` -> `mic`. The signal kinds are named by §4.2 role, so this is the
+#: whole of the provenance rule (see SPARKLINE_KINDS).
+def _role_of(kind: str) -> str:
+    return kind.rsplit("_", 1)[0]
+
+
+def _sparklines_for(series: list[tuple[str, object]], t_start: float, t_end: float
+                    ) -> tuple[list[dict], list[float]]:
+    """Downsample the window for each track, over ONE shared dB range.
+
+    Drawn from `signal_series`, which is already in the database — no ffmpeg and
+    no files. It answers "where is the loud part, and who was making it" without
+    playing anything, which is §7.2's waveform asset arriving as vector rather
+    than as 120 PNGs per stream.
+
+    The shared range is load-bearing. Per-track normalisation would draw a party
+    track sitting at its noise floor with the same amplitude as a mic that is
+    being shouted into, so the one comparison the picture exists to support —
+    who is louder — would be the one thing it cannot show.
+    """
+    if not series:
         return [], []
 
-    _kind, data = series
-    chunk = data.slice(t_start, t_end)
-    if chunk.size == 0:
+    tracks: list[dict] = []
+    low, high = None, None
+    for kind, data in series:
+        chunk = data.slice(t_start, t_end)
+        if chunk.size == 0:
+            continue
+        values = chunk.astype(float)
+        low = float(values.min()) if low is None else min(low, float(values.min()))
+        high = float(values.max()) if high is None else max(high, float(values.max()))
+        if len(values) > SPARKLINE_POINTS:
+            # Max within each bucket: an envelope should show peaks, and
+            # averaging would flatten exactly the transients being looked for.
+            points = [
+                float(bucket.max())
+                for bucket in (
+                    values[i * len(values) // SPARKLINE_POINTS:
+                           (i + 1) * len(values) // SPARKLINE_POINTS]
+                    for i in range(SPARKLINE_POINTS)
+                )
+                if bucket.size
+            ]
+        else:
+            points = [float(v) for v in values]
+        tracks.append({
+            "kind": kind,
+            "role": _role_of(kind),
+            "points": [round(v, 2) for v in points],
+        })
+
+    if low is None or high is None:
         return [], []
-
-    values = chunk.astype(float)
-    low, high = float(values.min()), float(values.max())
-    if len(values) > SPARKLINE_POINTS:
-        # Max within each bucket: an envelope should show peaks, and averaging
-        # would flatten exactly the transients being looked for.
-        buckets = [
-            values[i * len(values) // SPARKLINE_POINTS:(i + 1) * len(values) // SPARKLINE_POINTS]
-            for i in range(SPARKLINE_POINTS)
-        ]
-        values = [float(b.max()) for b in buckets if b.size]
-    else:
-        values = [float(v) for v in values]
-
-    return [round(v, 2) for v in values], [round(low, 2), round(high, 2)]
+    return tracks, [round(low, 2), round(high, 2)]
 
 
 # --------------------------------------------------------------------------

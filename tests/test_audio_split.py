@@ -283,6 +283,12 @@ def test_deleting_the_proxy_reruns_only_the_proxy(split):
     proxy and audio_split are siblings — both depend on probe, neither on the
     other. Deleting the proxy must not cost a re-extraction of the audio, and a
     chain-shaped pipeline would do exactly that.
+
+    The invariant is about the SIBLING, not about the count — the same lesson
+    `test_deleting_a_wav_leaves_the_proxy_alone` below already records. Stages
+    *downstream* of proxy legitimately re-run with it, which is the cascade
+    working: `previews` (§7.2) is one, and asserting `ran == ["proxy"]` would
+    fail every time a stage is added below proxy for a reason that is not a bug.
     """
     cfg, conn, engine, _ = split
     (cfg.data_root / "streams/fx/proxy/proxy.mp4").unlink()
@@ -293,7 +299,9 @@ def test_deleting_the_proxy_reruns_only_the_proxy(split):
     assert decisions["audio_split"].action == "skip"
 
     ran = [r.stage for r in engine.execute(engine.plan())]
-    assert ran == ["proxy"]
+    assert "proxy" in ran
+    assert "audio_split" not in ran
+    assert "probe" not in ran
 
 
 def test_deleting_a_wav_leaves_the_proxy_alone(split):

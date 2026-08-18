@@ -206,9 +206,13 @@ STAGE_LIST: list[StageSpec] = [
     ),
     StageSpec(
         name="previews",
-        summary="2s webm, thumbstrip, waveform per candidate",
+        # §5.1's own wording says "waveform" and this stage deliberately does
+        # not write one -- review/queries.py already ships the envelope and
+        # review.js draws it as SVG. See clipforge/review/previews.py.
+        summary="2s webm + thumbstrip per candidate (§7.2)",
         phase=3,
         requires=("score", "proxy"),
+        module="clipforge.review.previews",
     ),
     StageSpec(
         name="digest",

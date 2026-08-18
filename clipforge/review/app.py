@@ -434,6 +434,25 @@ def create_app(cfg) -> FastAPI:
         path = paths.StreamPaths(cfg.data_root, stream_id).absolute(row["proxy_path"])
         return media.serve(path, request.headers.get("range"))
 
+    @app.get("/media/{stream_id}/preview/{name}")
+    def api_preview(stream_id: str, name: str, request: Request):
+        """One of §7.2's precomputed assets.
+
+        The name is resolved under the stream's own previews directory and the
+        result is checked to still be inside it. The candidate payload only ever
+        emits names this server wrote, but the route is reachable directly and
+        `..` in a path segment is the oldest trick there is — loopback is not a
+        security boundary here (see `review/guard.py`), so this cannot rely on
+        the caller being the bundled UI.
+        """
+        directory = paths.StreamPaths(cfg.data_root, stream_id).previews_dir
+        try:
+            path = (directory / name).resolve()
+            path.relative_to(directory.resolve())
+        except (ValueError, OSError):
+            raise HTTPException(status_code=404, detail="not found") from None
+        return media.serve(path, request.headers.get("range"))
+
     return app
 
 

@@ -298,7 +298,8 @@ def test_candidates_arrive_in_one_payload(client):
     assert data["candidates"]
     first = data["candidates"][0]
     for key in ("t_start", "t_end", "t_peak", "score", "contributions",
-                "sparkline", "marker_anchored", "rating"):
+                "sparklines", "marker_anchored", "rating",
+                "preview_url", "thumbstrip_url"):
         assert key in first
 
 
@@ -327,12 +328,113 @@ def test_contributions_and_context_are_separated(client):
 
 
 def test_sparkline_is_drawn_from_stored_signals(client):
-    """No ffmpeg, no files — §7.2's preview assets are Phase 3."""
+    """§7.2's waveform asset, as data rather than as a PNG per candidate.
+
+    See `clipforge/review/previews.py` for why no file is written: this payload
+    plus `review.js` already draws it, and a PNG would be a second copy of the
+    same numbers orphaned by every re-score.
+    """
     first = client.get("/api/streams/fx/candidates").json()["candidates"][0]
-    assert first["sparkline_kind"] == "mic_rms"
-    assert 2 < len(first["sparkline"]) <= queries.SPARKLINE_POINTS
+    kinds = [track["kind"] for track in first["sparklines"]]
+    assert "mic_rms" in kinds
+    for track in first["sparklines"]:
+        assert 2 < len(track["points"]) <= queries.SPARKLINE_POINTS
+        # The role is the kind name -- extract/features.py writes one series per
+        # §4.2 role -- so no track_roles lookup is involved and none can drift.
+        assert track["kind"].startswith(track["role"] + "_")
     low, high = first["sparkline_range"]
     assert low < high
+
+
+def test_every_sparkline_track_shares_one_range(client, conn):
+    """§7.2 asks for "mic + party"; per-track scaling would make them a lie.
+
+    Two tracks normalised independently draw a party mic sitting at its noise
+    floor at the same height as an operator shouting, so the one comparison the
+    picture exists to support is the one it cannot show. The range therefore
+    spans EVERY track, which this asserts by arithmetic rather than by a number:
+    no track may hold a sample outside the range sent with it.
+    """
+    candidates = client.get("/api/streams/fx/candidates").json()["candidates"]
+    checked = 0
+    for candidate in candidates:
+        if len(candidate["sparklines"]) < 1:
+            continue
+        low, high = candidate["sparkline_range"]
+        assert low < high
+        for track in candidate["sparklines"]:
+            assert min(track["points"]) >= low - 0.01
+            assert max(track["points"]) <= high + 0.01
+
+        # The TOP of the range is attained by some track, which is what makes it
+        # the union rather than an arbitrary pair of bounds.
+        every = [v for track in candidate["sparklines"] for v in track["points"]]
+        assert max(every) == pytest.approx(high, abs=0.01)
+        # The BOTTOM deliberately is not. `points` are bucket maxima -- an
+        # envelope has to show peaks, and averaging would flatten the transients
+        # being looked for -- while `low` is the true minimum of the raw samples.
+        # So the drawn line never reaches the floor, and the floor is still the
+        # honest dB range of the window rather than the range of the envelope.
+        assert min(every) >= low
+        checked += 1
+    assert checked, "no candidate carried a sparkline"
+
+
+def test_preview_urls_are_served_and_fetchable(client):
+    """§7.2's assets reach the browser, and only their names travel.
+
+    The stored path is `streams/<id>/previews/<name>`; the URL carries the name
+    alone so the route can resolve it under the stream's own directory and check
+    the result is still inside it.
+    """
+    candidates = client.get("/api/streams/fx/candidates").json()["candidates"]
+    first = candidates[0]
+    assert first["preview_url"] and first["thumbstrip_url"]
+    assert "/" not in first["preview_url"].rsplit("/", 1)[-1]
+
+    clip = client.get(first["preview_url"])
+    assert clip.status_code == 200
+    assert clip.headers["content-type"] == "video/webm"
+    assert client.get(first["thumbstrip_url"]).status_code == 200
+
+
+def test_the_screen_still_works_with_no_preview_assets(client, conn):
+    """`previews` is a dependency of nothing, so review must work without it.
+
+    Phase 1's seek-and-hold is the fallback, and `review.js` decides on these
+    two fields being null — so a stream processed before the stage existed, or
+    one with `previews.enabled: false`, must produce null rather than a URL that
+    404s on every candidate.
+    """
+    # Restored by hand rather than by rollback: `db.connect` uses
+    # isolation_level=None, so this UPDATE is already committed and a rollback
+    # would be a silent no-op that left the session fixture broken for whichever
+    # test ran next. Same reason `test_only_current_candidates_are_served`
+    # restores explicitly.
+    saved = conn.execute(
+        "SELECT id, preview_path, thumbstrip_path FROM candidates "
+        "WHERE stream_id = 'fx'").fetchall()
+    conn.execute("UPDATE candidates SET preview_path = NULL, thumbstrip_path = NULL "
+                 "WHERE stream_id = 'fx'")
+    try:
+        for candidate in client.get("/api/streams/fx/candidates").json()["candidates"]:
+            assert candidate["preview_url"] is None
+            assert candidate["thumbstrip_url"] is None
+    finally:
+        conn.executemany(
+            "UPDATE candidates SET preview_path = ?, thumbstrip_path = ? WHERE id = ?",
+            [(r["preview_path"], r["thumbstrip_path"], r["id"]) for r in saved],
+        )
+
+
+def test_preview_route_refuses_to_escape_the_previews_directory(client):
+    """Loopback is not a security boundary here — see review/guard.py.
+
+    The payload only ever emits names this server wrote, but the route is
+    reachable directly.
+    """
+    for attempt in ("..%2f..%2fclipforge.db", "..%5c..%5cclipforge.db"):
+        assert client.get(f"/media/fx/preview/{attempt}").status_code == 404
 
 
 def test_marker_anchored_candidates_are_flagged(client):

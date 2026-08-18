@@ -71,15 +71,31 @@ def test_the_job_completes(completed):
 
 
 def test_it_runs_exactly_the_stages_that_are_built(completed):
-    """Computed from the registry: when Phase 2 lands, this test updates itself
-    rather than passing while asserting a Phase 1 pipeline."""
+    """Computed from the registry, so a new stage updates this test rather than
+    passing while asserting an older pipeline.
+
+    The predicate used to be `spec.phase == 1`, which held only while phase 1
+    was the only phase with modules. It is now "implemented, and not deferred or
+    blocked in this run" — which is the thing actually worth asserting: nothing
+    that could have run was silently skipped, and everything that did not run
+    said why. `previews` is what broke the old form, by being the first
+    phase-3 stage that runs on a default stream.
+    """
     _cfg, _stream_id, job = completed
+    excused = {
+        entry["stage"] for entry in job.plan
+        if entry["action"] in ("deferred", "blocked")
+    }
     expected = {
         spec.name for spec in stages.iter_specs()
-        if spec.module is not None and spec.phase == 1
+        if spec.module is not None and spec.name not in excused
     }
     assert {entry["stage"] for entry in job.stages_run} == expected
     assert all(entry["status"] == "done" for entry in job.stages_run)
+    # A stage excused without a reason is the failure this guards against: a
+    # silent skip and a stated deferral look identical in the stages_run set.
+    assert all(entry["reason"] for entry in job.plan
+               if entry["stage"] in excused)
 
 
 def test_the_plan_is_captured_with_its_reasons(completed):

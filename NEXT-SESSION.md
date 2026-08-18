@@ -1,7 +1,8 @@
 # Start here — context for a fresh session
 
-Phase 4 is done. This file exists so the next session can pick up without
-re-reading seven commit messages. Delete it once you have.
+Phases 0–4 are done and Phase 3 is done bar one stage. This file exists so the
+next session can pick up without re-reading seven commit messages. Delete it
+once you have.
 
 **Read in this order:** [`CLAUDE.md`](CLAUDE.md) (the standing rules),
 [`HANDOFF.md`](HANDOFF.md) (state and every deviation, with reasons),
@@ -12,7 +13,9 @@ show it wrong). Then the spec sections you are touching.
 
 ## Where the build actually is
 
-**Phases 0, 1, 2 and 4 of §15 are complete. 1249 tests pass** (`.venv\Scripts\python.exe -m pytest -q`), plus 3 that need `--asr`.
+**Phases 0, 1, 2, 3 and 4 of §15 are complete — bar `scene_events`, which is
+blocked on a real OBS log. 1524 tests pass** (`.venv\Scripts\python.exe -m pytest -q`,
+about 8 minutes), plus 3 that need `--asr`.
 
 A recording goes all the way today:
 
@@ -23,13 +26,25 @@ register → run → review → render → hook
 and comes out a 1080×1920 MP4 with burned-in per-speaker captions, audio
 normalised to −14 LUFS, and a hook line you chose.
 
-**Phase 3 was skipped deliberately** — it adds signals that change *which*
-moments surface, and §8's renderer was worth more first. Phases 3, 5, 6, 7 are
-unbuilt.
+**Phase 3 was skipped deliberately at first** — it adds signals that change
+*which* moments surface, and §8's renderer was worth more — then built out in
+commits 31–38: pitch, laughter, derived signals, §4.4's input log, §6.4's gated
+negatives, §6.5's two profiles with the combined ranking, and §7.2's preview
+assets. Phases 5, 6 and 7 are unbuilt.
 
-Phase 4 was commits 23–28 (`968fdd0` … `9a6d852`): ~9,900 lines across 43
-files. `git log --format='%s%n%n%b'` is the real archive; every deviation is
-argued there.
+`git log --format='%s%n%n%b'` is the real archive; every deviation is argued
+there. Three worth knowing before touching anything:
+
+- **§6.5's two profiles order the fixture's moments identically** (rho +1.000).
+  `gameplay` is 80% inert before Phase 7's vision, and 71% of its live weight is
+  markers — so §7.4's combined section is currently a restatement of the
+  entertainment ranking. `combined_rank_agreement` in `tool_metrics` is what
+  says when that stops being true.
+- **§7.2's own preview command costs 13.6 min per 120 candidates.** Measured,
+  and replaced with a preset 9.5× faster for 0.007 of SSIM. The synthetic
+  fixture understates that cost by 3.4× and would have hidden it.
+- **§6.4's negative penalties have never removed a candidate.** Measured, and
+  recorded rather than tuned until they did.
 
 ---
 

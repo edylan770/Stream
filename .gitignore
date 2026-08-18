@@ -29,3 +29,7 @@ data/
 *.mov
 *.webm
 *.flv
+
+# Claude Code's working directory: launch configs and local settings, which are
+# per-machine (ports, scratch database paths) rather than project state.
+.claude/

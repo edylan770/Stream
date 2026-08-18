@@ -17,10 +17,11 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ## Status
 
-**Phases 0, 1, 2 and 4 of §15 are complete.** Phase 3 was skipped by choice —
-§8's renderer is what turns an approved moment into something postable, and
-Phase 3 adds signals that only change *which* moments surface. Phases 3, 5, 6
-and 7 are not started.
+**Phases 0, 1, 2 and 4 of §15 are complete, and Phase 3 is all but done.**
+Phase 3 was originally skipped by choice — §8's renderer is what turns an
+approved moment into something postable, where Phase 3 only changes *which*
+moments surface — and was then built out across commits 31–38. Only
+`scene_events` remains. Phases 5, 6 and 7 are not started.
 
 **A recording can now go all the way**: register → run → review → render →
 hook, ending in a 1080×1920 MP4 with burned-in captions, normalised audio and
@@ -71,12 +72,21 @@ Phase 2.
 | 28 | `9a6d852` | §8.5 hook text via a paste round trip — **Phase 4 complete** |
 | 29 | `572a885` | §13.2's backup + §13.3's restore test — the irreplaceable tier, covered |
 | 29a | `3b0d1ab` | the backup manifest describes the copy, not the source (a race in 29) |
-| 30 | *this* | §7.3's nudge keys — **GUESSES gap 1 closed**; §17 can tune the window bounds |
+| 30 | `1198f4b` | §7.3's nudge keys — **GUESSES gap 1 closed**; §17 can tune the window bounds |
+| 31 | `21cca7b` | pitch (§5.4.1), and what the first signal with gaps does downstream |
+| 32 | `5b7aed2` | §5.4.1/§5.4.3's derived signals, and two definitions that had to change |
+| 33 | `6400c72` | §5.5's laughter detector, and the three ways it was wrong |
+| 34 | `f0d894a` | drop a recording on the add screen, and see its tracks first |
+| 35 | `fbb039a` | §4.4's input log, and why a gap in it is not a zero |
+| 36 | `8c37ac7` | §6.4's gated negatives, and a penalty that removes nothing |
+| 37 | `4a5fca1` | §6.5's two profiles, and a combined ranking that agrees exactly |
+| 38 | *this* | §7.2's preview assets — **§7.3's autoplay is real**; §7.2's own preset is 9.5× too slow |
 
-1249 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1524 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+The suite takes roughly 8 minutes; `previews` and the fixture encodes are most of it.
 
-**What is not built, by design:** no dual profiles, laughter, pitch, input signals or
-preview assets (Phase 3); no digests (Phase 5); no trends (Phase 6); no vision
+**What is not built, by design:** no `scene_events` (the last of Phase 3 — it needs a
+real OBS log, see below); no digests (Phase 5); no trends (Phase 6); no vision
 (Phase 7).
 
 ---
@@ -117,9 +127,29 @@ amount of reading the spec.
 
 ### Still missing, and not asked for by any phase
 
-Nothing, for the first time. **§13.2's backup is built** (commits 29/29a) and **§7.3's
-nudge keys are built** (commit 30), which closes GUESSES gap 1 — the instrumentation
-exists and now wants ~10 real streams to say anything.
+**`scene_events` is the one Phase 3 stage still unbuilt**, and it is blocked on a real
+OBS log rather than on effort. There is no OBS on the build machine
+(`%APPDATA%\obs-studio` does not exist), so the log format cannot be checked — and
+house rule 2 says measure rather than reason. Three things about it are already known
+and worth not re-deriving:
+
+- `register.find_capture_file` looks *beside the master* for `anchor.json`,
+  `markers.jsonl` and `input.jsonl`. OBS logs live in `%APPDATA%\obs-studio\logs\`,
+  so the stage needs a discovery path of its own.
+- **The log's timestamps are elapsed-since-OBS-launch, not epoch.** Converting them via
+  the log *filename* means a local wall clock with no timezone and a DST ambiguity —
+  precisely the constant-offset error §4.1 calls unrecoverable and A8 exists to prevent.
+  The fix is to never touch a wall clock: the log contains its own recording-start line,
+  so the offset comes from inside the file.
+- It is low value by the spec's own account (§16 rejects scene changes as a scorer;
+  §9.3 makes them tie-breaker #4 of 4) and, unlike the marker and input logs, **OBS keeps
+  its logs whether or not we ask** — so nothing is lost by building it after the first
+  real stream.
+
+Otherwise nothing. **§13.2's backup is built** (commits 29/29a), **§7.3's nudge keys are
+built** (commit 30, closing GUESSES gap 1) and **§7.2's preview assets are built**
+(commit 38) — the instrumentation exists and now wants ~10 real streams to say
+anything.
 
 Still greyed in the review footer, and still genuinely unbuilt: §7.3's `t` (tag), `n`
 (note) and `e` (export queue). None of them is a measurement gap; `ratings.tags` and
@@ -213,8 +243,15 @@ looks correct and is not.
 
 **Review UI**
 
-- **No autoplay.** §7.3 assumes §7.2's pre-rendered 2 s clips, which are Phase 3.
-  Seek-and-hold on focus; `space` plays the window.
+- **Autoplay is real as of commit 38, and this is what it used to say:** "No
+  autoplay. §7.3 assumes §7.2's pre-rendered 2 s clips, which are Phase 3.
+  Seek-and-hold on focus; `space` plays the window." The 2 s webm now loops
+  silently on focus exactly as §7.3 describes. The proxy player stays mounted
+  underneath and stays seeked to the peak, so `space` starts the real window
+  immediately rather than re-buffering — and the loop comes back when `space`
+  stops, because the operator is still looking at the same candidate. VERIFIED
+  in a browser end to end: focus loops, `j` swaps the clip, `space` hands over
+  to the proxy and back.
 - **Range serving is written out**, not delegated — it is the one behaviour the whole
   review experience rests on.
 - **`metrics` reports the median**, not the mean: one candidate left on screen over
@@ -257,7 +294,9 @@ looks correct and is not.
   no phase has built sits in its real position, greyed, with `title` naming the
   phase: §7.3's `[`/`]`/`{`/`}`/`t`/`n`/`e` keys, §7.2's three preview assets,
   Phase 4's render button, Phase 5's digest. The layout therefore does not jump
-  the day one lands. The nudge keys matter most: their absence is a
+  the day one lands. **It worked**: commit 30 took the nudge keys out of
+  `.soon` and commit 38 took the preview assets, and neither moved anything
+  around them. What is left greyed is §7.3's `t`/`n`/`e` and Phase 5's digest. The nudge keys matter most: their absence is a
   **measurement gap**, not a missing convenience — §17 tunes
   `min_window_s`/`max_window_s` against "how often the operator nudges
   boundaries during review", and with no keys that number cannot be collected
@@ -332,6 +371,71 @@ looks correct and is not.
   review link is: rendering needs approved moments, and nothing can be approved
   before there are candidates. Otherwise the operator's first render is an
   error message.
+
+**Preview assets (Phase 3, §7.2)**
+
+- **Assets are named by their WINDOW, never by `candidate_id`** — the change
+  that makes §6.1's "re-scoring is free and infinitely repeatable" survive
+  contact with this stage. §7.2's own command writes
+  `previews/{candidate_id}.webm`, and candidates here are append-only
+  generations: a re-score with different weights mints entirely new ids, so
+  §7.2's naming turns every re-score into a full re-encode of the library. The
+  clip is keyed on `t_peak` alone and the strip on the window, so a §7.3
+  boundary nudge reuses the expensive asset. VERIFIED: a forced re-run and a
+  forced re-score both left every file's mtime untouched.
+- **§7.2's speed preset costs 13.6 minutes and was replaced. MEASURED** on real
+  720p footage, five 2 s clips, SSIM against a lossless reference, extrapolated
+  to §7.1's 120 candidates: §7.2 verbatim 0.9638 SSIM at 6.78 s/clip
+  (**13.6 min**); `-cpu-used 8 -deadline realtime` 0.9564 at 0.71 s/clip
+  (**1.4 min**). §1.3 budgets 20–40 min for *all* unattended processing and
+  `extract.f0` already spends ~16 of it. 9.5× faster for 0.007 of SSIM.
+- **…but VP9 itself stays, and that half is measured too.** At a matched
+  ~250 KB, h264 scores 0.9416 against every VP9 variant's 0.9564+. Worth
+  recording because the first comparison, at h264's default `crf 28`, looked
+  four times faster *and* smaller — which is what comparing two encoders across
+  different quality scales always looks like. The SSIM run is what caught it.
+- **The synthetic fixture says the opposite and would have hidden all of this.**
+  On `fixture_long` the same command runs at 2.04 s/clip because that source is
+  640×360 — understating the real cost by **3.4×** and making §7.2's defaults
+  look affordable. The numbers above are from `Testvid.mp4` for that reason.
+- **§7.2's waveform PNG is deliberately NOT written.** `review/queries.py`
+  already ships a downsampled envelope in the candidate payload and `review.js`
+  draws it as inline SVG — vector, theme-aware, no files, no stage cost, and
+  already on screen. A PNG would be a second copy of the same numbers, 120 more
+  files per stream, and orphaned by every re-score. What was genuinely missing
+  was §7.2's **second track**.
+- **So the sparkline now draws every role, over ONE shared dB range.** It used
+  to take the first of `mic_rms`/`party_rms`/`game_rms` and draw it alone —
+  invisible while `mic_rms` was the only one that existed, and wrong the moment
+  a stream had two people in it. The shared range is the load-bearing part:
+  per-track normalisation would put a silent party mic at the same height as a
+  shouting operator, so the one comparison the picture exists to support would
+  be the one it could not show. Colours come from `render.captions.styles` via
+  the existing `role_colours`, so the envelope, the transcript panel and the
+  burned-in captions cannot disagree about who is who.
+- **The role IS the kind name**, so unlike the transcript panel and the captions
+  this needs no `track_roles` lookup: `extract/features.py` writes one series
+  per §4.2 role (`SIGNAL_FOR_ROLE`). There is no track index to resolve and a
+  kind cannot be wrong about its own role.
+- **The 2 s clip SHIFTS at the ends of a recording rather than shortening.**
+  §7.2's `-ss {t_peak-1}` is negative for a peak inside the first second, and a
+  peak near the end has under two seconds after it. C2 says expand rather than
+  contract, so the window slides; it shortens only when the recording itself is
+  shorter than the clip.
+- **One failed asset does not fail the stage.** A preview is a review
+  convenience — losing one costs a seek, where aborting costs every asset after
+  it and leaves the stage permanently un-done. The count goes to the log and to
+  `preview_assets_failed` (an INVENTED name; §14 has no previews row), so a
+  systematic failure is visible rather than inferred.
+- **The thumb strip is one decode pass, not five seeks.** MEASURED: 0.93 s per
+  strip selecting every Nth frame in a single pass, against 3.30 s for five
+  separate `-ss` seeks — five process launches. The comma inside
+  `select='not(mod(n,N))'` has to be escaped, because ffmpeg splits filter
+  arguments on commas before the expression parser sees the string.
+- **`previews` is a dependency of nothing**, and the review screen still works
+  without it: null `preview_url`/`thumbstrip_url` fall back to Phase 1's
+  seek-and-hold. That is what makes the stage safe to disable and safe to add to
+  a library of already-processed streams.
 
 **Loudness and export presets (§8.2/§8.3)**
 
@@ -984,17 +1088,14 @@ The remaining phases, in §15's order and with what each will cost:
 
 | Phase | Adds | Needs |
 |---|---|---|
-| **3** Full signals | Pitch, laughter, silence, overlap, input signals, dual profiles + combined score, gated negatives, spacing, preview assets | Nothing new to download. Phase 0's `input_logger` must have run on a real stream for four of these |
+| ~~**3** Full signals~~ | **DONE, commits 31–38**, except `scene_events` — see above. Pitch, laughter, silence, overlap, input signals, dual profiles + combined score, gated negatives, preview assets | Phase 0's `input_logger` must have run on a real stream before four of these mean anything |
 | **4** Auto-finish | ASS captions with speaker colouring, vertical reframe, loudnorm, export presets | Real crop coordinates, measured off a real OBS layout |
-| **5** Digests | Structured per-stream summaries, theme/assembly passes | An API key for a frontier model (~$0.10–0.30/stream) |
+| **5** Digests | Structured per-stream summaries, theme/assembly passes, §11.6's pull search | An API key would cost ~$0.10–0.30/stream, but the manual paste round trip `clipforge hook` already uses works with none. The search half needs no model at all |
 | **6** Trends | N-gram bits, HDBSCAN clustering, idea dashboard, §11.6 pull search | **60+ streams before clustering finds anything real.** The n-gram half and the search are cheap and work sooner |
 | **7** Vision | Kill feed, multikill, clutch, MVP | OpenCV plus per-game templates captured by hand; §5.9 says build it last and cut it if hard |
 
-Two things worth doing before any of them, both small:
+One thing worth doing before any of them:
 
-- **§7.3's nudge keys.** The last measurement gap: §17 cannot tune
-  `min_window_s`/`max_window_s` until the operator's boundary nudges are being counted,
-  and every stream reviewed without them is a stream whose nudge data never existed (C6).
 - **Phase 6's n-gram baseline** (`is_baseline_tic`) once ten streams exist, replacing the
   hand-written stopword list in `phrases.yaml` — the one place a guess is currently
   standing in for a measurement the corpus would provide.

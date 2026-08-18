@@ -298,17 +298,29 @@ def test_the_plan_covers_every_stage_with_a_reason(client, master):
     assert plan["job"] is None
 
 
-def test_the_plan_would_run_what_phase_1_has_built(client, master):
-    """Computed from the registry, so Phase 2 updates this rather than passing
-    while asserting a Phase 1 pipeline."""
+def test_the_plan_would_run_everything_that_is_built_and_available(client, master):
+    """Computed from the registry, so a new stage updates this test rather than
+    passing while asserting an older pipeline.
+
+    The predicate used to be `spec.phase == 1`, which held only while phase 1
+    was the only phase with modules. `previews` is what broke it, by being the
+    first phase-3 stage that runs on a default stream — so the expectation is
+    now "implemented, and not deferred or blocked", which is the property the
+    screen actually needs to be true.
+    """
     stream_id = client.post("/api/register", json={"master": str(master)}).json()["stream_id"]
     plan = client.get(f"/api/streams/{stream_id}/plan").json()
 
+    excused = {e["stage"] for e in plan["stages"]
+               if e["action"] in ("deferred", "blocked")}
     expected = {
         spec.name for spec in stages.iter_specs()
-        if spec.module is not None and spec.phase == 1
+        if spec.module is not None and spec.name not in excused
     }
     assert set(plan["will_run"]) == expected
+    # Every stage the screen greys out has to say why, or "not built until
+    # Phase 7" and "this machine cannot run it" look identical to the operator.
+    assert all(e["reason"] for e in plan["stages"] if e["stage"] in excused)
 
 
 def test_the_plan_for_an_unknown_stream_is_404(client):
@@ -326,9 +338,12 @@ def test_a_run_completes_and_matches_the_fixture(client, master, cfg, manifest):
     finished = wait_for_job(client, started["id"])
 
     assert finished["state"] == "done", finished["error"]
+    # As above: implemented and not excused, rather than `phase == 1`.
+    excused = {entry["stage"] for entry in finished["plan"]
+               if entry["action"] in ("deferred", "blocked")}
     assert {entry["stage"] for entry in finished["stages_run"]} == {
         spec.name for spec in stages.iter_specs()
-        if spec.module is not None and spec.phase == 1
+        if spec.module is not None and spec.name not in excused
     }
 
     conn = db.open_db(cfg.db_path, migrate_to_latest=False)

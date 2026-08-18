@@ -200,6 +200,12 @@
       <section class="stage-pane">
         <div class="video-wrap">
           <video id="video" preload="auto" playsinline></video>
+          <!-- §7.3: "Preview autoplays on focus, loops silently." A second
+               element stacked over the proxy player rather than swapping one
+               element's src: the proxy keeps its seek position, so `space`
+               starts playing the window instantly instead of re-buffering. -->
+          <video id="preview" class="preview-clip" muted loop playsinline
+                 preload="auto" hidden></video>
           <div id="playing" class="playing" hidden>playing window…</div>
         </div>
 
@@ -219,21 +225,22 @@
             </div>
           </div>
 
-          <!-- Drawn from signal_series, already in the database: no ffmpeg, no
-               preview assets (those are Phase 3, §7.2). -->
+          <!-- §7.2's third asset, the mic + party waveform. Drawn from
+               signal_series, already in the database: no ffmpeg and no file.
+               See clipforge/review/previews.py for why no PNG is written. -->
           <figure class="spark">
             <svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none"
                  role="img" aria-label="signal level across the window"></svg>
             <figcaption id="spark-caption" class="muted"></figcaption>
           </figure>
 
-          <!-- §7.2's precomputed assets. Drawn empty rather than omitted, so
-               the panel is the height it will always be and nothing shifts the
-               day they land. -->
-          <div class="assets" aria-hidden="true">
-            <div class="asset-slot soon" title="Phase 3 — §7.2's 5-frame thumb strip">thumb strip</div>
-            <div class="asset-slot soon" title="Phase 3 — §7.2's mic + party waveform">waveform</div>
-            <div class="asset-slot soon" title="Phase 3 — §7.2's 2 s looping preview">preview clip</div>
+          <!-- §7.2's other two assets, written by the `previews` stage. Both
+               slots keep their height when the stage has not run, so landing
+               them does not move the rest of the panel. -->
+          <div class="assets">
+            <img id="thumbstrip" class="asset-strip" alt="five frames across the window" hidden>
+            <div id="assets-missing" class="asset-slot soon"
+                 title="§7.2's assets — run the `previews` stage" hidden>no preview assets</div>
           </div>
 
           <div id="signals" class="signals" hidden></div>

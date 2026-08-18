@@ -452,6 +452,77 @@ bisection landed and not a moment found or lost.
 | `ingest.probe.rate_sample_seconds` | `4.0` | **plausible** | Enough PTS to fit a constant rate and check the residual; two windows are sampled | A recording that starts CFR and degrades later being classified constant |
 | `ingest.audio.verify.silence_peak_dbfs` | `-80.0` | **plausible** | Below this counts as digital silence. Warns, never fails — a silent `party.wav` just means nobody was in Discord | A quiet-but-real track being flagged |
 
+## Preview assets (Phase 3, §7.2)
+
+Unusually for this file, the two numbers that matter here are **grounded** — not
+because previews are better understood than anything else, but because §7.2's
+own command does not fit §1.3's time budget and the only way to find that out
+was to run it.
+
+**MEASURED**, five 2 s clips from real 720p footage (`Testvid.mp4`), SSIM against
+a lossless reference of the same scaled window, extrapolated to §7.1's 120
+candidates:
+
+| variant | SSIM | bytes | s/clip | 120 candidates |
+|---|---|---|---|---|
+| §7.2 verbatim (libvpx defaults) | 0.9638 | 249 KB | 6.78 | **13.6 min** |
+| `-cpu-used 5 -deadline good` | 0.9572 | 248 KB | 3.01 | 6.0 min |
+| `-cpu-used 8 -deadline realtime` | 0.9564 | 320 KB | 0.71 | **1.4 min** |
+| h264 `crf 28` | 0.9193 | 132 KB | 0.56 | 1.1 min |
+| h264 `crf 23` | 0.9416 | 250 KB | 0.60 | 1.2 min |
+
+Two conclusions, and they point in opposite directions:
+
+- **VP9 is right and §7.2 is right to name it.** At a matched ~250 KB, h264
+  scores 0.9416 against every VP9 variant's 0.9564+. This was worth checking
+  because the first comparison, at h264's default `crf 28`, looked 4× faster
+  *and* smaller — which is what comparing two encoders across different quality
+  scales always looks like.
+- **§7.2's speed preset is wrong for this budget.** §1.3 allows 20–40 minutes
+  for all unattended processing and `extract.f0` already spends ~16. Spending
+  another 13.6 on an asset whose purpose is saving seek latency is the wrong
+  trade at 9.5× the cost of the realtime setting, for 0.007 of SSIM.
+
+**And the synthetic fixture says the opposite**, which is why the numbers above
+are from real footage: on `fixture_long` the same command runs at 2.04 s/clip
+because that source is 640×360. The fixture understates the real cost by **3.4×**
+and would have made §7.2's defaults look affordable.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `previews.clip.codec` / `container` | `libvpx-vp9` / `webm` | **grounded** | §7.2 names both, and the SSIM-at-matched-size comparison above agrees | A browser that cannot decode VP9, which none of the review UI's targets are |
+| `previews.clip.duration_s` / `width` | `2.0` / `480` | **grounded** | §7.2 states the duration. The width is from §7.2's own `scale=480:-2` — note its prose says "480p", which conventionally means *height*; the command wins because §7.2 says to hardcode it | A 480×270 loop being too small to judge a moment by |
+| `previews.clip.crf` | `40` | **grounded** | §7.2 states it | Previews too blocky to judge a moment, which is the only thing they are for |
+| `previews.clip.cpu_used` / `deadline` | `8` / `realtime` | **grounded**, and the one deviation | The table above. Set `0` / `good` for §7.2 verbatim | The preview quality being visibly worse in a way that changes a rating. Watch `preview_bytes_total` too: this trades 28% more bytes for 9.5× the speed |
+| `previews.thumbstrip.frames` / `width` | `5` / `160` | **grounded** | §7.2 states both | — |
+| `previews.thumbstrip.quality` | `6` | **arbitrary** | ffmpeg's `-q:v`, 2 (best) to 31 (worst). Measured at ~16 KB per strip against §7.2's ~30 KB estimate, so there is room to lower it | Strips too coarse to tell two moments apart |
+| `previews.enabled` | `true` | **plausible** | On by default (C6). It is a dependency of nothing, so turning it off costs the operator seek latency and nothing else | The stage's cost mattering on a real candidate count — `preview_bytes_total` and `stage_duration_s` are the numbers |
+
+**Three things that are not parameters:**
+
+- **Assets are named by their WINDOW, never by `candidate_id`.** §7.2's own
+  command writes `previews/{candidate_id}.webm`, and candidates here are
+  append-only generations — a re-score with different weights mints entirely new
+  ids. Under §7.2's naming, §6.1's promise that re-scoring is "free and
+  infinitely repeatable" would quietly come to include a full re-encode of every
+  preview in the library. The clip is keyed on `t_peak` alone and the strip on
+  the window, so a boundary nudge reuses the expensive asset and an identical
+  re-score regenerates **nothing**. VERIFIED: a forced re-run and a forced
+  re-score both left every file's mtime untouched.
+- **§7.2's waveform PNG is deliberately not written.** `review/queries.py`
+  already ships a downsampled envelope in the candidate payload and `review.js`
+  draws it as inline SVG — vector, theme-aware, no files, no stage cost. A PNG
+  would be a second copy of the same numbers, 120 more files per stream, and
+  orphaned by every re-score. What was genuinely missing was §7.2's **second
+  track**, and that is now in the payload: every available role is drawn over
+  **one shared dB range**, because per-track normalisation would put a silent
+  party mic at the same height as a shouting operator and lose the only
+  comparison the picture exists to support.
+- **The 2 s clip SHIFTS at the ends of a recording rather than shortening.**
+  §7.2's `-ss {t_peak-1}` is negative for a peak inside the first second. C2
+  says expand rather than contract, so the window slides and shortens only when
+  the recording itself is shorter than two seconds.
+
 ## Render — captions (Phase 4, §8.3)
 
 None of these has been seen on a real clip. They are the numbers that decide

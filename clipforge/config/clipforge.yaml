@@ -897,6 +897,62 @@ score:
     # the combined ranking differs from entertainment's at all.
     alpha: 0.5
 
+# ---------------------------------------------------------------------------
+# PREVIEWS -- §7.2's precomputed review assets (§5.1 stage 15).
+#
+# Deliberately a TOP-LEVEL subtree, not under `extract` or `score`: those two
+# are config.py's VERSIONED_SUBTREES and feed `config_version`. Re-encoding a
+# preview must never invalidate a candidate or force a re-score -- nothing here
+# can change which moments were detected, only how quickly one can be looked at.
+# Same reasoning that put `render:` outside.
+previews:
+  enabled: true
+
+  clip:
+    # §7.2: "2 s, centered on t_peak, 480p, VP9/webm, no audio normalization".
+    duration_s: 2.0
+    # §7.2's own command is `scale=480:-2`, which sets WIDTH. Its prose says
+    # "480p", which conventionally means height. The command wins because §7.2
+    # says to hardcode it; a 16:9 proxy therefore yields 480x270.
+    width: 480
+    codec: libvpx-vp9
+    container: webm
+    crf: 40
+
+    # THE ONE PLACE THIS DEPARTS FROM §7.2's COMMAND, AND IT WAS MEASURED.
+    #
+    # Five 2 s clips from real 720p footage, SSIM against a lossless reference
+    # of the same scaled window, extrapolated to §7.1's 120 candidates:
+    #
+    #   §7.2 verbatim (libvpx default)   SSIM 0.9638   249 KB   13.6 min
+    #   -cpu-used 5 -deadline good       SSIM 0.9572   248 KB    6.0 min
+    #   -cpu-used 8 -deadline realtime   SSIM 0.9564   320 KB    1.4 min
+    #
+    # §1.3 budgets 20-40 minutes for ALL unattended processing and the pitch
+    # stage already spends ~16 of it. Spending another 13.6 on an asset that
+    # exists to save seek latency is the wrong trade: this is 9.5x faster for
+    # 0.007 of SSIM. Set cpu_used 0 and deadline `good` for §7.2 verbatim.
+    #
+    # VP9 itself is NOT a deviation and that half is measured too: at a matched
+    # ~250 KB, h264 scores 0.9416 against every VP9 variant's 0.9564+.
+    cpu_used: 8
+    deadline: realtime
+    # Emitted verbatim before the output path, for anything not modelled above.
+    extra_args: []
+
+  thumbstrip:
+    # §7.2: "5 frames evenly spaced across window, JPEG, 160px wide".
+    frames: 5
+    width: 160
+    # ARBITRARY. ffmpeg's -q:v, 2 (best) to 31 (worst). 6 measured at ~16 KB per
+    # strip against §7.2's ~30 KB estimate, so there is room to lower it.
+    quality: 6
+
+  # NOTE: §7.2's third asset, a waveform PNG, is deliberately NOT generated.
+  # review/queries.py already ships a downsampled mic+party envelope in the
+  # candidate payload and review.js draws it as inline SVG -- vector,
+  # theme-aware, no files, no stage cost. See clipforge/review/previews.py.
+
 review:
   host: 127.0.0.1
   port: 8765

@@ -229,19 +229,85 @@ function focusCandidate(index) {
   $("score").textContent = c.score.toFixed(3);
 
   drawSpark(c);
+  renderAssets(c);
   renderTranscript(c);
   renderSignals(c);
   renderVerdict(c);
 
-  // Seek and hold a frame rather than autoplaying. §7.3 describes a looping
-  // silent preview, but that assumes §7.2's pre-rendered 2 s clips; seeking a
-  // 700 MB proxy on every keypress and autoplaying would stutter and fight the
-  // browser's autoplay policy. `space` plays deliberately.
   stopPlayback();
+  // The proxy is still seeked to the peak even when a preview is playing over
+  // it: `space` then starts the real window immediately instead of buffering
+  // from wherever the previous candidate left it.
   const video = $("video");
   if (Number.isFinite(c.t_peak)) {
     try { video.currentTime = c.t_peak; } catch { /* not seekable yet */ }
   }
+  startPreview(c);
+}
+
+/* §7.2's two file assets.
+ *
+ * When the `previews` stage has not run, both slots say so and the screen falls
+ * back to Phase 1's seek-and-hold — which still works, and is why `previews`
+ * is not a dependency of anything. */
+function renderAssets(c) {
+  const strip = $("thumbstrip");
+  const missing = $("assets-missing");
+  if (c.thumbstrip_url) {
+    strip.src = c.thumbstrip_url;
+    strip.hidden = false;
+    missing.hidden = true;
+  } else {
+    strip.hidden = true;
+    strip.removeAttribute("src");
+    missing.hidden = false;
+  }
+}
+
+/* §7.3: "Preview autoplays on focus, loops silently."
+ *
+ * Phase 1 deliberately did not do this, because autoplaying by seeking a 700 MB
+ * proxy on every `j` press stutters. A 2 s 250 KB webm does not, which is the
+ * whole reason §7.2 calls for the asset.
+ *
+ * `play()` is allowed to fail and that is not an error: browsers reject
+ * autoplay until the page has been interacted with, and the operator's first
+ * keypress is exactly that interaction. Failing silently leaves the proxy frame
+ * showing underneath, which is the Phase 1 behaviour. */
+function startPreview(c) {
+  const preview = $("preview");
+  if (!c?.preview_url) {
+    preview.hidden = true;
+    preview.removeAttribute("src");
+    return;
+  }
+  if (preview.getAttribute("src") !== c.preview_url) {
+    preview.src = c.preview_url;
+  }
+  preview.hidden = false;
+  preview.currentTime = 0;
+  preview.play().catch(() => { /* autoplay policy, or a missing file */ });
+}
+
+function hidePreview() {
+  const preview = $("preview");
+  preview.pause();
+  preview.hidden = true;
+}
+
+/* Put the loop back after `space` has finished with the window.
+ *
+ * §7.3's preview autoplays "on focus", and the operator is still focused on
+ * this candidate — they have just watched the real thing. Deliberately NOT
+ * folded into stopPlayback(), which also runs on the way INTO every candidate:
+ * there it would briefly restart the PREVIOUS candidate's clip, because
+ * showCandidate sets the new src a few lines later. */
+function resumePreview() {
+  const preview = $("preview");
+  if (!preview.getAttribute("src")) return;
+  preview.hidden = false;
+  preview.currentTime = 0;
+  preview.play().catch(() => {});
 }
 
 /* The window readout, and whose window it is.
@@ -285,12 +351,33 @@ function renderWindow(c) {
   note.className = "window-note is-adjusted";
 }
 
+/* Fallback for a role with no caption style. `game` has none — §8.3 colours
+ * speakers, and game audio is not a speaker — so it cannot come from the
+ * payload's palette the way mic and party do.
+ *
+ * Read from the stylesheet rather than written here as a hex. A near-copy of
+ * --muted sitting in JS is the same drift the caption colours are sent by the
+ * server to avoid, one layer down: the theme would move and this would not. */
+function sparkColour(role) {
+  const fromPalette = state.roleColours?.[role];
+  if (fromPalette) return fromPalette;
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue("--muted").trim() || "#8b93a3";
+}
+
+/* §7.2's "mic + party RMS over the window", drawn rather than fetched.
+ *
+ * Every track shares ONE dB range, which is the entire reason this is worth
+ * drawing: per-track normalisation would put a silent party track at the same
+ * height as a mic being shouted into, and the one question the picture answers
+ * -- who was making the noise -- would be the one it could not. */
 function drawSpark(c) {
   const svg = $("spark");
   svg.innerHTML = "";
   const caption = $("spark-caption");
 
-  if (!c.sparkline?.length) {
+  const tracks = (c.sparklines || []).filter((t) => t.points?.length);
+  if (!tracks.length) {
     caption.textContent = "no signal series for this window";
     return;
   }
@@ -298,23 +385,33 @@ function drawSpark(c) {
   const [lo, hi] = c.sparkline_range;
   const span = Math.max(hi - lo, 1e-6);
   const W = 600, H = 90, pad = 6;
-  const points = c.sparkline.map((v, i) => {
-    const x = (i / (c.sparkline.length - 1 || 1)) * W;
-    const y = H - pad - ((v - lo) / span) * (H - pad * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  });
 
-  const area = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-  area.setAttribute("points", `0,${H} ${points.join(" ")} ${W},${H}`);
-  area.setAttribute("fill", "rgba(90,169,255,0.22)");
-  svg.appendChild(area);
+  /* Drawn in reverse so the first-listed role -- mic -- ends up on top. The
+   * payload orders them by SPARKLINE_KINDS, which is the order the operator
+   * cares about. */
+  for (const track of [...tracks].reverse()) {
+    const colour = sparkColour(track.role);
+    const points = track.points.map((v, i) => {
+      const x = (i / (track.points.length - 1 || 1)) * W;
+      const y = H - pad - ((v - lo) / span) * (H - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    });
 
-  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-  line.setAttribute("points", points.join(" "));
-  line.setAttribute("fill", "none");
-  line.setAttribute("stroke", "#5aa9ff");
-  line.setAttribute("stroke-width", "1.5");
-  svg.appendChild(line);
+    const area = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    area.setAttribute("points", `0,${H} ${points.join(" ")} ${W},${H}`);
+    area.setAttribute("fill", colour);
+    /* Fill rather than stroke opacity, so two overlapping tracks read as two
+     * translucent shapes instead of one muddy one. */
+    area.setAttribute("fill-opacity", "0.18");
+    svg.appendChild(area);
+
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    line.setAttribute("points", points.join(" "));
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", colour);
+    line.setAttribute("stroke-width", "1.5");
+    svg.appendChild(line);
+  }
 
   // Where the peak sits inside the window, and where any markers landed.
   // `window` rather than `span`: `span` is already the sparkline's dB range a
@@ -347,11 +444,21 @@ function drawSpark(c) {
     }
   }
 
-  caption.textContent =
-    [`${c.sparkline_kind} · ${lo.toFixed(1)} to ${hi.toFixed(1)} dBFS`]
-      .concat(c.markers.length ? ["purple = marker press"] : [])
-      .concat(notes)
-      .join(" · ");
+  /* Each track names itself in its own colour, so the legend cannot drift from
+   * what was drawn -- it is built from the same array. */
+  caption.replaceChildren();
+  tracks.forEach((track, i) => {
+    if (i) caption.append(" · ");
+    const tag = document.createElement("span");
+    tag.textContent = track.role;
+    tag.style.color = sparkColour(track.role);
+    caption.append(tag);
+  });
+  caption.append(
+    ` · ${lo.toFixed(1)} to ${hi.toFixed(1)} dBFS`
+    + [""].concat(c.markers.length ? ["purple = marker press"] : [])
+          .concat(notes).join(" · ")
+  );
 }
 
 function addRule(svg, fraction, W, H, colour, width) {
@@ -607,8 +714,11 @@ function playWindow() {
   if (!c) return;
   const video = $("video");
 
-  if (!video.paused) return stopPlayback();
+  if (!video.paused) { stopPlayback(); return resumePreview(); }
 
+  // §7.3's `space` is "play full window with audio", so the silent 2 s loop
+  // gets out of the way rather than playing over it.
+  hidePreview();
   video.currentTime = startOf(c);
   $("playing").hidden = false;
   video.play().catch(() => { $("playing").hidden = true; });
@@ -616,7 +726,7 @@ function playWindow() {
   // Stop at the window's end rather than running on into the next moment.
   const stopAt = endOf(c);
   const watch = () => {
-    if (video.currentTime >= stopAt) stopPlayback();
+    if (video.currentTime >= stopAt) { stopPlayback(); resumePreview(); }
   };
   video.addEventListener("timeupdate", watch);
   state.playTimer = () => video.removeEventListener("timeupdate", watch);
@@ -627,6 +737,9 @@ function stopPlayback() {
   video.pause();
   $("playing").hidden = true;
   if (state.playTimer) { state.playTimer(); state.playTimer = null; }
+  // Deliberately does NOT restart the preview: stopPlayback runs on the way
+  // into every candidate, and showCandidate starts the loop itself once the
+  // new candidate's url is known.
 }
 
 async function finish() {

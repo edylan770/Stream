@@ -701,6 +701,16 @@ code {
   justify-content: center;
 }
 video { width: 100%; height: 100%; object-fit: contain; }
+/* §7.3's silent 2 s loop, stacked over the proxy player. Both elements stay
+ * mounted so `space` can start the proxy at the seek position it is already
+ * holding, rather than swapping one element's src and re-buffering. */
+.preview-clip {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  background: #000;
+}
 .playing {
   position: absolute;
   top: var(--s4); left: var(--s4);
@@ -738,9 +748,20 @@ video { width: 100%; height: 100%; object-fit: contain; }
 }
 .spark figcaption { font-size: var(--txs); margin-top: var(--s2); color: var(--muted); }
 
-/* §7.2's preview assets are Phase 3. The strip is drawn empty rather than
- * omitted, so the detail panel is the height it will always be. */
-.assets { display: flex; gap: var(--s3); margin-top: var(--s4); }
+/* §7.2's thumb strip. The empty slot keeps the same height, so a stream whose
+ * `previews` stage has not run does not lay out differently from one that has. */
+.assets { display: flex; gap: var(--s3); margin-top: var(--s4); min-height: 34px; }
+.asset-strip {
+  /* Scaled by its own aspect ratio and nothing else. Deliberately NO
+   * `object-fit: cover` and no max-height: the strip is 5 frames wide, so
+   * cropping it to fill a box throws away the frames at the ends — which are
+   * the start and end of the window, the two the operator is judging the
+   * boundaries by. */
+  width: 100%;
+  height: auto;
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+}
 .asset-slot {
   flex: 1;
   height: 34px;
