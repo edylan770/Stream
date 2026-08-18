@@ -1,0 +1,11 @@
+SYNTHETIC. This file has never been near an OBS install. See README.md.
+
+00:00:00.000: OBS 31.0.2 (64-bit, windows)
+00:00:00.001: ---------------------------------
+00:00:00.120: Portable mode: false
+00:00:04.100: audio settings reset: samples per sec: 48000
+00:00:09.900: [game-capture: 'Game Capture'] loaded
+00:05:00.000: ==== Recording Start ===============================================
+00:05:12.500: Switched to scene 'Gameplay'
+00:05:40.000: Switched to scene 'Just Chatting'
+00:06:00.000: ==== Recording Stop ================================================

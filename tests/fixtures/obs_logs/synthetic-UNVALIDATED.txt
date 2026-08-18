@@ -1,0 +1,19 @@
+SYNTHETIC. This file has never been near an OBS install. See README.md.
+
+00:00:00.000: OBS 31.0.2 (64-bit, windows)
+00:00:00.001: ---------------------------------
+00:00:00.120: Portable mode: false
+00:00:02.400: Current Date/Time: 2026-08-18, 09:14:02
+00:00:02.401:   (this line is deliberately present: nothing may use it as a clock)
+00:00:05.000: audio settings reset: samples per sec: 48000
+00:00:12.750: Switched to scene 'Scene'
+00:00:20.500: Switched to scene 'Starting Soon'
+00:00:30.000: ==== Recording Start ===============================================
+00:01:00.500: Switched to scene 'Gameplay'
+00:03:15.000: [game-capture: 'Game Capture'] loaded
+00:06:00.000: Switched to scene 'BRB'
+00:08:00.250: Switched to scene 'Gameplay'
+00:10:30.000: ==== Recording Stop ================================================
+00:12:00.000: Switched to scene 'Starting Soon'
+00:20:00.000: ==== Recording Start ===============================================
+00:22:41.000: Switched to scene 'Gameplay'

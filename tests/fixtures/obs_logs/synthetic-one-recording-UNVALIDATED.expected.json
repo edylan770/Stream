@@ -1,0 +1,18 @@
+{
+  "why": "Ground truth for the log of the same name, so tests assert against a manifest rather than against literals typed into a test file - the same rule tests/fixtures/_generated/*/manifest.json follows. A log with no .expected.json beside it still gets the generic tests (it parses, patterns fire, nothing crashes); this file is what buys exact assertions.",
+  "covers": "the branch where a log holds exactly ONE recording, so select_recording can pick it with no clock and no output path",
+
+  "recordings": 1,
+  "select_recording": "ok",
+  "recording": {
+    "start_elapsed": 300.0,
+    "stop_elapsed": 360.0
+  },
+  "duration_s": 60.0,
+
+  "note_on_first_span": "No scene switch happens before recording starts, so there is no scene in force at t=0 and the first span begins at 12.5s. A parser that back-filled t=0 here would be inventing history.",
+  "spans": [
+    {"t": 12.5, "t_end": 40.0, "scene": "Gameplay", "previous": null},
+    {"t": 40.0, "t_end": 60.0, "scene": "Just Chatting", "previous": "Gameplay"}
+  ]
+}

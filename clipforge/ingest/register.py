@@ -192,6 +192,12 @@ class RegisterSpec:
     #: reason: the daemon writes it to a capture directory, not beside the
     #: recording, so it cannot always be found automatically.
     input: str | None = None
+    #: §4.2's "OBS log file already contains this; parse it". EXPLICIT ONLY --
+    #: there is deliberately no search of %APPDATA%\obs-studio\logs. Choosing
+    #: the right log out of a directory needs a wall clock, `scene_events`
+    #: refuses to use one (see extract/obs_log.py), and choosing wrong shifts
+    #: every scene event by a constant nothing downstream can detect.
+    obs_log: str | None = None
     force: bool = False
 
     @classmethod
@@ -227,6 +233,7 @@ class Preflight:
     anchor_ms: int | None
     markers_path: Path | None
     input_path: Path | None
+    obs_log_path: Path | None
     marker_time_base: str
     warnings: list[str] = field(default_factory=list)
     #: §4.2's track map, read from the container header. See `audio_summary`.
@@ -242,6 +249,7 @@ class Preflight:
             "anchor_ms": self.anchor_ms,
             "markers": str(self.markers_path) if self.markers_path else None,
             "input": str(self.input_path) if self.input_path else None,
+            "obs_log": str(self.obs_log_path) if self.obs_log_path else None,
             "marker_time_base": self.marker_time_base,
             "warnings": list(self.warnings),
             "audio": self.audio,
@@ -356,6 +364,10 @@ def preflight(cfg, conn, spec: RegisterSpec, *, with_audio: bool = False) -> Pre
     input_path = find_capture_file(
         spec.master, spec.input, "input.jsonl", "input-*.jsonl"
     )
+    # `obs-log.txt` only, never `*.txt`: a glob that loose beside a master would
+    # claim any stray text file, and a wrong OBS log is a silent constant offset
+    # rather than a visible error. Usually supplied with --obs-log.
+    obs_log_path = find_capture_file(spec.master, spec.obs_log, "obs-log.txt")
     anchor_ms = read_anchor(anchor_path) if anchor_path else None
     time_base = "epoch" if anchor_ms is not None else "vod"
 
@@ -372,6 +384,7 @@ def preflight(cfg, conn, spec: RegisterSpec, *, with_audio: bool = False) -> Pre
         anchor_ms=anchor_ms,
         markers_path=markers_path,
         input_path=input_path,
+        obs_log_path=obs_log_path,
         marker_time_base=time_base,
         warnings=warnings,
         # Off by default: `clipforge register` is about to run `probe` anyway,
@@ -399,10 +412,12 @@ def register_stream(cfg, conn, spec: RegisterSpec, pre: Preflight | None = None)
     ).fetchone()
 
     copied = _copy_capture_files(
-        stream_paths, pre.anchor_path, pre.markers_path, pre.input_path
+        stream_paths, pre.anchor_path, pre.markers_path, pre.input_path,
+        pre.obs_log_path,
     )
     _write_sources(
-        stream_paths, pre.master, pre.anchor_path, pre.markers_path, pre.input_path
+        stream_paths, pre.master, pre.anchor_path, pre.markers_path, pre.input_path,
+        pre.obs_log_path,
     )
 
     with db.transaction(conn):
@@ -456,6 +471,12 @@ def add_arguments(parser) -> None:
         "--input", help="§4.4 activity log (default: beside the master)"
     )
     parser.add_argument(
+        "--obs-log", dest="obs_log",
+        help=r"OBS log for this session, for §5.1's scene_events "
+             r"(%%APPDATA%%\obs-studio\logs\*.txt). Not auto-discovered on "
+             r"purpose -- picking the wrong log is silent"
+    )
+    parser.add_argument(
         "--force", action="store_true",
         help="re-register an existing stream id, re-running everything built from it",
     )
@@ -493,7 +514,7 @@ def _material_change(previous, master: Path, anchor_ms: int | None, time_base: s
 
 def _copy_capture_files(
     stream_paths: paths.StreamPaths, anchor: Path | None, markers: Path | None,
-    activity: Path | None = None,
+    activity: Path | None = None, obs_log: Path | None = None,
 ) -> list[str]:
     """Bring the small capture artifacts into the stream directory.
 
@@ -514,12 +535,21 @@ def _copy_capture_files(
         # 10 Hz records is a few MB against a 4 GB proxy.
         shutil.copy2(activity, stream_paths.input_jsonl)
         copied.append("input.jsonl")
+    if obs_log is not None:
+        # Copied whole, like the activity log and for the same reason: it is a
+        # per-SESSION file that may cover several recordings, and `scene_events`
+        # has to choose between them at parse time anyway. Renamed to a fixed
+        # name here because inside a stream directory the OBS session timestamp
+        # in the original filename means nothing.
+        shutil.copy2(obs_log, stream_paths.raw_dir / "obs-log.txt")
+        copied.append("obs-log.txt")
     return copied
 
 
 def _write_sources(
     stream_paths: paths.StreamPaths, master: Path, anchor: Path | None,
     markers: Path | None, activity: Path | None = None,
+    obs_log: Path | None = None,
 ) -> None:
     """Provenance sidecar, in place of §2.3's symlinks.
 
@@ -536,6 +566,7 @@ def _write_sources(
         "anchor_source": str(anchor) if anchor else None,
         "markers_source": str(markers) if markers else None,
         "input_source": str(activity) if activity else None,
+        "obs_log_source": str(obs_log) if obs_log else None,
         "registered_at": datetime.now().isoformat(timespec="seconds"),
     }
     stream_paths.sources_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")

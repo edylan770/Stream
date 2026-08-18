@@ -8,12 +8,19 @@ Built to [`spec/CLIPFORGE-SPEC.md`](spec/CLIPFORGE-SPEC.md). See
 deliberately departs from the spec — several of those fix silent-failure bugs
 and should not be reverted without reading why.
 
-**Status: the capture layer and Phases 1, 2, 3 and 4 are built and working**
-— Phase 3 bar one stage, `scene_events`, which needs a real OBS log. That means
-you can take a recording all the way to a finished vertical clip with burned-in
-captions. Phase 5 (digests), Phase 6 (trends) and Phase 7 (vision) are not
-started — the [roadmap](#roadmap--what-later-phases-will-cost-you) says what
+**Status: the capture layer and Phases 1, 2, 3 and 4 are built and working.**
+That means you can take a recording all the way to a finished vertical clip with
+burned-in captions. Phase 5 (digests), Phase 6 (trends) and Phase 7 (vision) are
+not started — the [roadmap](#roadmap--what-later-phases-will-cost-you) says what
 each will need you to install.
+
+One piece carries a warning: **`scene_events` parses OBS's log file and has
+never seen a real one**, so its patterns may not match your OBS version — and
+when they do not, it produces nothing rather than an error. Next time you are at
+the streaming PC, `clipforge scene-events --check "<any OBS log>"` says whether
+they work, and prints a report you can act on without moving the log anywhere.
+Nothing else depends on it: it feeds chapter boundaries in Phase 5 and §16
+explicitly rejects it as a scoring signal.
 
 Phase 2's transcription ships **off** (`extract.whisperx.enabled`), because it
 costs a multi-GB download to feed signals nothing weights yet. Captions and the
@@ -300,7 +307,7 @@ then set `extract.whisperx.enabled: true` in `local.yaml` (with the CPU block
 from `local.yaml.example` if you have no NVIDIA GPU). Measured on the test
 fixture with the smallest model on CPU: 2.9% word error rate, and vocabulary
 seeding took hero-name accuracy from 7/11 to 11/11.
-| ~~**3** Full signals~~ | **Built** — pitch, laughter, silence, overlap, input signals, dual profiles + combined score, gated negatives, preview assets. `scene_events` is the one stage left, and it needs an OBS log | Nothing to download. Previews cost ~40 MB and ~3 min per stream, measured on real 720p footage |
+| ~~**3** Full signals~~ | **Built** — pitch, laughter, silence, overlap, input signals, dual profiles + combined score, gated negatives, preview assets, scene events | Nothing to download. Previews cost ~40 MB and ~3 min per stream, measured on real 720p footage. `scene_events` wants one `--check` run against a real OBS log |
 | **4** Auto-finish | Burned-in captions, vertical reframe, loudness normalisation, export presets | Nothing new; re-encode time per clip |
 | **5** Digests | Per-stream structured summaries, semantic search, video ideation, cross-stream compilations | An API key would be ~$0.10–0.30 per stream, but the paste round trip `clipforge hook` already uses needs none. Search needs no model at all |
 | **6** Trends | Recurring-bit detection, clustering, an idea dashboard | Ollama for embeddings; **60+ streams before it finds anything real** |

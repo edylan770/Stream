@@ -452,6 +452,73 @@ bisection landed and not a moment found or lost.
 | `ingest.probe.rate_sample_seconds` | `4.0` | **plausible** | Enough PTS to fit a constant rate and check the residual; two windows are sampled | A recording that starts CFR and degrades later being classified constant |
 | `ingest.audio.verify.silence_peak_dbfs` | `-80.0` | **plausible** | Below this counts as digital silence. Warns, never fails — a silent `party.wav` just means nobody was in Discord | A quiet-but-real track being flagged |
 
+## Scene events (Phase 3, §5.1 stage 11 / §4.2)
+
+**Everything in this section is unvalidated in a way nothing else in this file
+is.** Every other guess here is a *number* that might be badly chosen. These are
+*regexes that may not match at all*, and a regex that does not match produces
+zero events silently — indistinguishable from a session in which nobody switched
+scenes. No OBS log has ever been seen by this code; there is no OBS install on
+the build machine.
+
+**The correction path, in full:**
+
+```bash
+clipforge scene-events --check "<path to any OBS log>"
+```
+
+It prints which patterns fired, the share of lines carrying a parseable
+timestamp, the recording spans found, the scene timeline, and every line
+mentioning a scene or a recording that no pattern claimed. Run it on the
+streaming PC and send back the report rather than the log — OBS logs carry
+machine paths, hardware details and sometimes stream URLs. Then fix the patterns
+in `extract.scene_events.patterns` (the only place in the codebase with a regex
+for OBS's text), drop the log into `tests/fixtures/obs_logs/` — that directory is
+parametrized, so it is covered with no test changes — and move these rows to
+**grounded**.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `extract.scene_events.enabled` | `true` | **plausible** | C6. Costs nothing when no log is attached: the stage defers | — |
+| `patterns.elapsed` | `^(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2}\.\d+):\s` | **arbitrary** | Believed to be OBS's `HH:MM:SS.mmm: ` prefix — elapsed since OBS launched, **not** a wall clock. THE load-bearing pattern: if it is wrong nothing else can be trusted, which is why `--check` reports it first and separately | The share of timestamped lines in `--check`. Under 50% and this is the only thing worth looking at |
+| `patterns.scene_switch` | `Switched to scene '(?P<scene>[^']*)'` | **arbitrary** | The documented wording. Studio-mode preview switches may log differently | Zero hits in `--check`; or scene changes appearing that never happened, which would be studio mode |
+| `patterns.recording_start` / `recording_stop` | `={2,}\s*Recording (Start|Stop)\s*={2,}` | **arbitrary** | Deliberately loose about the `=` run, which has changed between OBS versions | Zero hits in `--check` |
+| `patterns.recording_path` | `""` (unset) | **grounded** as a *choice*, arbitrary as a *value* | Empty on purpose. If OBS names its output file, a log holding several recordings can be matched to this master by filename — exact, and needing no clock. **Guessing the pattern would silently select the wrong recording**, which is worse than the refusal it would replace | Nothing, until a real log shows how OBS writes it. Setting it correctly is what turns the multi-recording refusal into a match |
+
+**Four things that are not parameters:**
+
+- **No wall clock is reachable from the parser, and that is enforced
+  structurally.** `t = elapsed(scene line) − elapsed(recording start)`, both read
+  from inside the same file. Reading the log's *filename* — the obvious
+  alternative, since it carries a local timestamp — would drag in a timezone and
+  a DST discontinuity and be wrong by an hour twice a year with nothing
+  downstream able to notice. That is §4.1's unrecoverable-offset class and A8's
+  reason for existing. A test parses `obs_log.py`'s AST and asserts it imports
+  no `datetime`, `time`, `calendar` or `zoneinfo`, so the guarantee is a
+  property of the module rather than a habit.
+- **A log with several recordings and nothing to tell them apart is REFUSED.**
+  One OBS session can start and stop recording repeatedly. Rules, in order: the
+  span whose logged output path ends with the master's filename; the only span;
+  otherwise refuse. Picking one at random offsets every event by a constant.
+- **There is no auto-discovery from `%APPDATA%\obs-studio\logs`.** Selecting
+  the right log out of a directory needs the wall clock above, and selecting
+  wrong is silent. `register --obs-log <path>` is explicit, and the
+  beside-the-master fallback is `obs-log.txt` exactly — never `*.txt`, which
+  would claim any stray notes file.
+- **Scenes are stored as SPANS** (`t` .. `t_end`), the shape commit 36 settled
+  for `menu_screen`. §9.3's consumer wants how long a scene was up, and a
+  boundary is derivable from a span where a span is not derivable from an edge.
+  The scene already up when recording began runs from t=0: OBS logs a switch when
+  it happens, not when recording starts, so dropping it would leave the opening
+  of every stream with no scene at all.
+
+**Noted and deliberately not built:** a scene named "BRB" or "Starting Soon" is
+exactly §6.4's `menu_screen` case, available with no Phase 7 vision — `gates.py`
+already reads `menu_screen` events and is inert only because nothing writes them.
+Wiring scene names to that gate would be **scoring on a parser that has never
+seen a real log**, which is what C5 and §16's rejection of scene changes as a
+scorer both forbid. Revisit once `--check` has run against real text.
+
 ## Preview assets (Phase 3, §7.2)
 
 Unusually for this file, the two numbers that matter here are **grounded** — not

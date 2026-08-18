@@ -276,6 +276,67 @@ extract:
   # They are written anyway because §11.1 says "build the logging now (it cannot
   # be reconstructed)". Enabled by default and cheap; the stage DEFERS when
   # Ollama is not running, so it never costs a pipeline run.
+  # -------------------------------------------------------------------------
+  # SCENE EVENTS -- §5.1 stage 11, "parse OBS log -> events".
+  #
+  # ################ EVERY PATTERN BELOW IS UNVALIDATED. ####################
+  #
+  # No OBS log has ever been seen by this code -- there is no OBS install on
+  # the build machine -- so these are written from the documented log format
+  # and NOT from a real file. A regex that does not match produces zero events,
+  # silently, and is indistinguishable from a stream with no scene switches.
+  #
+  # THIS BLOCK IS THE ONLY PLACE IN THE CODEBASE WITH A REGEX FOR OBS'S TEXT.
+  # Fixing the parser is editing the four patterns below. To find out which one
+  # is wrong:
+  #
+  #     clipforge scene-events --check "<path to any OBS log>"
+  #
+  # It prints which patterns fired, the recording spans found, the scene
+  # timeline, and every line that looks like it should have matched and did
+  # not. Run it on the streaming PC and send back the report rather than the
+  # log itself: OBS logs carry machine paths and hardware details.
+  #
+  # Then drop the log into tests/fixtures/obs_logs/ -- that directory is
+  # parametrized, so a real log is picked up with no test changes at all.
+  # ##########################################################################
+  scene_events:
+    enabled: true
+
+    patterns:
+      # The elapsed-time prefix OBS puts on every line. MUST capture h, m and s.
+      # This is the load-bearing one: if it is wrong, nothing else can be
+      # trusted, and `--check` reports the share of lines without a timestamp
+      # for exactly that reason.
+      #
+      # Believed to be `HH:MM:SS.mmm: ` -- elapsed since OBS launched, NOT a
+      # wall clock. That is what makes the whole stage timezone-free and
+      # DST-proof: the recording's start is read from inside the same file, so
+      # no local time is ever consulted. See clipforge/extract/obs_log.py.
+      elapsed: '^(?P<h>\d{2}):(?P<m>\d{2}):(?P<s>\d{2}\.\d+):\s'
+
+      # MUST capture `scene`. Believed to be: Switched to scene 'Name'
+      # Studio-mode preview switches may log differently; if a stream shows
+      # scene changes that never happened, that is the first thing to suspect.
+      scene_switch: "Switched to scene '(?P<scene>[^']*)'"
+
+      # The recording start/stop banners. Believed to be a run of '=' around
+      # the words. Deliberately loose about the '=' count, which has changed
+      # between OBS versions.
+      recording_start: '={2,}\s*Recording Start\s*={2,}'
+      recording_stop: '={2,}\s*Recording Stop\s*={2,}'
+
+      # OPTIONAL, and the only one that may be left empty. If OBS names the
+      # output file, a log holding several recordings can be matched to THIS
+      # master by filename -- exact, and needing no clock. Without it, a log
+      # with more than one recording in it is REFUSED rather than guessed,
+      # because picking wrong shifts every event by a constant.
+      #
+      # Set to a pattern capturing `path` once a real log shows how OBS writes
+      # it. Empty by default because guessing here would silently select the
+      # wrong recording, which is worse than refusing.
+      recording_path: ""
+
   embeddings:
     enabled: true
     host: http://127.0.0.1:11434

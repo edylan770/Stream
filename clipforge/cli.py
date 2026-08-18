@@ -31,6 +31,10 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "render": ("clipforge.render.cmd_render", "approved moments as postable clips (§8)"),
     "review": ("clipforge.review.cmd_review", "open the review UI"),
     "run": ("clipforge.pipeline.cmd_run", "run the extraction pipeline for a stream"),
+    "scene-events": (
+        "clipforge.extract.cmd_scene_events",
+        "check an OBS log against the (UNVALIDATED) scene patterns (§5.1 stage 11)",
+    ),
     "score": ("clipforge.score.cmd_score", "re-score a stream without touching extraction"),
     "signals": ("clipforge.extract.cmd_signals", "inspect extracted signal series"),
     "status": ("clipforge.pipeline.cmd_status", "show pipeline state for a stream"),

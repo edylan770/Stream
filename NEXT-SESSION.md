@@ -13,9 +13,12 @@ show it wrong). Then the spec sections you are touching.
 
 ## Where the build actually is
 
-**Phases 0, 1, 2, 3 and 4 of §15 are complete — bar `scene_events`, which is
-blocked on a real OBS log. 1524 tests pass** (`.venv\Scripts\python.exe -m pytest -q`,
-about 8 minutes), plus 3 that need `--asr`.
+**Phases 0, 1, 2, 3 and 4 of §15 are complete. 1547 tests pass**
+(`.venv\Scripts\python.exe -m pytest -q`, 25-30 minutes), plus 3 that need `--asr`.
+
+One caveat: `scene_events` is built but its OBS log parser has never seen a real
+log, and it fails silently when wrong. `clipforge scene-events --check "<log>"`
+settles it in one command — see HANDOFF.
 
 A recording goes all the way today:
 
@@ -28,9 +31,9 @@ normalised to −14 LUFS, and a hook line you chose.
 
 **Phase 3 was skipped deliberately at first** — it adds signals that change
 *which* moments surface, and §8's renderer was worth more — then built out in
-commits 31–38: pitch, laughter, derived signals, §4.4's input log, §6.4's gated
-negatives, §6.5's two profiles with the combined ranking, and §7.2's preview
-assets. Phases 5, 6 and 7 are unbuilt.
+commits 31–39: pitch, laughter, derived signals, §4.4's input log, §6.4's gated
+negatives, §6.5's two profiles with the combined ranking, §7.2's preview assets
+and `scene_events`. Phases 5, 6 and 7 are unbuilt.
 
 `git log --format='%s%n%n%b'` is the real archive; every deviation is argued
 there. Three worth knowing before touching anything:

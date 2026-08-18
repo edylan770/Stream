@@ -17,11 +17,14 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 
 ## Status
 
-**Phases 0, 1, 2 and 4 of §15 are complete, and Phase 3 is all but done.**
-Phase 3 was originally skipped by choice — §8's renderer is what turns an
-approved moment into something postable, where Phase 3 only changes *which*
-moments surface — and was then built out across commits 31–38. Only
-`scene_events` remains. Phases 5, 6 and 7 are not started.
+**Phases 0, 1, 2, 3 and 4 of §15 are complete.** Phase 3 was originally skipped
+by choice — §8's renderer is what turns an approved moment into something
+postable, where Phase 3 only changes *which* moments surface — and was then
+built out across commits 31–39. Phases 5, 6 and 7 are not started.
+
+One caveat on that "complete": **`scene_events` is built but its OBS log parser
+has never seen a real log** and fails silently when wrong. See "Still missing"
+below for the one command that settles it.
 
 **A recording can now go all the way**: register → run → review → render →
 hook, ending in a 1080×1920 MP4 with burned-in captions, normalised audio and
@@ -80,13 +83,13 @@ Phase 2.
 | 35 | `fbb039a` | §4.4's input log, and why a gap in it is not a zero |
 | 36 | `8c37ac7` | §6.4's gated negatives, and a penalty that removes nothing |
 | 37 | `4a5fca1` | §6.5's two profiles, and a combined ranking that agrees exactly |
-| 38 | *this* | §7.2's preview assets — **§7.3's autoplay is real**; §7.2's own preset is 9.5× too slow |
+| 38 | `3188777` | §7.2's preview assets — **§7.3's autoplay is real**; §7.2's own preset is 9.5× too slow |
+| 39 | *this* | `scene_events` — **Phase 3 complete**, and the one unvalidated parser in the project |
 
-1524 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
-The suite takes roughly 8 minutes; `previews` and the fixture encodes are most of it.
+1547 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
-**What is not built, by design:** no `scene_events` (the last of Phase 3 — it needs a
-real OBS log, see below); no digests (Phase 5); no trends (Phase 6); no vision
+**What is not built, by design:** no digests (Phase 5); no trends (Phase 6); no vision
 (Phase 7).
 
 ---
@@ -127,24 +130,37 @@ amount of reading the spec.
 
 ### Still missing, and not asked for by any phase
 
-**`scene_events` is the one Phase 3 stage still unbuilt**, and it is blocked on a real
-OBS log rather than on effort. There is no OBS on the build machine
-(`%APPDATA%\obs-studio` does not exist), so the log format cannot be checked — and
-house rule 2 says measure rather than reason. Three things about it are already known
-and worth not re-deriving:
+**`scene_events` is built (commit 39) and UNVALIDATED.** There is no OBS on the build
+machine (`%APPDATA%\obs-studio` does not exist), so its regexes are transcribed from the
+documented log format and not one of them has met real text. **It is the only thing in
+the project in that state**, and it fails silently when wrong — zero events, which looks
+exactly like a session in which nobody switched scenes.
 
-- `register.find_capture_file` looks *beside the master* for `anchor.json`,
-  `markers.jsonl` and `input.jsonl`. OBS logs live in `%APPDATA%\obs-studio\logs\`,
-  so the stage needs a discovery path of its own.
-- **The log's timestamps are elapsed-since-OBS-launch, not epoch.** Converting them via
-  the log *filename* means a local wall clock with no timezone and a DST ambiguity —
-  precisely the constant-offset error §4.1 calls unrecoverable and A8 exists to prevent.
-  The fix is to never touch a wall clock: the log contains its own recording-start line,
-  so the offset comes from inside the file.
-- It is low value by the spec's own account (§16 rejects scene changes as a scorer;
-  §9.3 makes them tie-breaker #4 of 4) and, unlike the marker and input logs, **OBS keeps
-  its logs whether or not we ask** — so nothing is lost by building it after the first
-  real stream.
+**What to do with it, in full, next time you are at the streaming PC:**
+
+```bash
+clipforge scene-events --check "%APPDATA%\obs-studio\logs\<any log>.txt"
+```
+
+That prints which patterns fired, the share of lines carrying a parseable timestamp, the
+recording spans found, the scene timeline, and every line mentioning a scene or a
+recording that no pattern claimed. **Send back that report, not the log** — OBS logs
+carry machine paths, hardware details and sometimes stream URLs. Then:
+
+1. Fix any dead pattern in `extract.scene_events.patterns` — the only place in the
+   codebase with a regex for OBS's text.
+2. Drop the log into `tests/fixtures/obs_logs/` (redacted if you like; only the
+   timestamps, scene lines and recording banners are read). That directory is
+   parametrized, so it is covered with no test changes. Delete the `*-UNVALIDATED.txt`
+   files once a real one is in there.
+3. Move the `scene_events` rows in `spec/GUESSES.md` from **arbitrary** to **grounded**
+   and drop the banner from `obs_log.py`'s docstring.
+
+Attach a log to a stream with `clipforge register --obs-log <file> --force`. It is low
+value by the spec's own account (§16 rejects scene changes as a scorer; §9.3 makes them
+tie-breaker #4 of 4), and unlike the marker and input logs **OBS keeps its logs whether
+or not we ask** — so nothing was lost by building it before the format was known, and
+nothing is lost by leaving it unvalidated until there is a stream to try it on.
 
 Otherwise nothing. **§13.2's backup is built** (commits 29/29a), **§7.3's nudge keys are
 built** (commit 30, closing GUESSES gap 1) and **§7.2's preview assets are built**
@@ -371,6 +387,61 @@ looks correct and is not.
   review link is: rendering needs approved moments, and nothing can be approved
   before there are candidates. Otherwise the operator's first render is an
   error message.
+
+**Scene events (Phase 3, §5.1 stage 11) — BUILT BLIND, AND SAYS SO**
+
+- **No OBS log has ever been seen by this code**, so every regex in
+  `extract.scene_events.patterns` is transcribed from the documented format and
+  **none is validated**. This is a different kind of guess from everything else
+  in GUESSES: those are numbers that might be badly chosen, this is a pattern
+  that may not match at all — and a pattern that does not match produces zero
+  events, silently, looking exactly like a session with no scene switches.
+- **The whole correction path is one command.**
+  `clipforge scene-events --check "<log>"` prints which patterns fired, the
+  share of lines with a parseable timestamp, the recording spans found, the
+  scene timeline, and every line mentioning a scene or a recording that no
+  pattern claimed. It takes a FILE rather than a stream id so it runs on the
+  streaming PC before anything is registered, and it prints a report so the
+  *report* can be sent back rather than the log — OBS logs carry machine paths,
+  hardware details and sometimes stream URLs.
+- **Every regex lives in one config block and nowhere else in the codebase.**
+  Fixing the parser is a YAML edit in `extract.scene_events.patterns`.
+- **`tests/fixtures/obs_logs/` is parametrized.** Dropping a real log in there
+  is the entire integration step — no test changes. A log with an
+  `.expected.json` beside it gets exact span assertions; one without still has
+  to parse. The two shipped logs are named `*-UNVALIDATED.txt` and their first
+  line says they have never been near an OBS install.
+- **NO WALL CLOCK IS REACHABLE FROM THE PARSER, enforced structurally.**
+  `t = elapsed(scene line) − elapsed(recording start)`, both read from inside
+  the same file. Reading the log's *filename* — which carries a local timestamp
+  and is the obvious route — would drag in a timezone and a DST discontinuity,
+  wrong by an hour twice a year with nothing downstream able to notice: §4.1's
+  unrecoverable-offset class, and A8's reason for existing. A test parses
+  `obs_log.py`'s AST and asserts it imports no `datetime`, `time`, `calendar`
+  or `zoneinfo`, so this is a property of the module rather than a habit.
+- **A log holding several recordings with nothing to tell them apart is
+  REFUSED, not guessed.** One OBS session can start and stop recording
+  repeatedly. The span whose logged output path ends with the master's filename
+  wins; failing that, the only span wins; failing that, the stage defers with a
+  message naming the fix. `patterns.recording_path` ships EMPTY for the same
+  reason — guessing it would silently select the wrong recording, which is worse
+  than the refusal it would replace.
+- **No auto-discovery from `%APPDATA%\obs-studio\logs`**, for the same reason:
+  selecting the right log needs the wall clock above. `register --obs-log <path>`
+  is explicit, and the beside-the-master fallback is `obs-log.txt` **exactly** —
+  a `*.txt` glob there would claim any stray notes file.
+- **Scenes are stored as SPANS** (`t` .. `t_end`), the shape commit 36 settled
+  for `menu_screen`. The scene already up when recording began runs from t=0:
+  OBS logs a switch when it happens, not when recording starts, so dropping it
+  would leave the opening of every stream with no scene at all.
+- **`scene_change` carries no profile weight**, per §16 ("rejected as a
+  scorer... chapter-boundary tie-breaker only"), and a test asserts it.
+- **Noted and deliberately not built:** a scene named "BRB" or "Starting Soon"
+  is exactly §6.4's `menu_screen` case with no Phase 7 vision needed —
+  `score/gates.py` already reads `menu_screen` events and is inert only because
+  nothing writes them. Wiring scene names to that gate would be scoring on a
+  parser that has never seen a real log, which C5 and §16 both forbid. Revisit
+  once `--check` has run against real text.
 
 **Preview assets (Phase 3, §7.2)**
 

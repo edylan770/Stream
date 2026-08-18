@@ -180,7 +180,10 @@ STAGE_LIST: list[StageSpec] = [
         name="scene_events",
         summary="parse OBS log -> events",
         phase=3,
-        requires=("register_stream",),
+        # `probe` as well as registration: scene spans are clipped to the
+        # recording's length, which needs the duration.
+        requires=("register_stream", "probe"),
+        module="clipforge.extract.scene_events",
     ),
     StageSpec(
         name="vision",

@@ -1,0 +1,21 @@
+{
+  "why": "Ground truth for the log of the same name. See the sibling .expected.json for why these live beside the log rather than in the test file.",
+  "covers": "the branch where a log holds TWO recordings and nothing names the master, so select_recording must REFUSE rather than pick one - a wrong pick offsets every event by a constant and nothing downstream can detect that",
+
+  "recordings": 2,
+  "select_recording": "ambiguous",
+
+  "note_on_first_span": "The scene in force when recording began was selected at elapsed 20.5s, BEFORE the recording-start line at 30.0s. It must still appear, running from t=0 - OBS logs a switch when it happens, not when recording begins, so dropping it would leave the opening of every stream with no scene at all.",
+  "recording_index_for_spans": 0,
+  "recording": {
+    "start_elapsed": 30.0,
+    "stop_elapsed": 630.0
+  },
+  "duration_s": 600.0,
+  "spans": [
+    {"t": 0.0, "t_end": 30.5, "scene": "Starting Soon", "previous": null},
+    {"t": 30.5, "t_end": 330.0, "scene": "Gameplay", "previous": "Starting Soon"},
+    {"t": 330.0, "t_end": 450.25, "scene": "BRB", "previous": "Gameplay"},
+    {"t": 450.25, "t_end": 600.0, "scene": "Gameplay", "previous": "BRB"}
+  ]
+}
