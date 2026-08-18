@@ -16,13 +16,14 @@ ratings are carried onto the new generation by time overlap.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
 
 from clipforge import db, signals
 from clipforge.pipeline.context import StageContext
+from clipforge.score import combined as combined_score
 from clipforge.score import derived, features, gates, grid, kernels, windows
 
 #: §5.4.1 continuous signals live in `signal_series`; §5.4.2 events live in
@@ -44,6 +45,19 @@ class ScoreResult:
     inherited_ratings: int = 0
     replaced_generation: bool = False
     missing_weights: list[str] = field(default_factory=list)
+    #: §6.5 runs a set. `calibration` and `missing_weights` stay the primary's,
+    #: because everything that reads one profile still legitimately wants one.
+    calibrations: dict = field(default_factory=dict)
+    missing_by_profile: dict = field(default_factory=dict)
+    #: §6.5's combined ranking against the primary's — how much the combined
+    #: section actually differs from the list under it. Empty when one profile
+    #: runs, because a ranking cannot disagree with itself.
+    rank_agreement: dict = field(default_factory=dict)
+    #: How many moments each combination of profiles found. The complement to
+    #: `rank_agreement`: two profiles can order the same moments identically and
+    #: still disagree about which moments there ARE, and §6.2 step 8's merge is
+    #: what turns the second answer into candidates.
+    found_by: dict = field(default_factory=dict)
     #: §6.4. `penalty_shares` is the fraction of the stream each negative held
     #: down; `gate_reasons` says why a negative was not evaluated at all, which
     #: is a different thing from "it never fired" and must not read as one.
@@ -93,10 +107,58 @@ def gather_raw(
     return raw, units
 
 
-def build_tracks(
-    ctx: StageContext, timeline: np.ndarray
-) -> tuple[list[features.SignalTrack], list[str], dict[str, np.ndarray]]:
-    """Every signal, resampled and normalized onto the grid.
+@dataclass
+class Pool:
+    """Everything a scoring run computes ONCE, before any profile is applied.
+
+    §6.5 runs two profiles over one stream, and the only thing that differs
+    between them is the weights. The z-scores, the derived signals, the event
+    kernels and §6.4's gates are all profile-independent — so computing them per
+    profile would re-read every BLOB and recompute every rolling z-score for a
+    stage §6.1 promises is free.
+
+    The raw arrays are kept alongside the normalised ones because §6.4's gates
+    read them: "audio energy below its rolling baseline" is a statement about
+    dB, not about a z-score.
+    """
+
+    ctx: StageContext
+    timeline: np.ndarray
+    raw: dict[str, np.ndarray]
+    units: dict[str, str]
+    events: dict[str, list[float]]
+    baseline_samples: int
+    _z: dict[str, features.SignalTrack] = field(default_factory=dict)
+    _kernels: dict[str, np.ndarray] = field(default_factory=dict)
+
+    def continuous(self, name: str, weight: float) -> features.SignalTrack:
+        """A z-scored track, computed once and re-weighted per profile."""
+        if name not in self._z:
+            raw = self.raw[name]
+            z, baseline, _ = grid.rolling_zscore(
+                raw, self.baseline_samples, std_floor_for(self.ctx.cfg, name)
+            )
+            self._z[name] = features.SignalTrack(
+                name=name, values=z, weight=0.0, is_event=False,
+                baseline=baseline, raw=raw, unit=self.units.get(name, "dB"),
+            )
+        return replace(self._z[name], weight=float(weight))
+
+    def event(self, name: str, weight: float) -> features.SignalTrack:
+        if name not in self._kernels:
+            self._kernels[name] = kernels.for_kind(
+                name, self.timeline, list(self.events.get(name, [])), self.ctx.cfg
+            )
+        return features.SignalTrack(
+            name=name, values=self._kernels[name], weight=float(weight), is_event=True,
+        )
+
+    def has(self, name: str) -> bool:
+        return name in self.raw or name in self.events or name in EVENT_SOURCE_KINDS
+
+
+def build_pool(ctx: StageContext, timeline: np.ndarray) -> Pool:
+    """Every signal and event this stream has, on the grid, unweighted.
 
     Continuous signals are z-scored (§6.2 step 3); event kernels are not. That
     asymmetry is deliberate and is what makes §6.5's weights comparable: both
@@ -107,21 +169,7 @@ def build_tracks(
     stored ones before anything is weighted, so the profile lookup and A9's
     weight-0 sweep both see them with no special case. §6.2 puts step 5's
     composites before step 6's weighting for the same reason.
-
-    The raw pool is returned as well as the tracks. §6.4's gates read the
-    *un-normalised* arrays — "audio energy below its rolling baseline" is a
-    statement about dB, not about a z-score — and loading every BLOB a second
-    time to get them back would be the one avoidable cost in a stage §6.1
-    promises is free.
     """
-    profile = ctx.cfg.profile
-    baseline_samples = grid.window_samples(
-        ctx.cfg.get("score.rolling_baseline_window_s"), ctx.cfg.get("score.score_grid_hz")
-    )
-
-    tracks: list[features.SignalTrack] = []
-    missing: list[str] = []
-
     raw_values, units = gather_raw(ctx, timeline)
     events = load_events(ctx)
 
@@ -135,24 +183,30 @@ def build_tracks(
     for kind, times in derived_events.items():
         events.setdefault(kind, list(times))
 
-    def continuous(name: str, weight: float) -> features.SignalTrack:
-        raw = raw_values[name]
-        z, baseline, _ = grid.rolling_zscore(
-            raw, baseline_samples, std_floor_for(ctx.cfg, name)
-        )
-        return features.SignalTrack(
-            name=name, values=z, weight=weight, is_event=False,
-            baseline=baseline, raw=raw, unit=units.get(name, "dB"),
-        )
+    return Pool(
+        ctx=ctx, timeline=timeline, raw=raw_values, units=units, events=events,
+        baseline_samples=grid.window_samples(
+            ctx.cfg.get("score.rolling_baseline_window_s"),
+            ctx.cfg.get("score.score_grid_hz"),
+        ),
+    )
+
+
+def tracks_for(pool: Pool, profile) -> tuple[list[features.SignalTrack], list[str]]:
+    """One profile's weighted tracks, plus the weights nothing produced.
+
+    Called once per §6.5 profile over the same pool, so a second profile costs
+    a dictionary lookup and a multiply rather than a second pass over the
+    database.
+    """
+    tracks: list[features.SignalTrack] = []
+    missing: list[str] = []
 
     for name, weight in profile.weights.items():
-        if name in raw_values:
-            tracks.append(continuous(name, float(weight)))
-        elif name in events or name in EVENT_SOURCE_KINDS:
-            kernel = kernels.for_kind(name, timeline, events.get(name, []), ctx.cfg)
-            tracks.append(features.SignalTrack(
-                name=name, values=kernel, weight=float(weight), is_event=True,
-            ))
+        if name in pool.raw:
+            tracks.append(pool.continuous(name, float(weight)))
+        elif name in pool.events or name in EVENT_SOURCE_KINDS:
+            tracks.append(pool.event(name, float(weight)))
         else:
             missing.append(name)
 
@@ -165,32 +219,19 @@ def build_tracks(
     # speech_rate and swear_density are the first that exist without being
     # weighted, and they would have been stored, declared in feature_schema.yaml,
     # and written into every vector as null — with §17's tuning input silently
-    # absent.
+    # absent. The same was true of stored EVENTS until commit 36.
     #
     # Weight 0 contributes exactly nothing to the composite (`composite_of`
     # skips these outright), so no score moves.
     weighted = {track.name for track in tracks}
-    for name in raw_values:
+    for name in pool.raw:
         if name not in weighted:
-            tracks.append(continuous(name, 0.0))
-
-    # ...AND THE SAME IS TRUE OF STORED EVENTS. This loop used to read
-    # `if kind not in weighted and kind in derived_events`, which covered the
-    # events this scoring run had just derived and nothing else — so
-    # `phrase_excitement` and `phrase_repeat`, which `phrase_detect` writes to
-    # the events table, were null in every feature vector. Exactly the hole A9's
-    # sweep exists to close, one table over, and invisible only because
-    # `extract.whisperx.enabled` ships false so no stream has ever had them.
-    #
-    # Weight 0, so `composite_of` skips it and no score can move.
-    for kind, times in events.items():
+            tracks.append(pool.continuous(name, 0.0))
+    for kind in pool.events:
         if kind not in weighted:
-            tracks.append(features.SignalTrack(
-                name=kind, weight=0.0, is_event=True,
-                values=kernels.for_kind(kind, timeline, list(times), ctx.cfg),
-            ))
+            tracks.append(pool.event(kind, 0.0))
 
-    return tracks, missing, raw_values
+    return tracks, missing
 
 
 def load_events(ctx: StageContext) -> dict[str, list[float]]:
@@ -268,6 +309,39 @@ def smooth(composite: np.ndarray, sigma_s: float, grid_hz: float) -> np.ndarray:
 # --------------------------------------------------------------------------
 
 
+@dataclass
+class ProfileRun:
+    """One profile's pass through §6.2 step 6, before anything is merged."""
+
+    profile: object
+    tracks: list[features.SignalTrack]
+    smoothed: np.ndarray
+    calibration: windows.Calibration
+    built: list[windows.Window]
+    missing: list[str]
+    #: Each window's score as a share of this profile's best. Raw composites are
+    #: not comparable across profiles — entertainment sums 20.7 of weight and
+    #: gameplay 21.0, of which 4.2 has a producer — so every cross-profile
+    #: comparison (which peak wins a merged moment) uses these instead.
+    normalised: np.ndarray = field(default_factory=lambda: np.zeros(0))
+
+
+@dataclass
+class Moment(windows.Window):
+    """A merged candidate: one row, every profile's opinion of it (§3.2).
+
+    Subclasses `Window` so §6.6's spacing, §6.3's word snapping and the peak
+    bookkeeping all apply unchanged — a moment IS a window, with the other
+    profiles' scores attached.
+    """
+
+    scores: dict[str, float] = field(default_factory=dict)
+    found_by: tuple[str, ...] = ()
+    #: The normalised score of the profile whose peak this moment took, so a
+    #: later profile only wins the peak by being more confident about it.
+    best_normalised: float = 0.0
+
+
 def score_stream(ctx: StageContext) -> ScoreResult:
     row = ctx.stream
     duration = row["duration_s"]
@@ -286,65 +360,241 @@ def score_stream(ctx: StageContext) -> ScoreResult:
             f"moment'. Fine for a test fixture; meaningless as a tuning signal."
         )
 
-    tracks, missing, raw_values = build_tracks(ctx, timeline)
-    if not tracks:
+    pool = build_pool(ctx, timeline)
+
+    # §6.4's gates read signals and events and never weights, so they are
+    # computed once and the same two arrays are subtracted from every profile's
+    # composite. commit 36 wrote `gates.compute` to make that true.
+    penalties, gate_reasons = gates.compute(
+        pool.raw, timeline, ctx.cfg,
+        menu_intervals=load_intervals(ctx.conn, ctx.stream_id, gates.MENU),
+    )
+    penalty_tracks = gates.as_tracks(penalties)
+
+    # §6.2 step 6: "FOR each profile in {entertainment, gameplay}".
+    runs = [
+        _run_profile(ctx, pool, profile, penalties, penalty_tracks, timeline,
+                     grid_hz, float(duration))
+        for profile in ctx.cfg.profiles
+    ]
+    if not runs[0].tracks:
         raise ScoreError(
             f"profile {ctx.cfg.profile.name!r} weights {sorted(ctx.cfg.profile.weights)} but none "
             f"of those signals exist for this stream. Has extraction run?"
         )
 
-    # §6.2 step 6, in the order step 6 lists it: sum, THEN apply §6.4's gated
-    # negatives, THEN smooth. Nothing here is per-profile — the gates read
-    # signals and events, never weights — so §6.5's second profile subtracts
-    # these same two arrays from its own composite.
-    raw_composite = composite_of(tracks, timeline.size)
-    penalties, gate_reasons = gates.compute(
-        raw_values, timeline, ctx.cfg,
-        menu_intervals=load_intervals(ctx.conn, ctx.stream_id, gates.MENU),
+    # §6.2 step 8, with step 7 folded into it: a moment cannot carry both
+    # profiles' scores until the windows that found it have been merged.
+    moments = merge_across_profiles(runs)
+    _clamp_merged(ctx, moments, float(duration))
+    moments = snap_windows(ctx, moments, float(duration))
+    agreement = _score_moments(ctx, runs, moments)
+
+    # §6.6 AFTER the merge, which §6.2 step 6 does not say. Spacing exists to
+    # stop "ten candidates from one 90-second stretch" in THE LIST THE OPERATOR
+    # REVIEWS, and after step 8 that is one merged list — penalising per profile
+    # first would let two profiles each contribute their own suppressed-but-kept
+    # candidate into the same thirty seconds, which is the outcome §6.6 forbids.
+    # With one profile the merge is a no-op and this is exactly what it was.
+    factor = float(ctx.cfg.get("score.spacing.factor"))
+    ranked = windows.apply_spacing(
+        moments,
+        window_s=float(ctx.cfg.get("score.spacing.window_s")),
+        factor=factor,
+        mode=str(ctx.cfg.get("score.spacing.mode")),
     )
+    for moment in ranked:
+        if moment.suppressed_by is not None:
+            # The same factor on all three, so §7.4's three rankings cannot
+            # disagree about which moments were suppressed.
+            moment.scores = {k: v * factor for k, v in moment.scores.items()}
+
+    result = write_candidates(ctx, ranked, runs)
+    result.gate_reasons = gate_reasons
+    result.penalty_shares = {p.name: p.share for p in penalties}
+    result.rank_agreement = agreement
+    result.found_by = _found_by_counts(ranked)
+    result.counterfactual = counterfactual(
+        ctx, composite_of(runs[0].tracks, timeline.size), penalties, grid_hz,
+        float(duration),
+    )
+    return result
+
+
+def _run_profile(
+    ctx: StageContext, pool: Pool, profile, penalties, penalty_tracks,
+    timeline: np.ndarray, grid_hz: float, duration: float,
+) -> ProfileRun:
+    """§6.2 step 6 for one profile: weight, penalise, smooth, peak, expand."""
+    tracks, missing = tracks_for(pool, profile)
+
+    # §6.2 step 6, in the order step 6 lists it: sum, THEN apply §6.4's gated
+    # negatives, THEN smooth.
+    raw_composite = composite_of(tracks, timeline.size)
     penalised = gates.apply(raw_composite, penalties)
 
     # After `composite_of`, never before it: a penalty track carries a negative
-    # weight, so including it in the sum would apply the penalty twice. It is
+    # weight, so including it in the sum would apply the penalty twice. They are
     # appended so that A9's vector records the gate level under the key
     # `feature_schema.yaml` already declares, and so the breakdown still adds up
     # to the composite it is explaining.
-    tracks.extend(gates.as_tracks(penalties))
+    tracks = tracks + list(penalty_tracks)
 
     smoothed = smooth(penalised, ctx.cfg.get("score.smoothing_sigma_s"), grid_hz)
 
-    calibration = calibrate_peaks(ctx, smoothed, float(duration))
+    calibration = calibrate_peaks(ctx, smoothed, duration)
     peaks = windows.find(smoothed, calibration.prominence,
                          float(ctx.cfg.get("score.min_peak_value")))
     peaks = windows.merge_peaks(smoothed, peaks,
                                 float(ctx.cfg.get("score.window.hysteresis_enter")))
-
     built = windows.build(
         smoothed, timeline, peaks,
         exit_ratio=float(ctx.cfg.get("score.window.hysteresis_exit")),
         min_window_s=float(ctx.cfg.get("score.window.min_window_s")),
         max_window_s=float(ctx.cfg.get("score.window.max_window_s")),
-        duration_s=float(duration),
+        duration_s=duration,
     )
-    built = snap_windows(ctx, built, float(duration))
-
-    # §6.2 step 8 — "merge overlapping windows across profiles" — is a no-op in
-    # Phase 1: there is one profile, same-bump peaks were already merged by
-    # hysteresis_enter, and distinct overlapping windows are §6.6's business.
-    ranked = windows.apply_spacing(
-        built,
-        window_s=float(ctx.cfg.get("score.spacing.window_s")),
-        factor=float(ctx.cfg.get("score.spacing.factor")),
-        mode=str(ctx.cfg.get("score.spacing.mode")),
+    return ProfileRun(
+        profile=profile, tracks=tracks, smoothed=smoothed, calibration=calibration,
+        built=built, missing=missing,
+        normalised=combined_score.normalise(np.array([w.score for w in built])),
     )
 
-    result = write_candidates(ctx, ranked, tracks, smoothed, calibration, missing)
-    result.gate_reasons = gate_reasons
-    result.penalty_shares = {p.name: p.share for p in penalties}
-    result.counterfactual = counterfactual(
-        ctx, raw_composite, penalties, grid_hz, float(duration)
+
+def _clamp_merged(ctx: StageContext, moments: list[Moment], duration_s: float) -> None:
+    """§6.3's bounds again, because a union can breach them.
+
+    Each profile clamped its own windows to `max_window_s`, but two windows that
+    overlap by a second and extend in opposite directions union to almost twice
+    that — and §6.2 step 8 says "merge overlapping windows" without exempting
+    the result from §6.3's range. A 110-second candidate is not a moment, it is
+    two, and §7.1 reviews these at four seconds each.
+
+    Clamped around the winning peak (`expand_around_peak`), which is the only
+    variant that cannot move the peak outside its own window — §3.2's
+    `CHECK (t_peak BETWEEN t_start AND t_end)` refuses that outright. Logged
+    when it fires, because it is the merge undoing part of its own work.
+    """
+    min_window = float(ctx.cfg.get("score.window.min_window_s"))
+    max_window = float(ctx.cfg.get("score.window.max_window_s"))
+
+    clamped = 0
+    for moment in moments:
+        if moment.duration_s <= max_window:
+            continue
+        moment.t_start, moment.t_end = windows.clamp(
+            moment.t_start, moment.t_end, moment.t_peak,
+            min_window_s=min_window, max_window_s=max_window, duration_s=duration_s,
+        )
+        clamped += 1
+
+    if clamped:
+        ctx.log(
+            f"    {clamped} merged window(s) exceeded max_window_s and were "
+            f"clamped back around their peak"
+        )
+
+
+def _overlap(moment: "Moment", window: windows.Window) -> float:
+    return min(moment.t_end, window.t_end) - max(moment.t_start, window.t_start)
+
+
+def merge_across_profiles(runs: list[ProfileRun]) -> list[Moment]:
+    """§6.2 step 8: "merge overlapping windows across profiles".
+
+    ACROSS profiles, never within one. Two overlapping windows found by the SAME
+    profile are §6.6's business — that has been the rule since Phase 1, and
+    merging them here would silently change what a single-profile run produces.
+    So a moment absorbs at most one window per profile, and a second gameplay
+    window over the same stretch becomes its own moment for spacing to suppress.
+
+    C2 decides the boundaries: `t_start` is the earliest and `t_end` the latest,
+    because expanding is the direction in which a false positive is cheap.
+    `t_peak` comes from the profile with the higher NORMALISED score — raw
+    composites are not comparable across profiles, since one sums 20.7 of weight
+    and the other 21.0 of which 4.2 has a producer.
+    """
+    primary = runs[0]
+    moments = [
+        Moment(index=w.index, t_peak=w.t_peak, t_start=w.t_start, t_end=w.t_end,
+               value=w.value, score=w.score, prominence=w.prominence,
+               found_by=(primary.profile.name,),
+               best_normalised=float(primary.normalised[i]))
+        for i, w in enumerate(primary.built)
+    ]
+
+    for run in runs[1:]:
+        for i, window in enumerate(run.built):
+            here = float(run.normalised[i])
+            open_moments = [
+                m for m in moments
+                if run.profile.name not in m.found_by and _overlap(m, window) > 0
+            ]
+            if not open_moments:
+                moments.append(Moment(
+                    index=window.index, t_peak=window.t_peak,
+                    t_start=window.t_start, t_end=window.t_end,
+                    value=window.value, score=window.score,
+                    prominence=window.prominence,
+                    found_by=(run.profile.name,), best_normalised=here,
+                ))
+                continue
+
+            best = max(open_moments, key=lambda m: _overlap(m, window))
+            best.t_start = min(best.t_start, window.t_start)
+            best.t_end = max(best.t_end, window.t_end)
+            best.found_by = (*best.found_by, run.profile.name)
+            if here > best.best_normalised:
+                best.index, best.t_peak = window.index, window.t_peak
+                best.value, best.prominence = window.value, window.prominence
+                best.best_normalised = here
+
+    return sorted(moments, key=lambda m: m.t_peak)
+
+
+def _score_moments(ctx: StageContext, runs: list[ProfileRun],
+                   moments: list[Moment]) -> dict:
+    """§6.2 step 7: every profile's score for every merged moment, then §6.5.
+
+    Each column is that profile's smoothed composite AT THE MERGED PEAK, not the
+    score of whichever window it happened to find. The row describes one moment,
+    and every column has to be describing the same instant or the two numbers
+    are not comparable at all.
+    """
+    for moment in moments:
+        moment.scores = {
+            run.profile.name: float(run.smoothed[moment.index]) for run in runs
+        }
+
+    if not moments:
+        return {}
+
+    primary = runs[0].profile.name
+    entertainment = np.array([m.scores[primary] for m in moments])
+
+    if len(runs) == 1:
+        # §6.5's own "casual/comedy: entertainment only". Combined mirrors the
+        # single profile at its raw scale, which is exactly what it has meant
+        # since Phase 1 — normalising here would rescale every stored score for
+        # nothing, since a single ranking cannot disagree with itself.
+        for moment, value in zip(moments, entertainment, strict=True):
+            moment.score = float(value)
+        return {}
+
+    secondary = runs[1].profile.name
+    gameplay = np.array([m.scores[secondary] for m in moments])
+    values = combined_score.combined(
+        combined_score.normalise(entertainment),
+        combined_score.normalise(gameplay),
+        float(ctx.cfg.get("score.combined.alpha")),
     )
-    return result
+    for moment, value in zip(moments, values, strict=True):
+        moment.score = float(value)
+
+    return combined_score.rank_agreement(
+        values, entertainment,
+        top_n=int(ctx.cfg.get("review.sections.combined_top_n")),
+    )
 
 
 def counterfactual(
@@ -478,12 +728,32 @@ def calibrate_peaks(ctx: StageContext, composite: np.ndarray, duration_s: float)
 
 
 def write_candidates(
-    ctx: StageContext, ranked: list[windows.Window], tracks: list[features.SignalTrack],
-    smoothed: np.ndarray, calibration: windows.Calibration, missing: list[str],
+    ctx: StageContext, ranked: list[Moment], runs: list[ProfileRun],
 ) -> ScoreResult:
+    """One row per moment, carrying every profile's score (§3.2).
+
+    §3.2 gives `candidates` three score columns rather than three rows, and
+    §7.4's four sections are orderings over one list — so a moment is one row,
+    `profile` holds the profile-SET name, and
+    `UNIQUE (stream_id, generation, profile, t_peak)` stays valid with no
+    migration.
+
+    THE BREAKDOWN IS THE PRIMARY PROFILE'S, AND ONLY ITS. `contributing_signals`
+    is weight × value, so it is profile-dependent and a two-profile row has two
+    of them. §6.5 calls entertainment "the primary profile"; before Phase 7 the
+    gameplay breakdown is four rows (`marker_definite`, `mic_rms`, two laughs)
+    that can be read straight off the entertainment one, and storing both would
+    change a payload shape `review/queries.py`, `clipforge score --list` and the
+    review UI's `?` panel all parse. All three SCORES go into the breakdown's
+    context instead, so the panel can explain the number in the score box. A
+    per-profile breakdown is what to build when the gameplay ranking becomes
+    worth explaining, which is Phase 7.
+    """
     config_version = ctx.cfg.version
-    profile = ctx.cfg.profile.name
+    profile_set = ctx.cfg.profile_set
     schema = ctx.cfg.feature_schema
+    primary = runs[0]
+    secondary = runs[1].profile.name if len(runs) > 1 else None
 
     current = ctx.conn.execute(
         "SELECT generation, config_version FROM candidates "
@@ -517,18 +787,30 @@ def write_candidates(
                 "UPDATE candidates SET is_current = 0 WHERE stream_id = ?", (ctx.stream_id,)
             )
 
-        inserted: list[tuple[int, windows.Window]] = []
-        for window in ranked:
+        inserted: list[tuple[int, Moment]] = []
+        for moment in ranked:
+            entertainment = moment.scores[primary.profile.name]
+            # 0.0, not the entertainment score, when §6.5's second profile is
+            # not running: an invented number in that column would be
+            # indistinguishable from a measured one five months from now.
+            gameplay = moment.scores[secondary] if secondary else 0.0
+
             # feature_vector holds exactly the schema's keys — A9's value is
             # that Phase 1 and Phase 3 vectors have identical shape. The dB
             # context a human needs to read the breakdown goes with the
-            # breakdown.
-            vector = features.vector(schema, tracks, window.index)
+            # breakdown. Every value in it is a z-score or a kernel level, so it
+            # is the same whichever profile's tracks it is read from.
+            vector = features.vector(schema, primary.tracks, moment.index)
             detail = features.breakdown(
-                tracks, window.index, float(smoothed[window.index]), window.suppressed_by
+                primary.tracks, moment.index,
+                float(primary.smoothed[moment.index]), moment.suppressed_by,
             )
             explain = detail.to_json_dict()
-            explain.update(features.unweighted_context(tracks, window.index))
+            explain.update(features.unweighted_context(primary.tracks, moment.index))
+            explain["_score_entertainment"] = round(entertainment, 6)
+            explain["_score_gameplay"] = round(gameplay, 6)
+            explain["_score_combined"] = round(moment.score, 6)
+            explain["_found_by"] = "+".join(moment.found_by)
 
             cursor = ctx.conn.execute(
                 """
@@ -540,30 +822,28 @@ def write_candidates(
                 VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    ctx.stream_id, generation, profile,
-                    window.t_start, window.t_end, window.t_peak,
-                    # Phase 1 has one profile. The naive profile carries §6.5's
-                    # entertainment weights, so its score belongs in that column;
-                    # `profile` is what disambiguates. score_gameplay is 0.0
-                    # rather than a faked §6.5 product, and combined mirrors
-                    # entertainment because there is nothing to combine with.
-                    window.score, 0.0, window.score,
+                    ctx.stream_id, generation, profile_set,
+                    moment.t_start, moment.t_end, moment.t_peak,
+                    entertainment, gameplay, moment.score,
                     json.dumps(explain),
                     json.dumps(vector), schema.version, config_version,
                 ),
             )
-            inserted.append((int(cursor.lastrowid), window))
+            inserted.append((int(cursor.lastrowid), moment))
 
         inherited = _inherit_ratings(ctx, inserted, prior) if prior else 0
 
         ctx.conn.execute(
-            "UPDATE streams SET profile_used = ? WHERE id = ?", (profile, ctx.stream_id)
+            "UPDATE streams SET profile_used = ? WHERE id = ?", (profile_set, ctx.stream_id)
         )
 
     return ScoreResult(
-        generation=generation, profile=profile, config_version=config_version,
-        candidates=len(ranked), calibration=calibration, inherited_ratings=inherited,
-        replaced_generation=replacing, missing_weights=missing,
+        generation=generation, profile=profile_set, config_version=config_version,
+        candidates=len(ranked), calibration=primary.calibration,
+        calibrations={run.profile.name: run.calibration for run in runs},
+        inherited_ratings=inherited, replaced_generation=replacing,
+        missing_weights=primary.missing,
+        missing_by_profile={run.profile.name: run.missing for run in runs},
     )
 
 
@@ -631,7 +911,7 @@ def _iou(a_start: float, a_end: float, b_start: float, b_end: float) -> float:
 def params(ctx: StageContext) -> dict:
     return {
         "config_version": ctx.cfg.version,
-        "profile": ctx.cfg.profile.name,
+        "profile": ctx.cfg.profile_set,
         "signals": sorted(signals.kinds(ctx.conn, ctx.stream_id)),
         "events": ctx.conn.execute(
             "SELECT count(*) FROM events WHERE stream_id = ?", (ctx.stream_id,)
@@ -666,28 +946,90 @@ def run(ctx: StageContext) -> None:
         f"    {result.candidates} candidates, {verb} {result.generation}, "
         f"profile {result.profile} ({result.config_version})"
     )
-    ctx.log(
-        f"    prominence {result.calibration.prominence:.4f}, "
-        f"target {result.calibration.target_low}-{result.calibration.target_high}, "
-        f"{per_hour:.1f}/hour"
-    )
+    for name, calibration in result.calibrations.items():
+        ctx.log(
+            f"    {name:<14} prominence {calibration.prominence:.4f}, "
+            f"target {calibration.target_low}-{calibration.target_high}"
+        )
+        if not calibration.reached_target:
+            ctx.log(f"    note: {name} calibration did not reach the target — "
+                    f"{calibration.reason}")
+    ctx.log(f"    {per_hour:.1f} candidates/hour after the merge")
 
-    if not result.calibration.reached_target:
-        ctx.log(f"    note: calibration did not reach the target — {result.calibration.reason}")
     if result.inherited_ratings:
         ctx.log(f"    carried {result.inherited_ratings} operator rating(s) onto this generation")
-    if result.missing_weights:
-        ctx.log(
-            f"    note: profile weights {result.missing_weights} have no signal in this stream "
-            f"(expected in Phase 1 — those arrive in later phases)"
-        )
+    for name, missing in result.missing_by_profile.items():
+        if missing:
+            ctx.log(
+                f"    note: {name} weights {missing} have no signal in this stream "
+                f"(expected — those arrive in later phases)"
+            )
 
     _log_negatives(ctx, result)
+    _log_agreement(ctx, result)
 
     ctx.metric("candidates_per_hour_of_stream", round(per_hour, 3))
     ctx.metric("peak_prominence", round(result.calibration.prominence, 6),
                json.dumps({"reached_target": result.calibration.reached_target,
-                           "reason": result.calibration.reason}))
+                           "reason": result.calibration.reason,
+                           "by_profile": {name: c.prominence
+                                          for name, c in result.calibrations.items()}}))
+
+
+def _found_by_counts(moments: list[Moment]) -> dict:
+    counts: dict[str, int] = {}
+    for moment in moments:
+        counts["+".join(moment.found_by)] = counts.get("+".join(moment.found_by), 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _log_agreement(ctx: StageContext, result: ScoreResult) -> None:
+    """§6.5's combined ranking against the primary's — the number this phase
+    cannot answer for itself.
+
+    §6.5 justifies `score_combined` as the INTERSECTION of mechanics and
+    personality. Before Phase 7 only 20% of `gameplay`'s weight has a producer
+    and 71% of that is `marker_definite`, so the combined ranking may be an
+    expensive restatement of the entertainment one — and §7.4 puts it first, at
+    the top of the screen C4 calls the critical path.
+
+    `combined_rank_agreement` is an INVENTED metric name (§14's table has no row
+    for it), recorded on every run so the answer accumulates from the first real
+    stream rather than being argued about later.
+    """
+    if not result.rank_agreement:
+        return
+
+    rho = result.rank_agreement.get("spearman")
+    overlap = result.rank_agreement.get("top_n_overlap")
+    top_n = result.rank_agreement.get("top_n")
+    ctx.log(
+        f"    combined vs {list(result.calibrations)[0]}: "
+        f"rho {'—' if rho is None else f'{rho:+.3f}'}, "
+        f"top-{top_n} overlap {'—' if overlap is None else f'{100 * overlap:.0f}%'}"
+    )
+    if rho is not None and rho > 0.95:
+        ctx.log(
+            "    note: the two rankings are nearly identical, which is what §6.5's "
+            "combined section looks like before Phase 7 gives `gameplay` something "
+            "of its own to say"
+        )
+
+    # WHAT rho DOES NOT SAY, and it is half the answer: two profiles can order
+    # the same moments identically and still disagree about which moments there
+    # ARE. §6.2 step 8's merge is what turns the second kind of disagreement
+    # into candidates, so the counts travel with the correlation.
+    found = ", ".join(f"{count} by {names}" for names, count in result.found_by.items())
+    ctx.log(f"    moments: {found}")
+
+    ctx.metric(
+        "combined_rank_agreement",
+        round(float(rho), 6) if rho is not None else 0.0,
+        json.dumps({**result.rank_agreement,
+                    "spearman_defined": rho is not None,
+                    "profiles": list(result.calibrations),
+                    "found_by": result.found_by}),
+    )
 
 
 def _log_negatives(ctx: StageContext, result: ScoreResult) -> None:

@@ -185,12 +185,13 @@
           <button id="filter-toggle" class="btn btn--ghost"
                   title="Show only marker-anchored (m)">m</button>
         </div>
-        <!-- §7.4 asks for four sections: combined winners, entertainment,
-             gameplay, then marker-anchored as a safety net. Phase 1 has ONE
-             profile, so the list is genuinely flat and rendering four headers
-             would be a lie about what the numbers mean. -->
-        <p class="rail-note note">
-          One ranked list — §7.4's four sections need Phase 3's dual profiles.
+        <!-- §7.4's four sections are rendered from the payload, and only
+             when more than one §6.5 profile scored the stream. With one
+             profile there is no gameplay ranking and combined mirrors the
+             primary, so this note stands in for the headers instead. -->
+        <p id="rail-note" class="rail-note note" hidden>
+          One ranked list — this stream was scored with a single profile, so
+          §7.4's four sections would be four names for one ordering.
           <kbd>m</kbd> filters to marker-anchored.
         </p>
         <ol id="candidates" class="candidates"></ol>

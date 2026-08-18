@@ -28,7 +28,7 @@ as requiring empirical tuning, and the tuning input is
 
 | Parameter | Value | Confidence | Rationale | Falsified by |
 |---|---|---|---|---|
-| `score.profile` weights | `marker_definite 3.0`, `marker_maybe 1.5`, `mic_rms 1.0` | **plausible** | §6.5's `entertainment` values for exactly the signals that exist, unchanged so the scale does not shift under existing ratings when Phase 3 adds the rest | `signal_firing_rate_by_rating` showing a signal fires equally on rating-0 and rating-2 candidates — it is not discriminating and its weight is wrong |
+| `score.profiles` | `[entertainment, gameplay]` | see "Profiles and the combined score" below | §6.5's two real profiles as of commit 37. `naive.yaml` — the Phase 1 placeholder with three weights — stays reachable as `--profile naive` and is what every pre-Phase-3 generation was scored with | — |
 | `score.rolling_baseline_window_s` | `300` | **plausible** | §17's default. Long enough to span a game's loudness, short enough to follow energy drift over three hours | Long-term drift leaking into scores: candidates clustering in the loudest half-hour of a stream |
 | `score.zscore_std_floor` | `0.5` dB | **plausible** | NOT IN §17. A near-silent five minutes has σ≈0, so dither becomes z=50 and the quietest moment tops the stream. Coupled to `extract.rms.db_floor` | Quiet stretches producing candidates; or, too high, real quiet-room moments never scoring |
 | `score.smoothing_sigma_s` | `2.0` | **plausible** | §6.2 step 6's value | Peaks landing beside the moment rather than on it, or two adjacent moments merging into one |
@@ -49,7 +49,7 @@ as requiring empirical tuning, and the tuning input is
 | `score.events.default_sigma_s` | `3.0` | **plausible** | Non-marker events (kills, laughs, phrases) are point-in-time and their kernels should be narrower than a marker plateau | Composite peaks landing beside their event |
 | `score.events.combine` | `sum` | **plausible** | Three kills in eight seconds genuinely *is* stronger evidence than one — the opposite of markers | A single loud moment with many overlapping events outscoring a genuinely better one |
 | `score.rating_inherit_min_overlap` | `0.5` | **arbitrary** | Half a window felt like "the same moment". No evidence | Ratings failing to carry across a re-score (too high), or carrying onto a moment that is not the same one (too low). `render/selection.py` reads across generations precisely because this is unreliable |
-| `score.combined.alpha` | `0.5` | **plausible** | §17's default. Unused in Phase 1 — one profile exists | Whether combined-score winners are actually the best clips (§6.5) |
+| `score.combined.alpha` | `0.5` | **plausible** | §17's default. See "Profiles and the combined score" below — it is live as of commit 37 | Whether combined-score winners are actually the best clips (§6.5) |
 | `score.score_grid_hz` | `10.0` | **grounded** | DEVIATION from §6.2's 1 Hz. Rolling stats are cumulative-sum cheap, and 1 Hz quantises window edges to a whole second against §7.3's 0.5 s nudges | Nothing — strictly more information at negligible cost |
 
 ## Transcript and speech (Phase 2)
@@ -287,6 +287,90 @@ promises is free, rather than a re-extraction of the library.
 - **`overlap_speech` needs no model.** Recall was 100% against the manifest's own
   `overlap_windows`, and the entire imprecision is the hangover overrunning the
   authored end by 0.34 s. Zero firings across the 19.4 s of authored silence.
+
+## Profiles and the combined score (Phase 3, §6.5 / §7.4)
+
+Both weight sets are §6.5's own numbers, transcribed verbatim. That is the only
+defensible choice today — changing one before a single stream has been reviewed
+would replace the spec's guess with a worse-evidenced one — but it means every
+weight in the detector is **plausible** at best and none has been tuned.
+
+**How much of each profile has a producer**, which is what decides whether the
+combined score can be what §6.5 says it is:
+
+| Profile | total | live today | Phase 7 vision | needs §4.4's log | needs WhisperX |
+|---|---|---|---|---|---|
+| `entertainment` | 20.7 | **16.8 (81%)** | 0.4 (2%) | 0.2 (1%) | 3.3 (16%) |
+| `gameplay` | 21.0 | **4.2 (20%)** | 14.1 (67%) | 2.7 (13%) | 0 |
+
+`gameplay`'s four live signals are `marker_definite` 3.0, `mic_rms` 0.8 and the
+two laughs at 0.2 — **71% of its live weight is markers**, and all four are also
+in `entertainment`. So before Phase 7 it is a marker detector, and §6.5's
+"intersection of mechanics and personality" is an intersection with markers.
+
+**MEASURED on `fixture_long`, and it is exactly what that predicts:**
+
+    combined vs entertainment: rho +1.000, top-20 overlap 100%
+    moments: 1 by entertainment, 5 by entertainment+gameplay, 2 by gameplay
+
+The two profiles order the eight moments **identically**. They do not agree
+about which moments exist — three of the eight were found by one profile alone,
+which is §6.2 step 8's merge earning its place — and they do not produce the
+same scores (9.79 against 3.61 at the top, 3.58 against 3.84 at the bottom, so
+`gameplay` ranks the last three *above* where `entertainment` puts them). But
+the ordering is the same, so the section §7.4 puts first is currently a
+restatement of the section under it.
+
+Both numbers are written to `tool_metrics` on every run as
+`combined_rank_agreement` (an **INVENTED** name — §14 has no such row), with the
+`found_by` counts in its `meta`. Rho falling below 1.0 as vision lands is the
+observation that says the combined section has started earning its place.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `score.profiles` | `[entertainment, gameplay]` | **grounded** | §6.5: "Marvel Rivals streams: run **both** profiles plus combined." Its other two cases are one line each — `[entertainment]` for casual/comedy, `--profile naive` for a Phase 1 comparison. The removed singular `score.profile` is refused **by name** rather than by the `config_schema` bump, which cannot see it: that guard compares the merged value, and a `local.yaml` inherits it from the packaged defaults | Streaming something other than Marvel Rivals, which §6.5 already answers |
+| `entertainment` weights | §6.5 verbatim | **plausible** | The spec's own numbers for its own primary profile. A test compares the YAML against a table transcribed from §6.5, so a typo in either is a failure rather than a quietly different detector | `signal_firing_rate_by_rating` from `tool_metrics` (§14, §17): a signal firing equally on rating-0 and rating-2 candidates is not discriminating and its weight is wrong |
+| `gameplay` weights | §6.5 verbatim | **plausible**, and 80% inert | As above. Deliberately NOT rebalanced for the signals that happen to exist today: compensating now would bake this phase's gaps into the profile and have to be undone when vision lands | Same, plus `combined_rank_agreement` — while rho is 1.0 this profile is not adding an ordering |
+| `score.combined.alpha` | `0.5` | **plausible** | §17's default, and even is the neutral reading of §6.5's "both must be non-trivial". Above 0.5 leans the geometric term on the primary profile | §17's own test: "whether combined winners are actually the best clips". Needs footage |
+| `normalise` = share of the per-stream max | — | **grounded** | NOT IN §6.5, which leaves `normalize` undefined. Min-max is the obvious alternative and is wrong in a way that matters: it sends whichever candidate is a profile's *weakest* to exactly 0.0, and §6.5's product then returns 0 for it whatever the other profile said — so on a stream where `gameplay` is a marker detector, the funniest unmarked moment would rank last in the section §7.4 puts first | Nothing measurable yet; it is a definition. **Its consequence is that combined ranks WITHIN a stream and is not comparable across streams** |
+| `review.sections.combined_top_n` | `20` | **arbitrary** | §7.4 says "combined-score winners (both profiles high)" and gives no size. §7.1 reviews ~120 per session and §6.7 targets 80–150 per 3 h, so 20 is about a sixth — a first screen the operator can finish before forming an opinion of the section | Reaching the end of the section and wanting more of it, or losing interest before the end of it. `combined_rank_agreement` says whether the section is distinct from the list below it at all |
+| §7.4 section 4 = every marker-anchored candidate outside section 1 | — | **plausible** | §7.4's "marker-anchored candidates that did not rank highly (safety net)" does not define "highly". Once the combined cut is the only thing above it, missing that cut is what the phrase can mean. A key the operator pressed is a different kind of evidence from a weighted sum and should not be buried in the tail of a list sorted by weights | Marker-anchored candidates the operator would rather have seen in the entertainment ranking, i.e. the safety net becoming the place good moments go to be ignored. **Watch for sections 2 and 3 coming out empty**, which is what happens when nearly everything is marker-anchored — see below |
+
+**MEASURED, and the thing to watch on the first real stream:** on `fixture_long`
+every one of the 8 candidates is marker-anchored — 7 have a press inside their
+own window and all 8 have a marker contribution — so §7.4's sections 2 and 3 come
+out **empty** and the rail reads "combined winners, then everything else". That
+is the fixture rather than the rule: it presses a marker roughly every 20
+seconds (30 over 600 s), where a real stream is 10–30 presses over three hours
+against 80–150 candidates. If sections 2 and 3 are still empty on real footage,
+`marker_anchored` is too loose for §7.4's purpose — it is true for any window
+overlapping §4.3's ±25 s marker plateau, not only for a moment the operator
+actually marked — and tightening it is the fix. The definition is deliberately
+unchanged here: it also drives §7.3's `m` filter, and changing both on the
+strength of a saturated fixture would be tuning against the wrong thing.
+
+**Three things that are not parameters:**
+
+- **A merged window is re-clamped to `max_window_s`.** Each profile clamps its
+  own windows per §6.3, but two that overlap by a second and extend in opposite
+  directions union to almost twice that, and §6.2 step 8 does not exempt the
+  result from §6.3's range. Clamped around the winning peak, which is the only
+  variant §3.2's `CHECK (t_peak BETWEEN t_start AND t_end)` permits. **It never
+  fired on the fixture** — the longest merged window came out at 54.8 s against
+  a 60 s bound — so it has synthetic tests only.
+- **§6.6's spacing runs AFTER the merge**, where §6.2 step 6 puts it inside the
+  per-profile loop. Spacing exists to stop "ten candidates from one 90-second
+  stretch" in the list the operator reviews, and after step 8 that is one merged
+  list; penalising per profile first would let two profiles each contribute
+  their own suppressed-but-kept candidate into the same thirty seconds. The
+  factor multiplies all three scores, so §7.4's three rankings cannot disagree
+  about which moments were suppressed.
+- **`contributing_signals` explains the PRIMARY profile only.** It is weight ×
+  value, so a two-profile row has two breakdowns; storing both would change a
+  payload shape `review/queries.py`, `clipforge score --list` and the review
+  UI's `?` panel all parse. All three scores go into its context instead, so the
+  panel explains the number in the score box. A per-profile breakdown is what to
+  build when the gameplay ranking becomes worth explaining, which is Phase 7.
 
 ## Negative signals (Phase 3, §6.4)
 

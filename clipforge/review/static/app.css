@@ -653,6 +653,23 @@ code {
   cursor: pointer;
   border-left: 3px solid transparent;
 }
+/* §7.4's section headers. A list item rather than a separate element so it
+   scrolls with the candidates it heads, and `display: block` because the
+   candidate rows are a three-column grid. */
+.candidates li.cand-section {
+  display: block;
+  cursor: default;
+  border-left-color: transparent;
+  padding: var(--s4) var(--s3) var(--s2);
+  font-size: var(--txs);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+}
+.candidates li.cand-section:first-child { padding-top: var(--s2); }
+.candidates li.cand-section:hover { background: none; }
+.candidates li.cand-section::after { content: none; }
+
 .candidates li:hover { background: var(--panel-2); }
 .candidates li.current { background: var(--panel-2); border-left-color: var(--accent); }
 .candidates .n { color: var(--faint); font-family: var(--mono); font-size: var(--tsm); }

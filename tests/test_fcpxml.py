@@ -20,7 +20,7 @@ from clipforge import cli, config, db
 from clipforge.ingest import register
 from clipforge.pipeline import runner
 from clipforge.render import fcpxml, selection
-from clipforge.render.timebase import TimeBase, parse_value
+from clipforge.render.timebase import DOWN, TimeBase, parse_value
 
 #: Every attribute FCPXML expresses on the frame grid.
 TIME_ATTRIBUTES = ("offset", "start", "duration", "tcStart", "frameDuration")
@@ -188,11 +188,31 @@ def test_the_asset_never_claims_more_than_the_file_holds(exported, manifest):
 @pytest.mark.parametrize("which", ["exported", "exported_ntsc"])
 def test_clip_windows_cover_the_approved_moments(which, request):
     """C2: boundaries expand onto the grid, so a clip is never shorter than the
-    moment it came from."""
+    moment it came from.
+
+    WITH ONE EXCEPTION, AND IT IS ARITHMETIC RATHER THAN A CHOICE: at the very
+    end of a recording there is no next frame to expand onto. The NTSC fixture
+    is 30.000 s at 30000/1001 fps, which is 899.1 frames — so the last WHOLE
+    frame ends at 29.99663 s and a moment running to 30.000 s cannot be covered
+    by footage that exists. `plan_clips` clamps to `source_frames` for exactly
+    that reason: a clip referencing a frame past the end is a media error in
+    Resolve rather than a rounding problem.
+
+    Found by Phase 3's cross-profile merge, which unions windows and so reached
+    the end of the fixture for the first time. The invariant is therefore stated
+    against the footage rather than against the clock.
+    """
     cfg, stream_id, out, _manifest = request.getfixturevalue(which)
     conn = db.open_db(cfg.db_path, migrate_to_latest=False)
     moments = selection.approved_moments(conn, stream_id, min_rating=2)
+    row = conn.execute("SELECT * FROM streams WHERE id = ?", (stream_id,)).fetchone()
     conn.close()
+
+    # The last instant the source can express, derived exactly the way
+    # `cmd_export` derives it rather than written down here.
+    timebase = TimeBase.from_stream(row)
+    source_frames = timebase.frame_at(float(row["duration_s"]), DOWN)
+    last_frame_end = float(source_frames * timebase.frame_duration)
 
     clips = parsed(out).findall(".//spine/asset-clip")
     assert len(clips) == len(moments)
@@ -200,7 +220,7 @@ def test_clip_windows_cover_the_approved_moments(which, request):
         start = float(parse_value(clip.get("start")))
         end = start + float(parse_value(clip.get("duration")))
         assert start <= moment.t_start
-        assert end >= moment.t_end
+        assert end >= min(moment.t_end, last_frame_end)
 
 
 # --------------------------------------------------------------------------
@@ -378,7 +398,7 @@ def test_a_stream_with_nothing_approved_is_refused(exported, capsys, tmp_path):
     code = cli.main(["export", stream_id, "--min-rating", "2",
                      "--out", str(tmp_path / "none.fcpxml"),
                      "--set", f"paths.data_root={cfg.data_root.as_posix()}",
-                     "--set", "score.profile=naive"])
+                     "--profile", "naive"])
     assert code == 0            # this stream does have approvals
 
     conn = db.open_db(cfg.db_path, migrate_to_latest=False)

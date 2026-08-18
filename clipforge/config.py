@@ -41,7 +41,14 @@ ENV_CONFIG = "CLIPFORGE_CONFIG"
 #: make an older `local.yaml` merge into something wrong rather than something
 #: that fails. Checked on load so a stale override is an error rather than a
 #: silently ignored file.
-CONFIG_SCHEMA = 1
+#: 2 (commit 37): `score.profile` (one name) became `score.profiles` (a list),
+#: because §6.5 runs entertainment AND gameplay plus the combined score.
+#:
+#: NOTE what this version does NOT catch. It compares the MERGED value, which a
+#: `local.yaml` inherits from the packaged defaults unless it pins the key
+#: itself — so a stale `score.profile` would sail past it. `resolve_profiles`
+#: names the removed key directly, and that is the check that fires.
+CONFIG_SCHEMA = 2
 
 #: Subtrees that determine what a scoring run produces. Changing any of these
 #: must produce a new `config_version`; changing `review.port` must not.
@@ -291,8 +298,34 @@ class Config:
     provenance: dict[str, str]
     layers: list[tuple[str, Path | None]]
     project_root: Path
-    profile: Profile
+    #: §6.5's profile set, in configured order. The first is the PRIMARY: §6.5
+    #: calls entertainment "the primary profile", `candidates.score_entertainment`
+    #: is its column, and it is the breakdown stored in `contributing_signals`.
+    profiles: tuple[Profile, ...]
     feature_schema: FeatureSchema
+
+    @property
+    def profile(self) -> Profile:
+        """The primary profile.
+
+        Kept because most of the codebase legitimately wants one — the feature
+        breakdown, `clipforge config show`, the naive single-profile path — and
+        because §6.5's own "casual/comedy: entertainment only" case is a set of
+        size one.
+        """
+        return self.profiles[0]
+
+    @property
+    def profile_set(self) -> str:
+        """What goes in `candidates.profile` and `streams.profile_used`.
+
+        §3.2 gives one candidate row three score columns, so a moment is one row
+        carrying every profile's score rather than one row per profile — which
+        also keeps `UNIQUE (stream_id, generation, profile, t_peak)` valid with
+        no migration. A set of one is just its name, so nothing about a
+        single-profile run changes shape.
+        """
+        return "+".join(profile.name for profile in self.profiles)
 
     # -- access ------------------------------------------------------------
 
@@ -348,7 +381,14 @@ class Config:
         """Exactly the inputs that determine a scoring run's output."""
         return {
             "subtrees": {name: self.get(name, {}) for name in VERSIONED_SUBTREES},
-            "profile": {"name": self.profile.name, "weights": self.profile.weights},
+            # EVERY profile's weights, not just the primary's. Two different
+            # weight sets under one name being indistinguishable is the reason
+            # `config_version` is a hash rather than a profile name, and a
+            # second profile is a second way for that to happen.
+            "profiles": [
+                {"name": profile.name, "weights": profile.weights}
+                for profile in self.profiles
+            ],
             "feature_schema_version": self.feature_schema.version,
         }
 
@@ -361,7 +401,7 @@ class Config:
         Hashing the effective config can.
         """
         digest = hashlib.sha256(canonical_json(self.version_payload()).encode()).hexdigest()
-        return f"{self.profile.name}@{digest[:8]}"
+        return f"{self.profile_set}@{digest[:8]}"
 
     # -- display -----------------------------------------------------------
 
@@ -429,18 +469,67 @@ def load(
             f"clipforge/config/local.yaml.example."
         )
 
-    profile_name = profile or merged.get("score", {}).get("profile")
-    if not profile_name:
-        raise ConfigError("score.profile is not set")
-
     return Config(
         data=merged,
         provenance=provenance,
         layers=layers,
         project_root=root,
-        profile=load_profile(str(profile_name)),
+        profiles=resolve_profiles(merged, profile),
         feature_schema=load_feature_schema(),
     )
+
+
+def resolve_profiles(merged: dict[str, Any], override: str | None) -> tuple[Profile, ...]:
+    """§6.5's profile set: `score.profiles`, or one name from `--profile`.
+
+    `--profile X` means the set `[X]`, which is §6.5's own "casual/comedy:
+    entertainment only" case rather than a special mode.
+
+    Duplicates are refused rather than deduplicated: a set naming one profile
+    twice would score it twice, merge each moment with itself, and give
+    `config_version` a name like `entertainment+entertainment`. Every one of
+    those is a typo's symptom rather than an intention.
+    """
+    score = merged.get("score", {}) or {}
+
+    # THE CHECK THAT ACTUALLY CATCHES A STALE OVERRIDE, and `CONFIG_SCHEMA` is
+    # not it. That guard compares the MERGED `config_schema`, which a local.yaml
+    # inherits from the packaged defaults unless it pins the key itself — so a
+    # `local.yaml` still saying `score.profile: naive` would merge cleanly, be
+    # ignored, and score with the default set instead. Silently running a
+    # different detector than the operator asked for is the exact failure the
+    # schema version exists to prevent, so the removed key is named directly.
+    if "profile" in score:
+        raise ConfigError(
+            f"score.profile was replaced by score.profiles (a LIST) in "
+            f"config_schema {CONFIG_SCHEMA}, because §6.5 runs two profiles plus "
+            f"the combined score. Yours says {score['profile']!r} — write "
+            f"`profiles: [{score['profile']}]` instead. Left as it is, it would be "
+            f"ignored and the packaged default set would score your streams."
+        )
+
+    if override:
+        names = [override]
+    else:
+        configured = score.get("profiles")
+        if isinstance(configured, str):
+            # A single name where a list belongs is the shape a hand-edited
+            # local.yaml takes; accepting it silently would make `profiles: e`
+            # iterate over letters.
+            raise ConfigError(
+                f"score.profiles is the string {configured!r}; it is a list — "
+                f"write `profiles: [{configured}]`"
+            )
+        names = list(configured or [])
+
+    if not names:
+        raise ConfigError("score.profiles is empty; §6.5 needs at least one profile")
+
+    seen = [name for name in names if names.count(name) > 1]
+    if seen:
+        raise ConfigError(f"score.profiles names {sorted(set(seen))} more than once")
+
+    return tuple(load_profile(str(name)) for name in names)
 
 
 # --------------------------------------------------------------------------
@@ -463,7 +552,11 @@ def add_config_arguments(parser) -> None:
         metavar="KEY=VALUE",
         help="override one config value, e.g. --set score.window.min_window_s=6",
     )
-    parser.add_argument("--profile", help="weight profile name (default: score.profile)")
+    parser.add_argument(
+        "--profile",
+        help="score with this profile alone, instead of score.profiles (§6.5's "
+             "'entertainment only' case)",
+    )
 
 
 def from_args(args) -> Config:
@@ -503,11 +596,15 @@ def main(args) -> int:
                         for name, path in cfg.layers
                     ],
                     "config_version": cfg.version,
-                    "profile": {
-                        "name": cfg.profile.name,
-                        "weights": cfg.profile.weights,
-                        "source": str(cfg.profile.source),
-                    },
+                    "profile_set": cfg.profile_set,
+                    "profiles": [
+                        {
+                            "name": profile.name,
+                            "weights": profile.weights,
+                            "source": str(profile.source),
+                        }
+                        for profile in cfg.profiles
+                    ],
                     "feature_schema_version": cfg.feature_schema.version,
                     "resolved": {
                         "data_root": str(cfg.data_root),
@@ -524,7 +621,9 @@ def main(args) -> int:
     print(f"project root     {cfg.project_root}")
     for name, path in cfg.layers:
         print(f"layer            {name:<8} {path if path else '(command line)'}")
-    print(f"profile          {cfg.profile.name}  ({cfg.profile.source})")
+    for index, profile in enumerate(cfg.profiles):
+        role = "primary" if index == 0 else "also"
+        print(f"profile          {profile.name:<16} {role:<8} ({profile.source})")
     print(f"feature schema   v{cfg.feature_schema.version}  ({len(cfg.feature_schema.keys)} signals)")
     print(f"config_version   {cfg.version}")
     print()
@@ -551,8 +650,9 @@ def main(args) -> int:
         flag = "" if source == "default" else "  <--"
         print(f"{key.ljust(width)}  {rendered:<24} {source}{flag}")
 
-    print()
-    print("weights")
-    for signal, weight in sorted(cfg.profile.weights.items(), key=lambda kv: -kv[1]):
-        print(f"  {signal:<20} {weight}")
+    for profile in cfg.profiles:
+        print()
+        print(f"weights — {profile.name}")
+        for signal, weight in sorted(profile.weights.items(), key=lambda kv: -kv[1]):
+            print(f"  {signal:<20} {weight}")
     return 0

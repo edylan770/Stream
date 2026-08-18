@@ -1,0 +1,43 @@
+# §6.5's PRIMARY profile, verbatim.
+#
+# "The operator's channel identity is comedy." Every weight below is the
+# spec's own number, unchanged — not because they are right, but because
+# changing them before a single stream has been reviewed would replace one
+# guess with a worse-evidenced one. §17 tunes them against
+# `signal_firing_rate_by_rating` from `tool_metrics`, which needs ratings,
+# which needs footage.
+#
+# UNITS. Everything entering the weighted sum is "z-like", where 1.0 is roughly
+# one standard deviation of notability: continuous signals are rolling z-scores
+# (§6.2 step 3) and event signals are kernels normalised to peak at 1.0. The
+# spec never states this convention and these weights are uninterpretable
+# without it — a unit-AREA event kernel peaks near 0.004, which would make
+# `marker_definite: 3.0` contribute less than noise.
+#
+# WHAT IS LIVE. 16.8 of the 20.7 total weight below has a producer today (81%).
+# The rest is waiting on other phases and is marked inline. A signal with no
+# producer contributes nothing rather than zero — `score` reports it as a
+# profile weight with no signal in this stream.
+
+name: entertainment
+description: >
+  §6.5's primary profile. Comedy: laughter, prosodic range, overlap and the
+  operator's own markers. 81% of its weight is live today.
+
+weights:
+  marker_definite:     3.0
+  marker_maybe:        1.5
+  laugh_party:         2.5      # external validation, weighted above own laugh
+  laugh_operator:      2.0
+  mic_f0_variance:     1.8      # prosodic range = comedic delivery
+  overlap_speech:      1.5
+  phrase_repeat:       1.5      # Phase 2 — needs extract.whisperx.enabled
+  party_rms:           1.2
+  mic_rms:             1.0
+  phrase_excitement:   1.0      # Phase 2 — needs extract.whisperx.enabled
+  speech_rate:         0.8      # Phase 2 — needs extract.whisperx.enabled
+  sudden_silence:      0.8
+  reaction_onset:      1.5
+  kill:                0.1      # Phase 7 — vision
+  multikill:           0.3      # Phase 7 — vision
+  input_rate:          0.2      # needs §4.4's activity logger to have run

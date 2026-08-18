@@ -70,14 +70,73 @@ def test_spec_17_defaults_match_the_table(cfg):
     assert cfg.get("deferred.trends.ngram_recency_halflife_days") == 30
 
 
-def test_final_profile_weights_match_the_spec(cfg):
-    """§6.5 entertainment weights for the signals Phase 1 actually computes."""
-    assert cfg.profile.weights == {
-        "marker_definite": 3.0,
-        "marker_maybe": 1.5,
-        "mic_rms": 1.0,
+#: §6.5's two profiles, transcribed from the spec. The point of writing them
+#: here as well as in `config/profiles/` is that a typo in either one is then a
+#: failing test rather than a silently different detector.
+SPEC_6_5_ENTERTAINMENT = {
+    "marker_definite": 3.0, "marker_maybe": 1.5, "laugh_party": 2.5,
+    "laugh_operator": 2.0, "mic_f0_variance": 1.8, "overlap_speech": 1.5,
+    "phrase_repeat": 1.5, "party_rms": 1.2, "mic_rms": 1.0,
+    "phrase_excitement": 1.0, "speech_rate": 0.8, "sudden_silence": 0.8,
+    "reaction_onset": 1.5, "kill": 0.1, "multikill": 0.3, "input_rate": 0.2,
+}
+SPEC_6_5_GAMEPLAY = {
+    "marker_definite": 3.0, "flick_signature": 3.0, "clutch": 2.8,
+    "multikill": 2.5, "multikill_with_ult": 2.8, "mvp_screen": 2.0,
+    "mouse_velocity": 1.5, "input_rate": 1.2, "kill": 1.0, "mic_rms": 0.8,
+    "laugh_operator": 0.2, "laugh_party": 0.2,
+}
+
+
+def test_the_shipped_profiles_are_6_5_verbatim():
+    """Not "close to" §6.5 — identical. They are guesses either way, and
+    changing one before a single stream has been reviewed would replace the
+    spec's guess with a worse-evidenced one."""
+    assert config.load_profile("entertainment").weights == SPEC_6_5_ENTERTAINMENT
+    assert config.load_profile("gameplay").weights == SPEC_6_5_GAMEPLAY
+
+
+def test_the_default_profile_set_is_6_5s_marvel_rivals_case(cfg):
+    """§6.5: "Marvel Rivals streams: run BOTH profiles plus combined." """
+    assert [p.name for p in cfg.profiles] == ["entertainment", "gameplay"]
+    assert cfg.profile.name == "entertainment", "§6.5 calls it the primary"
+    assert cfg.profile_set == "entertainment+gameplay"
+
+
+def test_a_single_profile_is_a_set_of_one():
+    """§6.5's own "casual/comedy: entertainment only" case, and how `naive`
+    stays reachable — it is what every pre-Phase-3 generation was scored with."""
+    one = config.load(profile="naive")
+    assert [p.name for p in one.profiles] == ["naive"]
+    assert one.profile_set == "naive"
+    assert one.profile.weights == {
+        "marker_definite": 3.0, "marker_maybe": 1.5, "mic_rms": 1.0,
     }
-    assert cfg.profile.weight("laugh_party") == 0.0  # not in this profile yet
+
+
+def test_a_profile_named_twice_is_refused():
+    """It would score the profile twice, merge each moment with itself, and name
+    the version `entertainment+entertainment`. Every one of those is a typo."""
+    with pytest.raises(config.ConfigError, match="more than once"):
+        config.load(overrides=["score.profiles=[entertainment, entertainment]"])
+
+
+def test_the_removed_singular_key_is_refused_by_name():
+    """CONFIG_SCHEMA alone does NOT catch this, which is worth knowing: the
+    guard compares the MERGED `config_schema`, and a local.yaml inherits that
+    from the packaged defaults unless it pins the key itself. So a local.yaml
+    still saying `score.profile: naive` would merge cleanly, be ignored, and
+    score with the default set — silently running a different detector than the
+    operator asked for."""
+    with pytest.raises(config.ConfigError, match="score.profiles"):
+        config.load(overrides=["score.profile=naive"])
+
+
+def test_a_bare_string_where_a_list_belongs_is_refused():
+    """Otherwise `profiles: entertainment` iterates over letters and asks for a
+    profile called 'e'."""
+    with pytest.raises(config.ConfigError, match="it is a list"):
+        config.load(overrides=["score.profiles=entertainment"])
 
 
 def test_a2_proxy_gop_settings(cfg):
@@ -193,7 +252,7 @@ def test_a_trailing_comment_still_leaves_the_value():
 
 def test_version_is_profile_at_hash(cfg):
     name, _, digest = cfg.version.partition("@")
-    assert name == "naive"
+    assert name == cfg.profile_set
     assert len(digest) == 8
     assert digest == digest.lower()
 
@@ -233,18 +292,25 @@ def test_version_changes_with_a_weight(tmp_path, monkeypatch):
 
     profile_dir = tmp_path / "profiles"
     profile_dir.mkdir()
-    (profile_dir / "naive.yaml").write_text(
-        yaml.safe_dump(
-            {"name": "naive", "weights": {"mic_rms": 2.0, "marker_definite": 3.0}}
-        ),
+    for name in ("entertainment", "gameplay"):
+        source = config.PROFILES_DIR / f"{name}.yaml"
+        (profile_dir / f"{name}.yaml").write_text(
+            source.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    # Retune ONE weight in the SECOND profile. It has to move the hash: two
+    # weight sets under one name being indistinguishable is why config_version
+    # is a hash at all, and a second profile is a second way for that to happen.
+    (profile_dir / "gameplay.yaml").write_text(
+        yaml.safe_dump({"name": "gameplay", "weights": {**SPEC_6_5_GAMEPLAY,
+                                                        "mic_rms": 2.0}}),
         encoding="utf-8",
     )
     monkeypatch.setattr(config, "PROFILES_DIR", profile_dir)
 
     retuned = config.load().version
     assert retuned != baseline
-    # Still the same profile name — only the hash moves.
-    assert retuned.startswith("naive@")
+    # Still the same profile set — only the hash moves.
+    assert retuned.startswith("entertainment+gameplay@")
 
 
 def test_canonical_json_is_key_order_independent():
@@ -382,5 +448,6 @@ def test_config_json_is_parseable(capsys):
     assert cli.main(["config", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["config_version"] == config.load().version
-    assert payload["profile"]["name"] == "naive"
+    assert payload["profile_set"] == "entertainment+gameplay"
+    assert [p["name"] for p in payload["profiles"]] == ["entertainment", "gameplay"]
     assert payload["resolved"]["data_root"]

@@ -59,6 +59,19 @@ def candidates(conn, current_only=True):
     ).fetchall()
 
 
+def _restore_generation(conn, generation: int, stream_id: str = "fx") -> None:
+    """Undo any generation a test minted, and make `generation` current again."""
+    with conn:
+        conn.execute(
+            "DELETE FROM candidates WHERE stream_id = ? AND generation > ?",
+            (stream_id, generation),
+        )
+        conn.execute(
+            "UPDATE candidates SET is_current = (generation = ?) WHERE stream_id = ?",
+            (generation, stream_id),
+        )
+
+
 def _rescore_with(cfg, conn, stream_id="fx"):
     """Force a score pass under `cfg`.
 
@@ -357,14 +370,64 @@ def test_feature_schema_version_is_recorded(scored):
         assert row["feature_schema_version"] == cfg.feature_schema.version
 
 
-def test_phase_1_scores_are_recorded_honestly(scored):
-    """One profile exists, so gameplay is 0.0 rather than a faked §6.5 product
-    and combined mirrors entertainment."""
+def test_a_moment_is_one_row_carrying_every_profiles_score(scored):
+    """§3.2 gives `candidates` three score columns rather than three rows, and
+    §7.4's sections are orderings over one list. So `profile` holds the
+    profile-SET name and `UNIQUE (stream_id, generation, profile, t_peak)` keeps
+    working with no migration."""
     cfg, conn, engine, manifest, _ = scored
-    for row in candidates(conn):
-        assert row["score_gameplay"] == 0.0
-        assert row["score_combined"] == pytest.approx(row["score_entertainment"])
-        assert row["profile"] == "naive"
+    rows = candidates(conn)
+    assert rows
+    for row in rows:
+        assert row["profile"] == cfg.profile_set == "entertainment+gameplay"
+    assert len({row["t_peak"] for row in rows}) == len(rows), "one row per moment"
+
+
+def test_the_two_profiles_disagree(scored):
+    """If they did not, the second profile would be costing a pass for nothing.
+    §6.5's own reason for gameplay is that mechanics and personality are
+    different axes — this is the weakest statement of that which can still fail
+    if the merge accidentally copies one column into the other."""
+    cfg, conn, engine, manifest, _ = scored
+    rows = candidates(conn)
+    pairs = [(row["score_entertainment"], row["score_gameplay"]) for row in rows]
+    assert any(e != g for e, g in pairs)
+
+
+def test_a_single_profile_still_scores_exactly_as_it_did(scored):
+    """§6.5's "casual/comedy: entertainment only" case, and the regression that
+    matters: everything Phase 1 and 2 produced was scored with one profile, so
+    one profile has to keep meaning what it meant. gameplay stays 0.0 rather
+    than a faked §6.5 product, and combined mirrors entertainment at its own raw
+    scale."""
+    cfg, conn, engine, manifest, _ = scored
+    naive = config.load(overrides=[f"paths.data_root={cfg.data_root.as_posix()}"],
+                        profile="naive")
+    generation = candidates(conn)[0]["generation"]
+    try:
+        _rescore_with(naive, conn)
+        rows = candidates(conn)
+        assert rows
+        for row in rows:
+            assert row["profile"] == "naive"
+            assert row["score_gameplay"] == 0.0
+            assert row["score_combined"] == pytest.approx(row["score_entertainment"])
+    finally:
+        # Scoring under a second configuration MINTS a generation, and the
+        # session fixture is shared — so this puts the stream back rather than
+        # leaving two extra generations for the generation tests to trip over.
+        _restore_generation(conn, generation)
+
+
+def test_the_combined_score_is_not_either_profile(scored):
+    """§6.5: "score_combined is NOT a sum or average." It is also not a copy —
+    with two profiles it lives on the normalised 0..2 scale of §6.5's product,
+    where the per-profile columns are raw composites."""
+    cfg, conn, engine, manifest, _ = scored
+    rows = candidates(conn)
+    assert any(row["score_combined"] != pytest.approx(row["score_entertainment"])
+               for row in rows)
+    assert all(0.0 <= row["score_combined"] <= 2.0 for row in rows)
 
 
 # --------------------------------------------------------------------------
@@ -553,11 +616,13 @@ def test_a_stream_with_no_markers_still_scores_on_audio(tmp_path, long_fixture):
 
 
 def _tracks_for(cfg, conn, stream_id="fx"):
-    """`build_tracks` against a scored stream, the way the stage calls it."""
+    """The primary profile's tracks, the way the stage builds them."""
     ctx = StageContext(cfg=cfg, conn=conn, stream_id=stream_id, log=lambda *_: None)
     duration = float(ctx.stream["duration_s"])
     timeline = grid.build(duration, float(cfg.get("score.score_grid_hz")))
-    return ctx, timeline, score_runner.build_tracks(ctx, timeline)
+    pool = score_runner.build_pool(ctx, timeline)
+    tracks, missing = score_runner.tracks_for(pool, cfg.profile)
+    return ctx, timeline, (tracks, missing, pool.raw)
 
 
 def test_a_stored_event_no_profile_weights_still_reaches_the_vector(scored):
@@ -570,15 +635,18 @@ def test_a_stored_event_no_profile_weights_still_reaches_the_vector(scored):
     Invisible only because `extract.whisperx.enabled` ships false.
     """
     cfg, conn, engine, manifest, _ = scored
-    kind = "phrase_excitement"
-    assert kind not in cfg.profile.weights, "the premise of the test"
+    # §16 rejects scene_change as a scorer, so no §6.5 profile weights it — and
+    # it is exactly the kind of stored-but-unweighted event A9 exists for.
+    kind = "scene_change"
+    assert not any(kind in profile.weights for profile in cfg.profiles), \
+        "the premise of the test"
     assert kind in cfg.feature_schema.signals
 
     _ctx, _timeline, (before, _m, _r) = _tracks_for(cfg, conn)
     assert kind not in {track.name for track in before}
 
     conn.execute(
-        "INSERT INTO events (stream_id, t, source, kind) VALUES ('fx', ?, 'phrase', ?)",
+        "INSERT INTO events (stream_id, t, source, kind) VALUES ('fx', ?, 'scene', ?)",
         (float(manifest["regions"][0]["t_start"]), kind),
     )
     try:

@@ -15,7 +15,12 @@
 # the same from anywhere in the tree. `clipforge config show` prints the
 # resolved absolute paths.
 
-config_schema: 1
+# 2 (commit 37): score.profile (one name) became score.profiles (a LIST),
+# because §6.5 runs entertainment AND gameplay plus the combined score. A
+# local.yaml still setting the old key is refused BY NAME in config.py -- this
+# version number cannot catch it on its own, since a local.yaml inherits the
+# value from this file unless it pins the key itself.
+config_schema: 2
 
 paths:
   data_root: ./data
@@ -524,8 +529,23 @@ extract:
     db_floor: -80.0
 
 score:
-  # Default weight profile. Overridable per stream (streams.profile_used).
-  profile: naive
+  # §6.5's PROFILE SET. "Marvel Rivals streams: run BOTH profiles plus
+  # combined." A moment is one candidate row carrying every profile's score
+  # (§3.2 gives the row three score columns), and §7.4 reviews the combined
+  # winners first.
+  #
+  # The FIRST profile is the primary: its column is score_entertainment, its
+  # weighted breakdown is what `contributing_signals` explains, and it is what
+  # `score_combined` mirrors when the set has only one member.
+  #
+  # §6.5's other two cases are one-line changes:
+  #   casual / comedy (Valorant QP, Roblox, co-op)  ->  [entertainment]
+  #   a Phase 1 comparison against old generations  ->  --profile naive
+  #
+  # CHANGING THIS CHANGES config_version, so the next `score` run mints a new
+  # generation and carries operator ratings onto it by time overlap. That is
+  # §6.1's whole promise -- re-scoring is free -- not a warning.
+  profiles: [entertainment, gameplay]
 
   # DEVIATION from §6.2 step 2, which downsamples to 1 Hz. A 4-hour stream is
   # 144k samples at 10 Hz and rolling stats are cumulative-sum cheap, while 1 Hz
@@ -862,8 +882,19 @@ score:
     afk_max_mouse_velocity_px_s: 0.0   # px/s
 
   combined:
-    # §17. Unused in Phase 1: one profile exists, so score_combined mirrors
-    # score_entertainment and score_gameplay is 0.
+    # §6.5's score_combined, "the most valuable output": the intersection of
+    # mechanics and personality, which is what is not commoditized.
+    #
+    # §6.5's formula is `(e_n ** alpha) * (g_n ** (1 - alpha)) * (e_n + g_n)`
+    # and leaves `normalize` undefined -- see score/combined.py, which has to
+    # define it, because a composite of weighted z-scores is SIGNED and a
+    # fractional power of a negative is NaN.
+    #
+    # alpha weights which profile the geometric part leans on: 0.5 is even,
+    # above 0.5 favours entertainment. §17's tuning target is "whether combined
+    # winners are actually the best clips", which needs footage. Until then the
+    # honest measure is `combined_rank_agreement` in tool_metrics -- how much
+    # the combined ranking differs from entertainment's at all.
     alpha: 0.5
 
 review:
@@ -872,6 +903,21 @@ review:
   # §7.1's hard target, in milliseconds per candidate. Reported by
   # `clipforge metrics`, not enforced.
   target_ms_per_candidate: 4000
+
+  # §7.4's four sections: combined winners, entertainment, gameplay, then
+  # marker-anchored as a safety net. They are DISJOINT -- a candidate appears in
+  # the first section it qualifies for -- because listing one moment three times
+  # would spend §7.1's four-second budget rating the same window three times.
+  sections:
+    # How many candidates the combined section holds. §7.4 says "combined-score
+    # winners (both profiles high)" and gives no size.
+    #
+    # ARBITRARY. §7.1 reviews ~120 per session and §6.7 targets 80-150 per 3 h,
+    # so 20 is about a sixth: a first screen the operator can get through before
+    # forming an opinion on whether the section is worth anything. That opinion
+    # is the falsifier -- combined_rank_agreement says how much the section even
+    # differs from the entertainment ranking below it.
+    combined_top_n: 20
 
   # §7.3's `[`/`]`/`{`/`}` keys, which move a window boundary by this much.
   # §7.3 states 0.5 s.

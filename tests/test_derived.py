@@ -653,21 +653,33 @@ def test_derived_signals_reach_the_feature_vector(scored_speech):
 
 def test_a_derived_signal_can_be_weighted_like_any_other(scored_speech):
     """The point of computing them before the profile is applied: §6.5 weights
-    `overlap_speech` at 1.5 and must not need a special case to do it."""
+    `overlap_speech` at 1.5 and must not need a special case to do it.
+
+    Both halves, because the pool is now built once and weighted per profile:
+    the profile that names the signal gets §6.5's own weight, and the profile
+    that does not still gets the track at weight 0 for A9's vector.
+    """
     cfg, conn, ctx = scored_speech
-    weighted = config.load(overrides=[
-        f"paths.data_root={cfg.data_root.as_posix()}",
-        "score.profile=naive",
-    ])
+    base = [f"paths.data_root={cfg.data_root.as_posix()}"]
+    weighted = config.load(overrides=base)
+    unweighted = config.load(overrides=base, profile="naive")
+
     timeline = grid.build(float(ctx.stream["duration_s"]),
                           float(weighted.get("score.score_grid_hz")))
-    tracks, _missing, _raw = score_runner.build_tracks(
-        StageContext(cfg=weighted, conn=conn, stream_id=ctx.stream_id,
-                     log=lambda *_: None),
-        timeline,
+    stage = StageContext(cfg=weighted, conn=conn, stream_id=ctx.stream_id,
+                         log=lambda *_: None)
+    pool = score_runner.build_pool(stage, timeline)
+
+    for cfg_under_test, expected in ((weighted, None), (unweighted, 0.0)):
+        profile = cfg_under_test.profile
+        tracks, _missing = score_runner.tracks_for(pool, profile)
+        by_name = {t.name: t for t in tracks}
+        assert "overlap_speech" in by_name
+        assert "sudden_silence" in by_name
+        want = profile.weight("overlap_speech") if expected is None else expected
+        assert by_name["overlap_speech"].weight == want
+        assert np.isfinite(by_name["overlap_speech"].values).all()
+
+    assert weighted.profile.weight("overlap_speech") > 0, (
+        "the weighted half would be vacuous if §6.5's primary profile dropped it"
     )
-    by_name = {t.name: t for t in tracks}
-    assert "overlap_speech" in by_name
-    assert "sudden_silence" in by_name
-    assert by_name["overlap_speech"].weight == 0.0, "naive weights it at nothing"
-    assert np.isfinite(by_name["overlap_speech"].values).all()

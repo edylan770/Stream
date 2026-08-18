@@ -43,7 +43,7 @@ def main(args) -> int:
                 print("no streams registered")
                 return 0
 
-        print(f"profile  {cfg.profile.name}")
+        print(f"profiles {cfg.profile_set}")
         print(f"config   {cfg.version}")
         print()
 
@@ -79,7 +79,8 @@ def main(args) -> int:
 
 def _list(conn, stream_id: str) -> None:
     rows = conn.execute(
-        "SELECT t_start, t_end, t_peak, score_combined, contributing_signals "
+        "SELECT t_start, t_end, t_peak, score_entertainment, score_gameplay, "
+        "score_combined, contributing_signals "
         "FROM candidates WHERE stream_id = ? AND is_current = 1 "
         "ORDER BY score_combined DESC",
         (stream_id,),
@@ -89,7 +90,8 @@ def _list(conn, stream_id: str) -> None:
 
     import json
 
-    print(f"    {'#':>3}  {'window':<18} {'peak':>8} {'score':>8}  top contributors")
+    print(f"    {'#':>3}  {'window':<18} {'peak':>8} {'ent':>7} {'game':>7} "
+          f"{'comb':>7}  top contributors")
     for index, row in enumerate(rows, start=1):
         signals_json = json.loads(row["contributing_signals"] or "{}")
         top = [
@@ -99,4 +101,5 @@ def _list(conn, stream_id: str) -> None:
         ]
         window = f"{row['t_start']:.1f}-{row['t_end']:.1f}s"
         print(f"    {index:>3}  {window:<18} {row['t_peak']:>7.1f}s "
-              f"{row['score_combined']:>8.3f}  {', '.join(top)}")
+              f"{row['score_entertainment']:>7.3f} {row['score_gameplay']:>7.3f} "
+              f"{row['score_combined']:>7.3f}  {', '.join(top)}")

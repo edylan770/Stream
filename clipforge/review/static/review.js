@@ -28,6 +28,9 @@ const state = {
   markersOnly: false,
   showSignals: false,
   roleColours: {},
+  // §7.4's section labels, from the server. Not written here: the rail would
+  // otherwise keep a header for a section the server had stopped emitting.
+  sectionLabels: {},
   focusedAt: 0,
   sessionStart: 0,
   reviewed: 0,
@@ -61,6 +64,9 @@ export async function enter(id) {
   state.stream = data.stream;
   state.all = data.candidates;
   state.roleColours = data.role_colours || {};
+  state.sectionLabels = Object.fromEntries(
+    (data.sections || []).map((s) => [s.key, s.label])
+  );
   // From the server, not a literal here: review.nudge_step_s is config, and a
   // second copy of it in the browser would drift silently — the same trap
   // `target_ms` had before commit 25a.
@@ -90,6 +96,7 @@ export async function enter(id) {
   video.src = `/media/${encodeURIComponent(id)}/proxy`;
 
   setUpTranscript(data.stream);
+  setUpSections();
   applyFilter();
   history.replaceState(null, "", `?stream=${encodeURIComponent(id)}`);
 }
@@ -113,6 +120,17 @@ function setUpTranscript(stream) {
       "<code>extract.whisperx.enabled: true</code> and a Whisper model " +
       "(a multi-GB download), then a re-run.";
   }
+}
+
+/* §7.4's four sections exist only when more than one §6.5 profile ran. A
+ * stream scored with one profile has no gameplay ranking and a combined score
+ * that mirrors its primary, so four headers over it would be a lie about what
+ * the numbers mean — which is what the rail said in prose until this commit.
+ * The server decides (`queries.is_sectioned`); this only reads the answer off
+ * the candidates it was sent. */
+function setUpSections() {
+  const sectioned = state.all.some((c) => c.section);
+  $("rail-note").hidden = sectioned;
 }
 
 export function leave() {
@@ -152,7 +170,18 @@ function renderList() {
     return;
   }
 
+  let section = null;
   state.view.forEach((c, i) => {
+    // §7.4's headers, emitted on the boundary rather than per section, so the
+    // `m` filter can empty a section and its header goes with it.
+    if (c.section && c.section !== section) {
+      section = c.section;
+      const head = document.createElement("li");
+      head.className = "cand-section";
+      head.textContent = state.sectionLabels[section] || section;
+      list.appendChild(head);
+    }
+
     const li = document.createElement("li");
     li.className = [
       i === state.cursor ? "current" : "",
@@ -398,10 +427,31 @@ function renderSignals(c) {
      <span class="sig-val">${(c.context.total_raw ?? 0).toFixed(3)}</span>
    </div>
    <div class="sig-row sig-total">
-     <span>after smoothing (the score)</span><span></span>
+     <span>after smoothing</span><span></span>
      <span class="sig-val">${(c.context.total_smoothed ?? c.score).toFixed(3)}</span>
    </div>` +
+  profileScores(c) +
   contextLine(c);
+}
+
+/* The breakdown above explains the PRIMARY profile's composite, because
+ * `contributing_signals` is weight x value and a two-profile row would
+ * otherwise carry two of them (see score/runner.write_candidates). The score in
+ * the box beside the video is §6.5's combined, which is a different number — so
+ * all three are printed here rather than leaving the panel explaining one and
+ * the screen showing another. */
+function profileScores(c) {
+  if (!c.section) return "";
+  const rows = [
+    ["entertainment", c.score_entertainment],
+    ["gameplay", c.score_gameplay],
+    ["combined (§6.5)", c.score],
+  ];
+  return rows.map(([name, value]) =>
+    `<div class="sig-row sig-total">
+       <span>${escape(name)}</span><span></span>
+       <span class="sig-val">${Number(value ?? 0).toFixed(3)}</span>
+     </div>`).join("");
 }
 
 // The unit is the key's own suffix, because signals are no longer all in dBFS:

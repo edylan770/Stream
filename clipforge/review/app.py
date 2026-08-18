@@ -89,10 +89,20 @@ def create_app(cfg) -> FastAPI:
             detail = queries.stream_detail(conn, stream_id)
             if detail is None:
                 raise HTTPException(status_code=404, detail=f"no stream {stream_id!r}")
-            found = queries.load_candidates(conn, stream_id)
+            found = queries.load_candidates(
+                conn, stream_id,
+                section_top_n=int(cfg.get("review.sections.combined_top_n", 20)),
+            )
             return JSONResponse({
                 "stream": detail,
                 "candidates": [c.to_json() for c in found],
+                # §7.4's section labels travel with the payload rather than
+                # living in the markup, for the same reason the caption colours
+                # do: two places naming the same thing is how they drift, and a
+                # section the server stopped emitting would otherwise still
+                # have a header in the rail.
+                "sections": [{"key": key, "label": label}
+                             for key, label in queries.SECTIONS],
                 # §8.3's speaker palette, so the transcript beside the video is
                 # coloured the same way the burned-in captions will be. Sent
                 # rather than duplicated in CSS: if the two disagreed, the

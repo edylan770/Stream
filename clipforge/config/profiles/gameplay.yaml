@@ -1,0 +1,42 @@
+# §6.5's SECONDARY profile, verbatim. "Supporting material, occasional
+# edit-style compilations."
+#
+# READ THIS BEFORE TRUSTING ITS RANKING. Of the 21.0 total weight below,
+# **4.2 has a producer today — 20%** — and 3.0 of that 4.2 is `marker_definite`.
+# So until Phase 7 exists this profile is a marker detector with a little mic
+# RMS, and all four of its live signals are also in `entertainment`:
+#
+#   14.1 (67%)  Phase 7 vision: flick_signature, clutch, multikill,
+#               multikill_with_ult, mvp_screen, kill
+#    2.7 (13%)  §4.4's activity logger, which has never run on a real stream
+#    4.2 (20%)  live: marker_definite 3.0, mic_rms 0.8, the two laughs 0.2 each
+#
+# That is why every score run writes `combined_rank_agreement` to
+# `tool_metrics`: §6.5 calls the combined score the most valuable output
+# because it is the INTERSECTION of mechanics and personality, and an
+# intersection with a marker detector is not one. The metric is what will say
+# when this profile starts adding information rather than restating
+# entertainment's markers.
+#
+# The weights are the spec's own and are not adjusted to compensate. Rebalancing
+# them for the signals that happen to exist in August would bake this phase's
+# gaps into the profile and have to be undone when vision lands.
+
+name: gameplay
+description: >
+  §6.5's secondary profile — mechanics. 20% of its weight is live today; 67%
+  is Phase 7 vision. Before then it ranks close to markers alone.
+
+weights:
+  marker_definite:     3.0
+  flick_signature:     3.0      # Phase 7 — vision (§5.4.3 composite)
+  clutch:              2.8      # Phase 7 — vision
+  multikill:           2.5      # Phase 7 — vision
+  multikill_with_ult:  2.8      # Phase 7 — vision (§5.4.3 composite)
+  mvp_screen:          2.0      # Phase 7 — vision
+  mouse_velocity:      1.5      # needs §4.4's activity logger to have run
+  input_rate:          1.2      # needs §4.4's activity logger to have run
+  kill:                1.0      # Phase 7 — vision
+  mic_rms:             0.8
+  laugh_operator:      0.2
+  laugh_party:         0.2

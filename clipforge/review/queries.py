@@ -13,8 +13,11 @@ import sqlite3
 import statistics
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from clipforge import signals
 from clipforge.render import words
+from clipforge.score import combined as combined_score
 
 #: Signals the sparkline can draw, in preference order. mic_rms is the one that
 #: matters in Phase 1; the others exist so the panel keeps working when Phase 3
@@ -192,9 +195,16 @@ class CandidateView:
     t_end: float
     t_peak: float
     score: float
-    generation: int
-    profile: str
-    config_version: str
+    #: §3.2's other two score columns. The rail ranks §7.4's sections by these,
+    #: and the `?` panel shows all three beside the breakdown that explains the
+    #: primary one.
+    score_entertainment: float = 0.0
+    score_gameplay: float = 0.0
+    #: §7.4's section, assigned server-side and DISJOINT — see `assign_sections`.
+    section: str = ""
+    generation: int = 0
+    profile: str = ""
+    config_version: str = ""
     contributions: dict = field(default_factory=dict)
     context: dict = field(default_factory=dict)
     marker_anchored: bool = False
@@ -228,6 +238,9 @@ class CandidateView:
             "adjusted_end": (None if self.adjusted_end is None
                              else round(self.adjusted_end, 3)),
             "score": round(self.score, 4),
+            "score_entertainment": round(self.score_entertainment, 4),
+            "score_gameplay": round(self.score_gameplay, 4),
+            "section": self.section,
             "generation": self.generation,
             "profile": self.profile,
             "config_version": self.config_version,
@@ -245,7 +258,93 @@ class CandidateView:
         }
 
 
-def load_candidates(conn: sqlite3.Connection, stream_id: str) -> list[CandidateView]:
+#: §7.4's sections, in the order it lists them. The key is what the payload
+#: carries; the label is what the rail prints.
+SECTIONS: tuple[tuple[str, str], ...] = (
+    ("combined", "Combined winners"),
+    ("entertainment", "Entertainment"),
+    ("gameplay", "Gameplay"),
+    ("markers", "Marker-anchored"),
+)
+
+#: A stream scored with one profile has no combined score distinct from its
+#: primary and no gameplay ranking at all, so §7.4's four headers would be a lie
+#: about what the numbers mean. `candidates.profile` holds the profile-SET name,
+#: so the row itself says which case this is.
+def is_sectioned(profile_set: str) -> bool:
+    return len(str(profile_set or "").split("+")) > 1
+
+
+def assign_sections(views: list[CandidateView], top_n: int) -> list[CandidateView]:
+    """§7.4's four sections: disjoint, ordered, and returned in review order.
+
+    > 1. Combined-score winners (both profiles high) — the best content,
+    >    reviewed first
+    > 2. Entertainment ranked
+    > 3. Gameplay ranked
+    > 4. Marker-anchored candidates that did not rank highly (safety net — the
+    >    operator marked these deliberately)
+
+    DISJOINT is the part §7.4 does not say and that matters most: a candidate
+    appears in the first section it qualifies for. Listing one moment under
+    three headers would spend §7.1's four-second budget rating the same window
+    three times, on the screen C4 calls the critical path.
+
+    Section 4 takes every marker-anchored candidate that missed the combined
+    cut, which is what "did not rank highly" means once section 1 is the only
+    thing above it. A key the operator pressed at that moment is a different
+    kind of evidence from a weighted sum, and it should not be buried in the
+    tail of a list sorted by weights.
+
+    Sections 2 and 3 split what is left by which profile is more confident about
+    it, compared as a SHARE of each profile's own best — raw composites are not
+    comparable across profiles, since §6.5's two sum 20.7 and 21.0 of weight of
+    which very different amounts have a producer today.
+    """
+    if not views:
+        return []
+
+    if not is_sectioned(views[0].profile):
+        for view in views:
+            view.section = ""
+        return views
+
+    entertainment = combined_score.normalise(
+        np.array([v.score_entertainment for v in views])
+    )
+    gameplay = combined_score.normalise(np.array([v.score_gameplay for v in views]))
+
+    ranked = sorted(views, key=lambda v: (-v.score, v.t_peak))
+    order = {id(view): i for i, view in enumerate(views)}
+    for place, view in enumerate(ranked):
+        i = order[id(view)]
+        if place < int(top_n):
+            view.section = "combined"
+        elif view.marker_anchored:
+            view.section = "markers"
+        elif entertainment[i] >= gameplay[i]:
+            view.section = "entertainment"
+        else:
+            view.section = "gameplay"
+
+    within = {
+        "combined": lambda v: (-v.score, v.t_peak),
+        "entertainment": lambda v: (-v.score_entertainment, v.t_peak),
+        "gameplay": lambda v: (-v.score_gameplay, v.t_peak),
+        "markers": lambda v: (-v.score, v.t_peak),
+    }
+    out: list[CandidateView] = []
+    for key, _label in SECTIONS:
+        out.extend(sorted((v for v in views if v.section == key), key=within[key]))
+
+    for index, view in enumerate(out):
+        view.index = index
+    return out
+
+
+def load_candidates(
+    conn: sqlite3.Connection, stream_id: str, section_top_n: int = 20
+) -> list[CandidateView]:
     """Current candidates, ranked, with everything the screen needs.
 
     Loaded in one pass and sent in one payload: C4's target is four seconds per
@@ -288,7 +387,10 @@ def load_candidates(conn: sqlite3.Connection, stream_id: str) -> list[CandidateV
         out.append(CandidateView(
             id=row["id"], index=index,
             t_start=row["t_start"], t_end=row["t_end"], t_peak=row["t_peak"],
-            score=row["score_combined"], generation=row["generation"],
+            score=row["score_combined"],
+            score_entertainment=row["score_entertainment"],
+            score_gameplay=row["score_gameplay"],
+            generation=row["generation"],
             profile=row["profile"], config_version=row["config_version"],
             contributions=contributions, context=context,
             # §7.4's fourth section: the operator marked these deliberately, so
@@ -305,7 +407,7 @@ def load_candidates(conn: sqlite3.Connection, stream_id: str) -> list[CandidateV
             # which is what commit 31's `nudge_context_s` padding is for.
             transcript=lines_in(transcript, row["t_start"], row["t_end"]),
         ))
-    return out
+    return assign_sections(out, section_top_n)
 
 
 def _sparkline_series(conn: sqlite3.Connection, stream_id: str):
