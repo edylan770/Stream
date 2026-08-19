@@ -509,6 +509,67 @@ transcript, which needs footage.
   candidate covers this" rather than focusing an unrelated moment and presenting
   it as the match.
 
+## Digest and chapters (Phase 5, §9)
+
+**Nothing in this section has been checked against footage, and unlike most of this
+file, most of it is not in the spec either.** §9.3 states three numbers — 60 s silence,
+120 s merge, 10–30 minute chapters — and everything else below was picked. The metrics
+that would falsify them are new in this commit and listed under each row.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `digest.silence_gap_s` | `60` | **grounded** | §9.3 states it | Chapters opening in the middle of a thought (too low), or a genuine twenty-minute break not opening one (too high) |
+| `digest.merge_within_s` | `120` | **grounded** | §9.3 states it | Two distinct transitions collapsing into one boundary (too high), or one transition producing three chapters (too low). `digest_chapter_count`'s `lengths_s` shows both |
+| `digest.min_chapter_s` / `max_chapter_s` | `600` / `1800` | **grounded** | §9.3's "target chapter length: 10–30 minutes" | The length distribution in `digest_chapter_count` sitting hard against either bound on every stream |
+| `digest.embedding_window_s` | `120` | **arbitrary** | §9.3 says "rolling-window" and states no width. One sentence is far too short a unit for a topic; two minutes is a guess at how long a topic lasts | Boundaries landing mid-topic (too short) or topics being missed entirely (too long). Nothing can show this until a stream has a transcript |
+| `digest.embedding_min_distance` | `0.25` | **arbitrary** | A cosine distance below which a local maximum is normal paragraph-to-paragraph wobble rather than a topic change. **No evidence whatsoever** — picked so that something would fire | The share of boundaries from `embedding_shift` in `digest_boundary_sources`: zero on a talkative stream means too high, one per minute means too low |
+| `digest.silence_floor_db` | `-50` | **plausible** | Only used when a stream has no transcript, to find silence in `mic_rms`. Consistent with `extract.rms.db_floor`'s intent | A stream with a noisy mic producing no silence boundaries at all — visible as `silence_gap` absent with "no quiet stretch" while the recording plainly had breaks |
+| `digest.arc_bin_s` | `60` | **plausible** | 180 points over a 3-hour stream: a readable shape, and a trivial share of §9.1's ~3,000 words | An arc too coarse to show a moment you remember, or so fine it dominates the digest's word count |
+| `digest.energy_roles` | `[mic, game, party]` | **plausible** | "How loud was it" across every track there is. Summed in **linear power** — a test asserts this, because averaging dB has caused two real bugs here | A game-audio-heavy stream reading as high energy throughout, which would argue for mic-only |
+| `digest.laughter_threshold` | `0.60` | **grounded** | The same value as `score.signals.laughter.threshold`, which was measured. Paired: they answer the same question and must move together | Whatever falsifies the scoring one |
+| `digest.phrase_min_count` | `3` | **plausible** | §5.4.2 uses three occurrences for the in-window version of the same idea | A running gag said twice being missed, or a list full of coincidences |
+| `digest.phrase_min_words` / `max_words` | `2` / `6` | **plausible** | §11.2's range for the cross-stream version, so the three phrase counters agree about what a phrase is | One-word catchphrases missed (min too high) |
+| `digest.phrase_limit` / `top_candidates` | `25` / `12` | **arbitrary** | Both are "enough to be useful, few enough to read". No evidence | Reading the digest and wanting more, or skimming past the tail |
+| `digest.source` | `manual` | **grounded** | The only one built, and for the same reason as `render.hooks.source`: there is no API key anywhere in this project. §12.4 prices one at roughly $0.10–0.30 per stream | — |
+
+**§9.3's boundary source 2 (game changes) is NOT IMPLEMENTED, and has no producer.**
+`streams.games` is a single untimed JSON array for the whole stream, and the OCR §9.3
+points at is Phase 7 — unbuilt, and the one thing §15 says to cut if it proves
+difficult. There is no key for it in config, because a key would imply it fires. If a
+timed game source ever exists (a manual marker, or Phase 7), this is where it plugs in:
+`chapters.py` takes boundary lists and does not care where they came from.
+
+**The digest's most important field is `content.segmentation`.** On every stream that
+exists today, boundary source 1 is unavailable — it needs `whisperx` → `embeddings`, and
+Phase 2 ships off. So a real digest is currently segmented on silence gaps alone, and
+`sources` / `absent` are what record that. A digest built from silence is a legitimate
+artifact; one that did not say so would not be.
+
+**The prompts themselves are the biggest guess in this section, and they are not
+numbers.** `config/digest_prompts.yaml` was written without ever having seen a digest.
+Whether a summary describes the *session* or merely paraphrases the transcript is not
+something any test can tell you — it needs digests of streams you remember. That file is
+the single highest-value edit in this phase, and it is config precisely so that making
+it is not a code change.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `digest.prompts_file` | `digest_prompts.yaml` | **grounded** | Prose belongs in its own file; same pattern as `extract.phrases.file` | — |
+| the `intro`/`rules`/`fields` text | placeholder | **arbitrary** | Written blind. §9.4 asks for "a 3–4 sentence summary, notable segment IDs, observed themes, and open loops" and this asks for exactly that, in that order | Reading a digest of a stream you remember and finding the summary generic, or the open loops invented to fill the field |
+| §9.4's map step is ONE round trip | — | **grounded** | Map-reduce structurally — each chapter summarised from its own transcript, ids scoped to itself — but one paste, because there is no API key and C8 budgets ~35 min hands-on per stream. `render/hooks.py` made the identical call for §8.5 | Chapter summaries bleeding into each other, which would argue for genuinely separate calls |
+
+**Worth watching once real digests exist:**
+
+- `digest_chapter_count`, whose `meta` carries the full length distribution. This is the
+  single observation that would falsify `merge_within_s`, `min_chapter_s` and
+  `max_chapter_s` at once.
+- `digest_boundary_sources`, whose `meta` names which sources fired and why each absent
+  one was absent. §9.3 asserts a priority order between four sources; this is the only
+  thing that would ever show that order to be wrong.
+- `digest_word_count` against §9.1's "~3,000 structured words". The deterministic half
+  alone comes to roughly 100 words on a 10-minute fixture with no transcript, which says
+  nothing yet — the number only becomes meaningful once chapters have summaries.
+
 ## Scene events (Phase 3, §5.1 stage 11 / §4.2)
 
 **Everything in this section is unvalidated in a way nothing else in this file
@@ -754,11 +815,39 @@ The mechanism is deterministic and tested; the taste question needs footage.
 written on every `--apply`. A rate that climbs means the prompt has stopped
 being clear, not that the model got worse.
 
+**The rate is a fraction of IDS, not of entries** (§12.2: "every returned ID is
+checked for existence"). For §8.5 the two coincide — one hook entry carries one
+`export_id` — so nothing here changed when §9.4 arrived. For a digest chapter,
+which carries an index plus notable ids plus an id per open loop, they do not,
+and the entry-based version reported 1.00 for a reply whose only invented handle
+was a single chapter index.
+
 **Not a guess, but recorded because it looks like one:** the ASS file is
 referenced from the filter graph by bare filename with ffmpeg run from its
 directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg's
 filter parser once a parent directory contains an apostrophe. See
 `ffmpeg.filter_file`.
+
+## Weight tuning (§14, §17)
+
+Two parameters, both **arbitrary**, and both deliberately not load-bearing: they decide
+how an analysis is *presented*, never what is extracted or scored. Changing either
+re-reads rows that already exist.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `metrics.firing_threshold_z` | `1.0` | **arbitrary** | §14 asks for a firing *rate*, so a fired/not-fired line is needed. One sigma is the conventional "notable" mark and there is no evidence for it here. This is why `separation` — needing no threshold — is the headline instead | A signal whose firing rate is ~100% or ~0% on **both** sides: the line is then on the wrong side of that signal's distribution and the rate carries no information, whatever the separation says |
+| `metrics.min_samples_for_rate` | `30` | **arbitrary** | Below this many approved AND this many rejected, no rate is printed. §6.7 puts 80–150 candidates in a 3 h stream, so 30 of each is roughly one or two streams' worth of each verdict — about where a fraction stops swinging on a single rating | Rates that still move sharply between the tenth and eleventh stream (too low), or a corpus that never reaches it because the approval rate is far under §6.7's assumption (too high) |
+
+**Gated on the smaller side of the contrast, not the total.** 200 rejections and 2
+approvals is not a sample that can say which signals predict approval, however large the
+total looks.
+
+**These three metrics are computed on demand and never written to `tool_metrics`**,
+which is a deviation from §14's "log to" wording. They are derivations over `candidates`
+and `ratings`, so a stored copy is stale the moment one more candidate is rated —
+`score/derived.py` declines to store derived signals for exactly this reason. See
+HANDOFF.
 
 ## Backup (§13.2)
 
@@ -844,12 +933,38 @@ observation that would falsify it is not being recorded.
    window outside their range would make the measurement circular — the operator could
    never record "I wanted this shorter than 8 seconds". VERIFIED in a browser: a window
    nudges down to 0.6 s against a `min_window_s` of 8.
-2. **Marker precision and recall.** §14 defines `marker_precision` and
-   `marker_recall_proxy` and they are the direct test of `retro_offset_s`. Neither is
-   computed yet; both are pure SQL over `ratings` and `events` once ten streams exist.
-3. **`signal_firing_rate_by_rating`.** §14 calls this "the primary weight-tuning input"
-   and §17's whole procedure depends on it. The data is being logged — full feature
-   vectors per candidate, per A9 — but nothing aggregates it. Needed before any weight
-   is changed on evidence.
+2. ~~**Marker precision and recall.**~~ **INSTRUMENTED in commit 43.** §14's
+   `marker_precision` and `marker_recall_proxy` are computed by
+   `clipforge/review/tuning.py` and printed by `clipforge metrics`. Precision is the
+   direct test of `retro_offset_s`; the recall proxy is §14's "how many good clips the
+   operator misses live", which is the number that says whether automatic detection is
+   earning its keep at all. **The gap now is footage, not instrumentation** — §17 wants
+   ~10 streams, and the report refuses to print either rate below
+   `metrics.min_samples_for_rate`.
+
+   "Marker-anchored" is ONE predicate (`queries.is_marker_anchored`), shared with §7.4's
+   rail section. A metric that scored it differently from the screen the operator rated
+   on would be measuring something nobody saw. It counts a `marker_definite` /
+   `marker_maybe` contribution as well as a press inside the window, because §4.3's
+   press lands ~20 s *after* the moment — so a window covering the moment frequently does
+   not contain the press that found it, and counting only presses inside would make
+   `marker_precision` measure the very offset it exists to check.
+3. ~~**`signal_firing_rate_by_rating`.**~~ **INSTRUMENTED in commit 43.** The data was
+   always being logged — full feature vectors per candidate, per A9 — and nothing
+   aggregated it. `clipforge metrics` now reports, per signal, the difference between its
+   mean value on approved and on rejected moments, with the firing rate beside it.
+   **Still needs ~10 streams before any weight moves on it.**
+
+   The headline is `separation`, not the firing rate. §14 asks for a *rate*, which needs
+   a fired/not-fired line and therefore an invented constant; a difference of means needs
+   none and answers the same question more directly. `metrics.firing_threshold_z` exists
+   because §14 names the rate, not because it is the better number.
+
+   **A null is not a zero**, and this is the whole reason the aggregation is not two
+   lines of SQL. Each signal keeps its own denominator — the candidates where it was
+   actually observed. MEASURED on a synthetic library where `mic_f0` was observed on a
+   third of candidates and strongly predictive: it comes out with the *largest*
+   separation of any signal (+3.08 at n=16/24). Counting its nulls as zero would have
+   diluted it to roughly a third and buried the strongest finding in the set.
 4. **Profanity list.** Assembled from general English, not from the operator's speech.
    The first ten streams' transcripts would settle it in minutes.

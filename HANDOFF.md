@@ -20,7 +20,37 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 **Phases 0, 1, 2, 3 and 4 of §15 are complete.** Phase 3 was originally skipped
 by choice — §8's renderer is what turns an approved moment into something
 postable, where Phase 3 only changes *which* moments surface — and was then
-built out across commits 31–39. Phases 5, 6 and 7 are not started.
+built out across commits 31–39. **Phase 5 is in progress**: §11.6's pull search
+(commit 40) and §9's deterministic digest (commit 41) are built. Phases 6 and 7
+are not started.
+
+**The digest's deterministic half runs with no LLM at all.** §9.2 is roughly
+sixty per cent arithmetic — chapters, the energy arc, recurring phrases, top
+candidates and their quotes — and that half is the `digest` stage, which needs
+no API key, no Ollama and no transcript. §9.4's summaries are added afterwards
+by `clipforge digest`, as a **new digest version**; §9.1 keeps every version
+forever, so nothing is ever updated in place.
+
+**§14's three weight-tuning metrics are computed** (commit 43), closing GUESSES
+gaps 2 and 3. `signal_firing_rate_by_rating`, `marker_precision` and
+`marker_recall_proxy` were named, referenced and protected by four separate
+comments, and never once calculated. `clipforge metrics` reports them now.
+**The gap left is footage, not instrumentation** — the report refuses to print
+any rate below `metrics.min_samples_for_rate`, so today it prints counts and
+says why.
+
+**§12's rules now live in `clipforge/llm.py`**, not in `render/hooks.py`. Two
+callers means two implementations of "is this quote verbatim" would drift
+quietly, both still passing their own tests. `hooks.py` re-exports the names it
+documented, so nothing that reached for them there had to change.
+
+**`clipforge digest <id>` writes the prompt; `--apply <file>` validates a reply.**
+Same paste round trip as `clipforge hook`, for the same reason. Verified end to
+end against a constructed two-chapter stream with a reply carrying four §12
+violations — an invented chapter index, a real segment id from the wrong
+chapter, an open loop citing another chapter, and a quote that paraphrased
+rather than quoted. All four were caught with specific reasons, v1 survived
+untouched, and `llm_invalid_id_rate` came out 0.375 over 8 returned ids.
 
 One caveat on that "complete": **`scene_events` is built but its OBS log parser
 has never seen a real log** and fails silently when wrong. See "Still missing"
@@ -180,6 +210,47 @@ Still greyed in the review footer, and still genuinely unbuilt: §7.3's `t` (tag
 These were each agreed explicitly. Do not revert one without reading its reason —
 several fix silent-failure bugs where the spec's literal text produces code that
 looks correct and is not.
+
+**Instrumentation (§14)**
+
+- **`signal_firing_rate_by_rating`, `marker_precision` and `marker_recall_proxy` are
+  computed on demand and never written to `tool_metrics`**, which departs from §14's
+  "log to `tool_metrics`" wording. They are derivations over `candidates` and `ratings`:
+  a stored copy is stale the moment one more candidate is rated, and a stale tuning
+  input is worse than none. `score/derived.py` declines to store derived signals for
+  exactly this reason. Recomputing is one indexed scan.
+- **The headline is `separation`, not the firing rate.** §14 asks for a rate, which
+  needs an invented threshold; the difference between a signal's mean on approved and on
+  rejected moments needs none and answers the same question. The rate is printed beside
+  it because §14 names it.
+- **A null in a feature vector is not a zero.** Each signal's denominator is the
+  candidates where it was actually observed. Measured: on a synthetic library `mic_f0`,
+  observed on a third of candidates, comes out with the largest separation of any
+  signal — counting its nulls as zero would have buried the strongest finding.
+- **`clipforge metrics` withholds every rate below `metrics.min_samples_for_rate`**,
+  gated on the smaller side of the contrast. A fraction over n=1 reads exactly like one
+  over n=1000, and §17's procedure is someone changing a weight because of a number on
+  that screen.
+
+**Digest (§9)**
+
+- **`digest` does not require `whisperx`, and does not defer on a missing API key.**
+  The registry declared `requires=("score", "whisperx")`; that is true of §9.4's
+  summaries and false of §9.3's chapters, the emotional arc and the top candidates.
+  Phase 2 ships off and zero streams exist, so requiring the transcript would defer
+  the stage on every recording the operator owns. It requires `score` — no candidates,
+  nothing to digest — and everything transcript-shaped degrades inside, recording what
+  it did not have in `content.segmentation`.
+- **§9.3's boundary source 2 (game changes) is not implemented.** Nothing can produce
+  it: `streams.games` is one untimed array for the whole stream, and the OCR §9.3
+  points at is unbuilt Phase 7. There is deliberately no config key for it, because a
+  key would imply it fires. Recorded in `spec/GUESSES.md`.
+- **On every stream that exists today the segmenter runs on silence gaps alone.**
+  §9.3 ranks embedding shift first, and it needs `whisperx` → `embeddings`. This is
+  not hidden: `content.segmentation.sources` names what actually shaped the chapters
+  and `.absent` says why each missing source was missing, and both go to
+  `tool_metrics` as `digest_boundary_sources`. A digest built from silence is a
+  legitimate artifact; one that did not say so would not be.
 
 **Data model**
 

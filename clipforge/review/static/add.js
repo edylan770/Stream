@@ -141,6 +141,9 @@ function mark(present) {
 function renderChoice() {
   const panel = $("add-choice");
   panel.hidden = !chosen;
+  // The step keeps its heading either way, so the screen does not reflow when a
+  // recording is picked; only the line under it swaps for the facts.
+  $("add-unchosen").hidden = Boolean(chosen);
   $("add-register").disabled = !preflight;
   if (!chosen) return;
 

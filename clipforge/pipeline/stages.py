@@ -219,9 +219,21 @@ STAGE_LIST: list[StageSpec] = [
     ),
     StageSpec(
         name="digest",
-        summary="LLM digest generation",
+        # Not "LLM digest generation" any more: the stage builds §9.2's
+        # deterministic half — chapters, the energy arc, recurring phrases, top
+        # candidates — with no model involved at all. `clipforge digest` adds
+        # the summaries afterwards, as a new version.
+        summary="chapters + deterministic digest (§9.2/§9.3)",
         phase=5,
-        requires=("score", "whisperx"),
+        # `whisperx` was declared here and is NOT required. It is true of §9.4's
+        # summaries and false of everything this stage computes: chapters fall
+        # back to silence in `mic_rms`, and the arc and top candidates never
+        # needed words. Phase 2 ships off and zero streams exist, so requiring
+        # the transcript would defer this on every recording that exists — and
+        # a digest built from silence alone is a real artifact, provided it says
+        # so, which `content.segmentation.sources` does.
+        requires=("score",),
+        module="clipforge.digest.stage",
     ),
 ]
 

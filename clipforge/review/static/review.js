@@ -154,8 +154,11 @@ function setUpTranscript(stream) {
   const note = $("no-transcript");
   note.hidden = has;
   if (!has) {
+    // The § belongs in the tooltip: someone reading this needs to know what to
+    // turn on, not which section of the spec asked for it.
+    note.title = "§7.3 — transcript text for the window, displayed alongside.";
     note.innerHTML =
-      "No transcript. §7.3 shows one beside the window; it needs " +
+      "No transcript for this stream. Showing one beside the window needs " +
       "<code>extract.whisperx.enabled: true</code> and a Whisper model " +
       "(a multi-GB download), then a re-run.";
   }
@@ -258,7 +261,11 @@ function focusCandidate(index) {
   // The clock for review_ms starts the moment the candidate is on screen.
   state.focusedAt = performance.now();
 
-  document.querySelectorAll("#candidates li").forEach((li, i) => {
+  // `:not(.cand-section)` because §7.4's headers are list items too, and they
+  // scroll with the candidates they head. Indexing every `li` made the header
+  // row index 0, so the highlight sat on "Combined winners" and every
+  // candidate's selection was one row further down than it looked.
+  document.querySelectorAll("#candidates li:not(.cand-section)").forEach((li, i) => {
     li.classList.toggle("current", i === state.cursor);
   });
   document.querySelector("#candidates li.current")
@@ -591,7 +598,7 @@ function profileScores(c) {
   const rows = [
     ["entertainment", c.score_entertainment],
     ["gameplay", c.score_gameplay],
-    ["combined (§6.5)", c.score],
+    ["combined", c.score],
   ];
   return rows.map(([name, value]) =>
     `<div class="sig-row sig-total">
@@ -801,12 +808,15 @@ async function finish() {
   const target = m.target_ms;
   const seconds_target = (target / 1000).toFixed(1);
   const median = m.median_review_ms;
+  // §7.1 rides in the tooltip. The sentence has to say what to DO about the
+  // number, and that is the part that stops being read when it arrives wrapped
+  // in a section reference.
   const verdict = median === null
-    ? `<span class="muted">nothing rated this session, so there is no pace to report.</span>`
+    ? `<span class="muted">Nothing rated this session, so there is no pace to report.</span>`
     : median <= target
-      ? `<span class="target-hit">within the ${seconds_target} s target (§7.1)</span>`
-      : `<span class="target-miss">over the ${seconds_target} s target (§7.1) —
-         §7.1 says fix the UI before adding a feature anywhere</span>`;
+      ? `<span class="target-hit" title="§7.1">Within the ${seconds_target} s target.</span>`
+      : `<span class="target-miss" title="§7.1">Over the ${seconds_target} s target —
+         fix the review screen before adding a feature anywhere else.</span>`;
 
   const stat = (value, label) =>
     `<div class="stat"><div class="v">${value}</div><span class="k">${label}</span></div>`;
