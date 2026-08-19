@@ -452,6 +452,82 @@ bisection landed and not a moment found or lost.
 | `ingest.probe.rate_sample_seconds` | `4.0` | **plausible** | Enough PTS to fit a constant rate and check the residual; two windows are sampled | A recording that starts CFR and degrades later being classified constant |
 | `ingest.audio.verify.silence_peak_dbfs` | `-80.0` | **plausible** | Below this counts as digital silence. Warns, never fails — a silent `party.wav` just means nobody was in Discord | A quiet-but-real track being flagged |
 
+## Chapter segmentation (Phase 5, §9.3)
+
+§9.3 lists four boundary inputs. **Three of them produce nothing on a stream
+processed with shipped defaults**, so this is a long-silence splitter until at
+least transcription is turned on — and `clipforge chapters` says which input
+produced each boundary and why the others did not, rather than letting four
+names in the spec imply four sources agreed.
+
+| §9.3 input | Producer | State today |
+|---|---|---|
+| Long silence > 60 s | `mic_rms`/`party_rms` through §6.4's gate | **live on every stream** |
+| Transcript embedding shift | `segment_embeddings` | needs `extract.whisperx.enabled`, off by default |
+| Scene changes | `scene_events` (commit 39) | producer exists, **parser unvalidated** — yields nothing yet |
+| Game changes | — | **no producer anywhere.** `streams.games` is untimed; per-moment game ID is §5.9, Phase 7 |
+
+**§9.3's own embedding formulation is the weaker of two, MEASURED.** It says
+"cosine distance between consecutive rolling-window embeddings". Against a
+deliberately maximal topic change — five Marvel Rivals lines followed by five
+baking lines, real model:
+
+| formulation | window 2 | window 3 | window 4 | peak / mean |
+|---|---|---|---|---|
+| §9.3's consecutive windows | **misses the seam** | hits | — | 1.2–1.3× |
+| before/after centroids at each gap | hits | hits | hits | 1.2–1.3× |
+
+The before/after form localises the seam at every window size. **But the ratio is
+the more important number**: even for two topics that unrelated, the boundary is
+only 1.2–1.3× the mean distance. `nomic-embed-text` compresses similarity so hard
+that everything is roughly half-similar to everything — the same property that
+kept a `min_similarity` knob out of `search:`. On the speech fixture, thirteen
+lines of one conversation with **no topic change at all**, consecutive distances
+still run 0.000–0.466 (mean 0.292).
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `digest.chapters.min_silence_s` | `60` | **grounded** | §9.3 states it | Chapters breaking at ordinary pauses (too low), or a three-hour stream coming out as one chapter (too high) |
+| `digest.chapters.merge_within_s` | `120` | **grounded** | §9.3 states it | Two genuinely different topics 90 s apart being merged into one chapter |
+| `digest.chapters.target_min_s` / `target_max_s` | `600` / `1800` | **grounded** | §9.3's "10–30 minutes". **Guidance, not a constraint** — see below | Chapters routinely outside the range on real streams, which would mean the inputs are too sparse rather than the targets wrong |
+| `digest.chapters.embedding.window` | `3` | **arbitrary** | Segments compared either side of a gap. MEASURED that 2, 3 and 4 all give the same 1.2–1.3× ratio on the seam probe, so nothing in that range is clearly better | A window shorter than a topic (too small), or one spanning two topics and smearing the boundary (too large) |
+| `digest.chapters.embedding.prominence_sd` | `1.0` | **arbitrary** | Peak prominence in the distance array's **own** standard deviations. RELATIVE on purpose — see below | Boundaries on every conversational wobble (too low) or none at all (too high) |
+| `digest.chapters.scene_changes` | `true` | **plausible** | On costs nothing: scene changes never propose a boundary alone, they only corroborate | — |
+
+**Four things that are not parameters:**
+
+- **Prominence is relative because an absolute threshold cannot mean one thing.**
+  MEASURED: the distance scale moves with the window — max 0.466 at window 1
+  against 0.138 at window 2 — so `min_distance: 0.05` would be strict at one
+  setting and meaningless at another. Prominence is therefore a multiplier of the
+  array's own standard deviation, and the absolute value handed to
+  `score/windows.py`'s peak finder is computed per stream.
+- **The merge defers to the most trustworthy source, not the earliest — and the
+  fixture is what forced that.** The first cut took the earliest boundary in a
+  cluster, on the reasoning that starting a chapter at the first evidence loses
+  no content. On the speech fixture that let a **1.21-sd embedding bump at 29.4 s
+  displace a nineteen-second silence at 52.0 s**, putting the boundary 23 seconds
+  early, mid-sentence. Priority is `silence > embedding > scene`: silence is the
+  only input validated on real data and its timestamp means something exact
+  (speech demonstrably resumed), the embedding peak is a weak statistic localised
+  only to within a window of segments, and §9.3 itself calls scene changes a
+  tie-breaker.
+- **A silence boundary is the END of the gap, not its middle.** The dead air
+  belongs to the chapter that just finished. Splitting it would put half of a
+  two-minute pause at the head of the next chapter, where §9.4 hands it to a
+  model as context.
+- **Chapters tile the stream, and it is asserted rather than assumed.** No gaps,
+  no overlaps, first starts at 0, last ends at `duration_s`. §9.2's structure is a
+  partition and §9.4 chunks over it, so a hole would silently drop that transcript
+  from the digest — no error, just a stream the model was never shown part of.
+  §9.3's target range is guidance around that: an over-long chapter splits only at
+  a boundary that was genuinely found inside it, never at an invented midpoint,
+  and when there is none the shortfall is reported.
+
+**What no test here can show:** that these are good chapters. The speech fixture
+is one continuous conversation and `fixture_long` is band-limited noise. The
+mechanism is tested; the judgement needs a real transcript.
+
 ## Semantic search (Phase 5, §11.6)
 
 Unusually little here is a guess, because the two decisions that mattered were

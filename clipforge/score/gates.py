@@ -170,6 +170,23 @@ def _speech_and_quiet(
     return speech, quiet, used
 
 
+def speech_activity(
+    raw: dict[str, np.ndarray], inputs: derived.Inputs, baseline_samples: int
+) -> np.ndarray:
+    """§6.4's "ANY speech detected", for callers outside this module.
+
+    A thin public name over `_speech_and_quiet`, added so §9.3's chapter
+    segmentation can ask the question without restating it. The union over
+    `VOICE_KINDS` is exactly the hazard HANDOFF records: §6.4's "ANY speech" and
+    §5.4.1's "VAD on both tracks" are the same question asked twice, a second
+    energy test could disagree with the first with nothing to report it, and a
+    test asserts the two agree sample for sample. A third copy in `digest/`
+    would reopen that.
+    """
+    speech, _quiet, _used = _speech_and_quiet(raw, inputs, baseline_samples)
+    return speech
+
+
 def menu_active(intervals, timeline: np.ndarray) -> np.ndarray:
     """§6.4's `menu_screen_active`, from `events.t .. events.t_end`.
 

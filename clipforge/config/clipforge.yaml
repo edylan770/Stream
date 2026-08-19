@@ -959,6 +959,63 @@ score:
     alpha: 0.5
 
 # ---------------------------------------------------------------------------
+# DIGEST -- §9's per-stream summary, and §9.3's chapter segmentation under it.
+#
+# TOP-LEVEL, outside config.py's VERSIONED_SUBTREES (`extract`, `score`).
+# Changing a chapter boundary rule or a prompt must never invalidate a candidate
+# or force a re-score -- nothing here can change which moments were detected.
+# Same reasoning that put `render:`, `previews:` and `search:` outside.
+digest:
+
+  # §9.3: boundaries found WITHOUT an LLM. This never calls a model at all --
+  # window centroids are averaged from the vectors `embeddings` already stored,
+  # so "deterministic first" is literal rather than approximate.
+  #
+  # WHICH OF §9.3's FOUR INPUTS EXISTS TODAY:
+  #   long silence     LIVE on every stream
+  #   embedding shift  only when extract.whisperx.enabled is on (it is not)
+  #   scene changes    producer exists, but its OBS log parser is UNVALIDATED
+  #   game changes     NO PRODUCER -- streams.games is untimed; §5.9 is Phase 7
+  # So on shipped defaults this is a long-silence splitter, and `clipforge
+  # chapters` says which input produced each boundary and why the others did not.
+  chapters:
+    # §9.3 states both of these.
+    min_silence_s: 60
+    merge_within_s: 120
+
+    # §9.3's "target chapter length: 10-30 minutes". GUIDANCE, not a constraint:
+    # an over-long chapter splits only if a real boundary was found inside it,
+    # never at an invented midpoint, and a 95 s stream is honestly one chapter.
+    target_min_s: 600
+    target_max_s: 1800
+
+    # §9.3 lists scene changes as a "weak signal, tie-breaker only" and §16
+    # rejects them as a scorer, so they never propose a boundary alone -- they
+    # only corroborate one another input already found.
+    scene_changes: true
+
+    embedding:
+      # Segments either side of a gap whose centroids are compared.
+      #
+      # ARBITRARY. Larger smooths harder: MEASURED, the same maximal topic seam
+      # gives a peak/mean ratio of 1.2-1.3x at windows 2, 3 and 4, so nothing in
+      # that range is clearly better and the choice is a guess.
+      window: 3
+
+      # Peak prominence, in the distance array's OWN standard deviations.
+      #
+      # RELATIVE ON PURPOSE. MEASURED: the raw distance scale moves with the
+      # window -- max 0.466 at window 1 against 0.138 at window 2 -- so an
+      # absolute threshold would mean different things at different settings.
+      # That is the same trap that kept a `min_similarity` knob out of
+      # `search:`; see spec/GUESSES.md.
+      #
+      # ARBITRARY at 1.0: the two-topic probe had only seven gaps, far too few
+      # for a stable standard deviation. A real transcript with hundreds is
+      # where this becomes measurable.
+      prominence_sd: 1.0
+
+# ---------------------------------------------------------------------------
 # PREVIEWS -- §7.2's precomputed review assets (§5.1 stage 15).
 #
 # Deliberately a TOP-LEVEL subtree, not under `extract` or `score`: those two

@@ -85,7 +85,8 @@ Phase 2.
 | 37 | `4a5fca1` | §6.5's two profiles, and a combined ranking that agrees exactly |
 | 38 | `3188777` | §7.2's preview assets — **§7.3's autoplay is real**; §7.2's own preset is 9.5× too slow |
 | 39 | `4a6f5a3` | `scene_events` — **Phase 3 complete**, and the one unvalidated parser in the project |
-| 40 | *this* | §11.6's pull search — and the config value that was changing its results |
+| 40 | `3243b85` | §11.6's pull search — and the config value that was changing its results |
+| 41 | *this* | §9.3's chapters — three of four inputs dead, and a merge rule the fixture corrected |
 
 1547 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
@@ -389,6 +390,65 @@ looks correct and is not.
   review link is: rendering needs approved moments, and nothing can be approved
   before there are candidates. Otherwise the operator's first render is an
   error message.
+
+**Chapter segmentation (Phase 5, §9.3)**
+
+- **Three of §9.3's four inputs produce nothing on a default stream.** Long
+  silence is live everywhere; the embedding shift needs `whisperx` (off by
+  default); scene changes need an OBS log whose parser has never been validated;
+  and **game changes have no producer anywhere in the system** — `streams.games`
+  is an untimed JSON array and per-moment game identification is §5.9's vision,
+  Phase 7. So this is a long-silence splitter today, and `clipforge chapters`
+  reports which input produced each boundary and why the others did not. Same
+  discipline as commit 37's live-weight table.
+- **§9.3's own embedding formulation is the weaker of two, MEASURED.** It asks
+  for "cosine distance between consecutive rolling-window embeddings"; against a
+  maximal topic seam that form MISSES at window 2 where comparing before/after
+  centroids at each gap hits at windows 2, 3 and 4. The before/after form ships.
+- **…but the signal is weak either way, and that is the number to remember.**
+  Even for two topics as unrelated as a hero shooter and pastry, the boundary
+  peak is only **1.2–1.3× the mean** distance. `nomic-embed-text` compresses
+  similarity so hard that everything is roughly half-similar to everything — the
+  same property that kept `min_similarity` out of `search:`. Every boundary
+  therefore carries its strength and the report prints it, so a 1.3× bump cannot
+  present itself as a topic change.
+- **Prominence is expressed in the distance array's OWN standard deviations.**
+  MEASURED: the raw scale moves with the window — max 0.466 at window 1 against
+  0.138 at window 2 — so an absolute `min_distance` would be strict at one
+  setting and meaningless at another. `score/windows.py`'s existing peak finder
+  does the work; only the threshold handed to it is computed per stream.
+- **THE MERGE DEFERS TO THE MOST TRUSTWORTHY SOURCE, AND THE FIXTURE FORCED IT.**
+  The first cut took the earliest boundary in a cluster, reasoning that starting
+  a chapter at the first evidence loses no content. The speech fixture
+  immediately showed why that is wrong: a **1.21-sd embedding bump at 29.4 s
+  displaced a nineteen-second silence at 52.0 s**, moving the boundary 23 seconds
+  early into the middle of a sentence. Priority is `silence > embedding > scene`
+  — silence is the only one validated on real data and its timestamp means
+  something exact, and §9.3 itself calls scene changes a tie-breaker. The
+  survivor records what corroborated it.
+- **Scene changes never propose a boundary alone.** §9.3 calls them "weak signal,
+  tie-breaker only" and §16 rejects them as a scorer; a cluster containing
+  nothing else is dropped.
+- **A silence boundary is the END of the gap, not its middle** — the dead air
+  belongs to the chapter that just finished, not the one about to start.
+- **Chapters TILE the stream, asserted rather than assumed.** §9.2's structure is
+  a partition and §9.4 chunks over it, so a gap between two chapters would
+  silently drop that transcript from the digest with no error. `_assert_tiles`
+  refuses to return a broken partition.
+- **§9.3's 10–30 minute target is guidance.** An over-long chapter splits only at
+  a boundary genuinely found inside it, never at an invented midpoint; when there
+  is none, the shortfall is reported. A 95 s fixture is honestly one chapter.
+- **The speech gate is §6.4's, reached through a new 3-line
+  `gates.speech_activity`.** HANDOFF already records that §6.4's "ANY speech" and
+  §5.4.1's "VAD on both tracks" being asked twice was a real hazard, with a test
+  asserting they agree sample for sample. A third copy in `digest/` would have
+  reopened it; a test asserts `chapters.py` calls the wrapper and never
+  `derived.speech_gate(` directly.
+- **Chapters are computed, never a table.** §3.2 declares none and §9.2 nests
+  them inside the digest JSON, which is where commit 43 will put them.
+- **What no test can show: that these are good chapters.** The speech fixture is
+  one continuous conversation and `fixture_long` is band-limited noise. The
+  mechanism is tested; the judgement needs a real transcript.
 
 **Semantic search (Phase 5, §11.6)**
 
