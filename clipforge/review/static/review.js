@@ -258,7 +258,11 @@ function focusCandidate(index) {
   // The clock for review_ms starts the moment the candidate is on screen.
   state.focusedAt = performance.now();
 
-  document.querySelectorAll("#candidates li").forEach((li, i) => {
+  // `:not(.cand-section)` because §7.4's headers are list items too, and they
+  // scroll with the candidates they head. Indexing every `li` made the header
+  // row index 0, so the highlight sat on "Combined winners" and every
+  // candidate's selection was one row further down than it looked.
+  document.querySelectorAll("#candidates li:not(.cand-section)").forEach((li, i) => {
     li.classList.toggle("current", i === state.cursor);
   });
   document.querySelector("#candidates li.current")

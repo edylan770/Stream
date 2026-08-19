@@ -16,9 +16,13 @@
      constraint. This gives consistent chrome for nothing. -->
 <header id="topbar" class="topbar">
 
+  <!-- Every bar reads `[back] | [title] … [actions]`. The back control names
+       where it lands rather than being a bare arrow, and the brand appears
+       only here, on the root — a sub-view re-announcing the app is noise. -->
   <div class="bar" id="bar-library" hidden>
     <div class="bar-left">
       <span class="brand"><span class="brand-mark">▮</span>ClipForge</span>
+      <span class="bar-sep" aria-hidden="true"></span>
       <span class="crumb">streams</span>
     </div>
     <div class="bar-right">
@@ -32,9 +36,9 @@
        the review screen video height on the one screen where it matters. -->
   <div class="bar" id="bar-search" hidden>
     <div class="bar-left">
-      <button id="search-back" class="btn btn--quiet" title="Back to the library"
-              aria-label="Back">&larr;</button>
-      <span class="brand"><span class="brand-mark">▮</span>Search</span>
+      <button id="search-back" class="btn btn--quiet" aria-label="Back to the library"><span class="arrow" aria-hidden="true">&larr;</span> Streams</button>
+      <span class="bar-sep" aria-hidden="true"></span>
+      <span class="bar-title">Search</span>
     </div>
     <div class="bar-right">
       <span id="search-corpus" class="muted small"></span>
@@ -43,15 +47,17 @@
 
   <div class="bar" id="bar-add" hidden>
     <div class="bar-left">
-      <button id="add-back" class="btn btn--quiet" title="Back to the library" aria-label="Back">&larr;</button>
-      <span class="brand">Add a recording</span>
+      <button id="add-back" class="btn btn--quiet" aria-label="Back to the library"><span class="arrow" aria-hidden="true">&larr;</span> Streams</button>
+      <span class="bar-sep" aria-hidden="true"></span>
+      <span class="bar-title">Add a recording</span>
     </div>
   </div>
 
   <div class="bar" id="bar-run" hidden>
     <div class="bar-left">
-      <button id="run-back" class="btn btn--quiet" title="Back to the library" aria-label="Back">&larr;</button>
-      <span id="run-name" class="brand mono truncate"></span>
+      <button id="run-back" class="btn btn--quiet" aria-label="Back to the library"><span class="arrow" aria-hidden="true">&larr;</span> Streams</button>
+      <span class="bar-sep" aria-hidden="true"></span>
+      <span id="run-name" class="bar-title mono truncate"></span>
       <span id="run-summary" class="crumb truncate"></span>
     </div>
     <div class="bar-right run-actions">
@@ -64,15 +70,16 @@
 
   <div class="bar" id="bar-review" hidden>
     <div class="bar-left">
-      <button id="back" class="btn btn--quiet" title="Back to the library" aria-label="Back">&larr;</button>
-      <strong id="stream-name" class="truncate"></strong>
+      <button id="back" class="btn btn--quiet" aria-label="Back to the library"><span class="arrow" aria-hidden="true">&larr;</span> Streams</button>
+      <span class="bar-sep" aria-hidden="true"></span>
+      <span id="stream-name" class="bar-title truncate"></span>
       <span id="stream-meta" class="crumb truncate"></span>
     </div>
     <div class="bar-right">
-      <span id="filter-state" class="pill" hidden>markers only</span>
       <span id="progress" class="muted small"></span>
       <span id="clock" class="muted mono small"
-            title="Session length — §7.1 targets 8 min per 120"></span>
+            title="How long this review session has run. The target is 8 minutes
+                   per 120 candidates (§7.1)."></span>
     </div>
   </div>
 
@@ -142,7 +149,14 @@
     <p id="add-drop-note" class="muted small" hidden></p>
   </div>
 
+  <!-- Every control this screen had, grouped under the question it answers.
+       It was one flat stack of eleven blocks — dropzone, two bars, a listing,
+       three loose notes, a form, a preflight panel, a button and a key hint —
+       with nothing saying which of them came first. -->
   <div class="browse">
+    <div class="section-head"><span class="eyebrow">Find the file</span>
+      <span id="add-recent" class="muted small"></span></div>
+
     <div class="browse-bar">
       <input id="add-path" class="path" spellcheck="false"
              aria-label="Path — type or paste one and press Enter">
@@ -150,7 +164,7 @@
     </div>
 
     <div class="browse-bar">
-      <input id="add-filter" class="field" spellcheck="false"
+      <input id="add-filter" class="field grow" spellcheck="false"
              placeholder="filter this folder…" aria-label="Filter the listing">
       <button id="add-sort" class="btn btn--ghost" type="button"
               title="Newest first is usually what you want: the recording you
@@ -166,24 +180,31 @@
     </p>
 
     <p id="add-capture" class="muted small"></p>
-    <p id="add-recent" class="muted small"></p>
-  </div>
-
-  <div class="add-form">
-    <label>Title <input id="add-title" class="field" placeholder="optional"></label>
-    <label>Games <input id="add-games" class="field" placeholder="comma-separated, optional"></label>
   </div>
 
   <!-- Nothing is written until Register. §4.1 makes the anchor the entire sync
        solution; learning it was missing after the row exists is too late. -->
-  <div id="add-choice" class="choice" hidden></div>
+  <div class="step">
+    <div class="section-head"><span class="eyebrow">Check it</span></div>
+    <div id="add-choice" class="choice" hidden></div>
+    <p id="add-unchosen" class="hint">Pick a recording above and its anchor,
+      markers and audio tracks are read before anything is written.</p>
+  </div>
 
-  <div class="actions">
-    <button id="add-register" class="btn btn--primary" disabled>Register <kbd>enter</kbd></button>
-    <span class="hint">
-      <kbd>j</kbd><kbd>k</kbd> move · <kbd>enter</kbd> open or pick ·
-      <kbd>backspace</kbd> up · <kbd>esc</kbd> back
-    </span>
+  <div class="step">
+    <div class="section-head"><span class="eyebrow">Name it and register</span></div>
+    <div class="add-form">
+      <label>Title <input id="add-title" class="field" placeholder="optional"></label>
+      <label>Games <input id="add-games" class="field" placeholder="comma-separated, optional"></label>
+    </div>
+
+    <div class="actions">
+      <button id="add-register" class="btn btn--primary" disabled>Register <kbd>enter</kbd></button>
+      <span class="hint">
+        <kbd>j</kbd><kbd>k</kbd> move · <kbd>enter</kbd> open or pick ·
+        <kbd>backspace</kbd> up · <kbd>esc</kbd> back
+      </span>
+    </div>
   </div>
 </section>
 
@@ -192,19 +213,18 @@
   <div id="run-state-block"></div>
   <ol id="run-stages" class="stages"></ol>
 
-  <div class="section-head">
-    <span>Log</span>
-    <span class="soon-legend">dashed = not built yet</span>
-  </div>
+  <div class="section-head"><span class="eyebrow">Log</span></div>
   <pre id="run-log" class="log" aria-live="polite"></pre>
 
   <div class="actions">
     <button id="run-render" class="btn">Render approved clips</button>
-    <button class="btn soon" disabled
-            title="Phase 5 — digest generation is not built">
-      Generate digest
-    </button>
     <span id="run-render-hint" class="hint"></span>
+    <span class="spacer"></span>
+    <!-- Was a greyed-out button sitting beside a live one, which reads as a
+         control that ought to work. A line says the same thing without
+         pretending to be pressable. -->
+    <span class="not-built" title="Phase 5 — digest generation is not built">
+      not built yet — digest</span>
   </div>
 </section>
 
@@ -218,8 +238,11 @@
       <aside class="rail" id="list-pane">
         <div class="rail-head">
           <span>Candidates</span>
-          <button id="filter-toggle" class="btn btn--ghost"
-                  title="Show only marker-anchored (m)">m</button>
+          <span class="rail-head-right">
+            <span id="filter-state" class="pill" hidden>markers only</span>
+            <button id="filter-toggle" class="btn btn--ghost"
+                    title="Show only marker-anchored candidates (m)">m</button>
+          </span>
         </div>
         <!-- §7.4's four sections are rendered from the payload, and only
              when more than one §6.5 profile scored the stream. With one
@@ -301,15 +324,22 @@
       </aside>
     </div>
 
+    <!-- Grouped by what the keys do. Twelve items in one flat row wrapped
+         wherever the window happened to end, so finding a key meant reading
+         all of them. -->
     <footer class="keys">
-      <span><kbd>j</kbd><kbd>k</kbd> move</span>
-      <span><kbd>1</kbd> skip</span>
-      <span><kbd>2</kbd> maybe</span>
-      <span><kbd>3</kbd> clip it</span>
-      <span><kbd>space</kbd> play window</span>
-      <span><kbd>?</kbd> signals</span>
-      <span><kbd>m</kbd> markers only</span>
-      <span><kbd>q</kbd> finish</span>
+      <span class="group">
+        <span><kbd>j</kbd><kbd>k</kbd> move</span>
+        <span><kbd>space</kbd> play window</span>
+      </span>
+
+      <span class="sep"></span>
+
+      <span class="group">
+        <span class="rate-0"><kbd>1</kbd> skip</span>
+        <span class="rate-1"><kbd>2</kbd> maybe</span>
+        <span class="rate-2"><kbd>3</kbd> clip it</span>
+      </span>
 
       <span class="sep"></span>
 
@@ -317,16 +347,31 @@
            often the operator nudges boundaries during review", and these keys
            are what makes that number collectable at all (spec/GUESSES.md gap 1
            was open until they existed). -->
-      <span title="§7.3 — move the window start by review.nudge_step_s">
-        <kbd>[</kbd><kbd>]</kbd> nudge start</span>
-      <span title="§7.3 — move the window end by review.nudge_step_s">
-        <kbd>{</kbd><kbd>}</kbd> nudge end</span>
-      <span class="soon" title="§7.3, not built — the ratings.tags column exists and nothing writes it">
-        <kbd>t</kbd> tag</span>
-      <span class="soon" title="§7.3, not built — the server accepts a note and no client sends one">
-        <kbd>n</kbd> note</span>
-      <span class="soon" title="§7.3, not built — export is `clipforge export` for now">
-        <kbd>e</kbd> export queue</span>
+      <span class="group">
+        <span title="Move the window start by review.nudge_step_s (§7.3)">
+          <kbd>[</kbd><kbd>]</kbd> start</span>
+        <span title="Move the window end by review.nudge_step_s (§7.3)">
+          <kbd>{</kbd><kbd>}</kbd> end</span>
+      </span>
+
+      <span class="sep"></span>
+
+      <span class="group">
+        <span><kbd>?</kbd> signals</span>
+        <span><kbd>m</kbd> markers only</span>
+        <span><kbd>q</kbd> finish</span>
+      </span>
+
+      <span class="spacer"></span>
+
+      <!-- The three keys §7.3 asks for that no phase has built. One quiet line
+           at the end rather than three greyed items interleaved with the live
+           controls, where they read as things that ought to work. -->
+      <span class="not-built"
+            title="§7.3, not built: ratings.tags exists and nothing writes it;
+                   the server accepts a note and no client sends one; export is
+                   `clipforge export` for now.">
+        not built yet — tag, note, export queue</span>
     </footer>
   </div>
 

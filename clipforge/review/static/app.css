@@ -22,6 +22,11 @@
 :root {
   /* -- surfaces ------------------------------------------------------- */
   --bg: #101216;
+  /* The chrome sits between the page ground and the panels rather than sharing
+   * a colour with them: the bar was --panel, the same as the rail and the
+   * detail strip, so nothing separated "where you are" from "what you are
+   * looking at". */
+  --chrome: #14171d;
   --panel: #171a20;
   --panel-2: #1e222a;
   --panel-3: #252a34;
@@ -83,6 +88,12 @@
   /* Two rings so the halo reads against any surface. The app is driven from
    * the keyboard and previously showed no focus at all. */
   --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+
+  /* ONE uppercase micro-label. Seven rules used to roll their own at three
+   * different tracking values (0.07em, 0.08em, 0.09em) and two sizes — labels
+   * that read as the same thing and never quite lined up, which is most of
+   * what made the app feel unsettled. */
+  --eyebrow-track: 0.08em;
 
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
@@ -152,6 +163,24 @@ html, body {
 }
 
 /* ------------------------------------------------------------ utilities */
+
+/* Every uppercase micro-label in the app, in one place. `.eyebrow` is for new
+ * markup; the rest are the existing hooks, listed so their own rules keep only
+ * layout and this keeps the type. */
+.eyebrow,
+.rail-head,
+.stream-list .count-label,
+.stat .k,
+.result-meta,
+.asset-slot,
+.score-block .muted,
+.candidates li.cand-section {
+  font-size: var(--txs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--eyebrow-track);
+  color: var(--faint);
+}
 
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
@@ -228,14 +257,19 @@ code {
   color: #1a1020;
 }
 
+/* The way back. It used to be a bare `←` glyph with the destination only in a
+ * tooltip, which is a guess at where you land — and there were four of them on
+ * screen at once. One control, and it says the name of the place. */
 .btn--quiet {
   background: none;
   border: none;
   color: var(--muted);
   padding: var(--s2) var(--s3);
-  font-size: var(--tlg);
+  font-size: var(--tmd);
+  gap: var(--s2);
 }
 .btn--quiet:hover:not(:disabled) { color: var(--text); background: var(--panel-2); }
+.btn--quiet .arrow { font-size: var(--tbase); line-height: 1; }
 
 .btn--sm { font-size: var(--tsm); padding: var(--s2) var(--s3); }
 
@@ -255,19 +289,15 @@ code {
 .soon:hover { opacity: 0.55; }
 .soon kbd { border-style: dashed; }
 
-.soon-legend {
+/* The other half of the same idea, for a capability rather than a slot. Three
+ * greyed key hints interleaved with the live ones in the review footer, and a
+ * disabled button beside a working one on the run screen, both read as things
+ * that ought to work; one quiet line at the end of the row says the same thing
+ * and stops competing with the controls that do. */
+.not-built {
   color: var(--faint);
   font-size: var(--txs);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s2);
-}
-.soon-legend::before {
-  content: "";
-  width: 8px; height: 8px;
-  border-radius: 2px;
-  border: 1px dashed var(--line-strong);
-  background: var(--panel-2);
+  white-space: nowrap;
 }
 
 .note {
@@ -294,7 +324,7 @@ code {
   background: var(--panel);
   color: var(--muted);
   line-height: 1.7;
-  margin: var(--s5) 0;
+  margin: 0;
 }
 .state h2 { margin: 0; font-size: var(--tlg); color: var(--text); font-weight: 600; }
 .state p { margin: 0; }
@@ -313,12 +343,21 @@ code {
 /* ---------------------------------------------------------------- panes */
 
 .pane {
-  max-width: 900px;
+  max-width: 860px;
   margin: 0 auto;
   padding: var(--s7) var(--s6) var(--s8);
   height: 100%;
   overflow-y: auto;
 }
+/* ONE vertical rhythm for every pane. `.browse`, `.add-form`, `.choice`,
+ * `.actions` and `.state` each carried their own margin, at four different
+ * values, so no two blocks on a screen sat the same distance apart. */
+.pane > * + * { margin-top: var(--s6); }
+/* A state host with nothing in it must not spend a gap. Scoped to `div` on
+ * purpose: the run log is an empty `<pre>` until a run starts, and collapsing
+ * it would leave its heading dangling and make the screen jump the moment the
+ * first line arrives. */
+.pane > div:empty { display: none; }
 .pane h1 { margin: 0 0 var(--s2); font-size: var(--txl); letter-spacing: -0.02em; }
 .pane-head {
   display: flex;
@@ -330,17 +369,19 @@ code {
 .pane-head > div { min-width: 0; }
 .pane-head p { margin: var(--s1) 0 0; }
 
+/* Layout only: the caps live on the `.eyebrow` inside it, so the right-hand
+ * slot (a legend, a "recent:" list) is not uppercased along with the title. */
 .section-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--s4);
-  margin: var(--s6) 0 var(--s3);
-  font-size: var(--txs);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--faint);
 }
+/* A heading belongs to what follows it, not to the gap above the next block. */
+.pane > .section-head + * { margin-top: var(--s3); }
+
+/* One step of the add screen: a heading and the controls that answer it. */
+.step { display: grid; gap: var(--s3); }
 
 /* --------------------------------------------------------------- topbar
  *
@@ -355,10 +396,10 @@ code {
   flex: none;
   display: flex;
   align-items: center;
-  min-height: 46px;
+  min-height: 52px;
   padding: 0 var(--s5);
   gap: var(--s4);
-  background: var(--panel);
+  background: var(--chrome);
   border-bottom: 1px solid var(--line);
 }
 .bar {
@@ -371,10 +412,28 @@ code {
 .bar-left, .bar-right {
   display: flex;
   align-items: center;
-  gap: var(--s4);
+  gap: var(--s3);
   min-width: 0;
 }
-.bar-right { margin-left: auto; }
+.bar-right { margin-left: auto; gap: var(--s4); }
+
+/* Every bar reads `[back] | [title] … [actions]`. The rule that keeps them
+ * feeling like one bar is that the title is always in the same place and
+ * always the same weight, whichever screen you are on. */
+.bar-title {
+  font-weight: 600;
+  font-size: var(--tbase);
+  letter-spacing: -0.01em;
+  color: var(--text);
+  min-width: 0;
+}
+.bar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  flex: none;
+  margin: 0 var(--s1);
+}
 
 .brand {
   font-weight: 600;
@@ -414,23 +473,33 @@ code {
   border-radius: var(--r-lg);
   color: inherit;
   font: inherit;
-  padding: var(--s4) var(--s5);
+  padding: var(--s5);
   cursor: pointer;
   transition: border-color var(--speed), background var(--speed);
 }
 .stream-list button:hover:not(:disabled) { border-color: var(--line-strong); background: var(--panel-2); }
 .stream-list button.current { border-color: var(--accent); background: var(--panel-2); }
 .stream-list button:disabled { opacity: 0.5; cursor: not-allowed; }
-.stream-list .name { font-weight: 600; display: block; }
+.stream-list .name { font-weight: 600; display: block; font-size: var(--tlg); letter-spacing: -0.01em; }
 .stream-list .sub { color: var(--muted); font-size: var(--tsm); }
-.stream-list .count { font-family: var(--mono); font-size: var(--txl); line-height: 1; }
-.stream-list .count-label { display: block; font-size: var(--t2xs); color: var(--faint);
-  text-transform: uppercase; letter-spacing: 0.08em; font-family: var(--sans); }
-.stream-list .state-text { font-size: var(--tsm); white-space: nowrap; color: var(--muted); }
+/* The count and the rated-so-far used to be two readouts of similar weight at
+ * the same edge, competing for the same glance. The count is the number you
+ * scan the list by, so it keeps the size; the progress line steps back. */
+.stream-list .count { font-family: var(--mono); font-size: var(--tlg); line-height: 1;
+  text-align: right; flex: none; }
+.stream-list .count-label { display: block; font-family: var(--sans); }
+.stream-list .state-text {
+  font-size: var(--tsm);
+  white-space: nowrap;
+  color: var(--muted);
+  flex: none;
+  min-width: 92px;
+  text-align: right;
+}
 
 /* ---------------------------------------------------------- file browser */
 
-.browse { margin: var(--s5) 0; }
+.browse { display: grid; gap: var(--s4); }
 /* Drop-to-locate. A real drop target that never uploads: the page reads
    File.name and File.size and the server finds the file where it already is.
    Sized to read as the primary affordance without pushing the browser — which
@@ -441,8 +510,7 @@ code {
   gap: var(--s2);
   align-items: center;
   text-align: center;
-  padding: var(--s5) var(--s4);
-  margin-bottom: var(--s4);
+  padding: var(--s6) var(--s4);
   border: 1px dashed var(--line-strong);
   border-radius: var(--r-md);
   background: var(--panel-2);
@@ -454,7 +522,7 @@ code {
 
 .btn--tiny { padding: var(--s1) var(--s3); font-size: var(--tsm); }
 
-.browse-bar { display: flex; gap: var(--s4); align-items: center; margin-bottom: var(--s4); }
+.browse-bar { display: flex; gap: var(--s3); align-items: center; }
 .path, .field {
   background: var(--panel-2);
   border: 1px solid var(--line-strong);
@@ -498,7 +566,7 @@ code {
 .entries .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entries .sz { font-family: var(--mono); font-size: var(--tsm); color: var(--muted); }
 
-.add-form { display: flex; gap: var(--s5); margin: var(--s5) 0; flex-wrap: wrap; }
+.add-form { display: flex; gap: var(--s5); flex-wrap: wrap; }
 .add-form label { display: flex; align-items: center; gap: var(--s3); color: var(--muted); font-size: var(--tmd); }
 
 .choice {
@@ -506,7 +574,6 @@ code {
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   padding: var(--s4) var(--s5);
-  margin-bottom: var(--s4);
 }
 .facts { display: grid; grid-template-columns: auto 1fr; gap: var(--s2) var(--s5); margin: 0; }
 .facts dt { color: var(--muted); font-size: var(--tmd); }
@@ -523,7 +590,7 @@ code {
 .missing { color: var(--maybe); }
 .warn-line { color: var(--warn-ink); font-size: var(--tmd); margin: var(--s2) 0 0; }
 
-.actions { display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap; margin-top: var(--s5); }
+.actions { display: flex; align-items: center; gap: var(--s4); flex-wrap: wrap; }
 .hint { color: var(--muted); font-size: var(--tsm); }
 
 /* ------------------------------------------------------------------- run */
@@ -651,12 +718,12 @@ code {
   gap: var(--s3);
   padding: var(--s3) var(--s4);
   border-bottom: 1px solid var(--line);
-  font-size: var(--txs);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--faint);
   flex: none;
 }
+/* "markers only" lives beside the toggle that sets it. It used to be announced
+ * here AND in the top bar, two readouts of one boolean. */
+.rail-head-right { display: flex; align-items: center; gap: var(--s3); }
+.rail-head-right .pill { font-size: var(--t2xs); padding: 1px var(--s3); }
 .rail-note {
   padding: var(--s3) var(--s4);
   border-bottom: 1px solid var(--line);
@@ -665,9 +732,16 @@ code {
 }
 
 .candidates { list-style: none; margin: 0; padding: var(--s2); overflow-y: auto; flex: 1; }
+/* Four tracks, and the last one is ALWAYS there.
+ *
+ * The marker dot is a `::after`, which is a grid item like any other — with
+ * only three tracks it wrapped onto a second row, so every marker-anchored
+ * candidate was 40px tall with a loose dot underneath it instead of 20px. A
+ * reserved track also means a marker does not change a row's height, which is
+ * what C4 asks of this list: the eye must not re-hunt the same column. */
 .candidates li {
   display: grid;
-  grid-template-columns: 26px 1fr auto;
+  grid-template-columns: 26px 1fr auto 5px;
   align-items: center;
   gap: var(--s3);
   padding: var(--s2) var(--s3);
@@ -682,11 +756,7 @@ code {
   display: block;
   cursor: default;
   border-left-color: transparent;
-  padding: var(--s4) var(--s3) var(--s2);
-  font-size: var(--txs);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--faint);
+  padding: var(--s5) var(--s3) var(--s2);
 }
 .candidates li.cand-section:first-child { padding-top: var(--s2); }
 .candidates li.cand-section:hover { background: none; }
@@ -700,12 +770,15 @@ code {
 .candidates li.rated-0 .when { color: var(--skip); text-decoration: line-through; }
 .candidates li.rated-1 .when { color: var(--maybe); }
 .candidates li.rated-2 .when { color: var(--clip); font-weight: 600; }
-.candidates li.marker::after {
+/* The dot occupies the reserved track on every row; only a marker-anchored
+ * candidate paints it. */
+.candidates li::after {
   content: "";
   width: 5px; height: 5px;
   border-radius: 50%;
-  background: var(--marker);
+  background: transparent;
 }
+.candidates li.marker::after { background: var(--marker); }
 
 .stage-pane {
   display: flex;
@@ -754,11 +827,7 @@ video { width: 100%; height: 100%; object-fit: contain; }
 .window { font-size: var(--tlg); }
 .score { font-size: var(--t2xl); line-height: 1; }
 .score-block { text-align: right; flex: none; }
-.score-block .muted {
-  font-size: var(--t2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
+.score-block .muted { margin-top: var(--s1); }
 
 .spark { margin: var(--s4) 0 0; }
 .spark svg {
@@ -792,10 +861,6 @@ video { width: 100%; height: 100%; object-fit: contain; }
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--t2xs);
-  color: var(--faint);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 .signals {
@@ -810,7 +875,10 @@ video { width: 100%; height: 100%; object-fit: contain; }
 .sig-bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: var(--r-pill); }
 .sig-bar i.neg { background: var(--skip); }
 .sig-val { text-align: right; }
-.sig-total { border-top: 1px dashed var(--line); margin-top: var(--s2); padding-top: var(--s2); color: var(--muted); }
+/* Solid: a subtotal rule is not an empty slot. Dashed is reserved for "there
+ * is nothing here" and "this is not built" — `.state`, `.soon`, `.asset-slot`
+ * and the dropzone — so that the border style carries one meaning. */
+.sig-total { border-top: 1px solid var(--line); margin-top: var(--s2); padding-top: var(--s2); color: var(--muted); }
 .sig-context { color: var(--muted); margin-top: var(--s2); font-size: var(--tsm); }
 
 .verdict { margin-top: var(--s4); font-size: var(--tmd); min-height: 20px; }
@@ -839,19 +907,32 @@ video { width: 100%; height: 100%; object-fit: contain; }
 
 /* ------------------------------------------------------------------ keys */
 
+/* Twelve items in one flat row, wrapping wherever the window happened to end.
+ * Grouped now: move · rate · play · adjust · finish, with the separators
+ * marking the joins, so the eye finds a key by what it does. */
 .keys {
   flex: none;
   display: flex;
-  gap: var(--s5);
+  gap: var(--s4);
   flex-wrap: wrap;
   align-items: center;
   padding: var(--s3) var(--s5);
   border-top: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--chrome);
   color: var(--muted);
   font-size: var(--tsm);
 }
-.keys .sep { width: 1px; height: 14px; background: var(--line-strong); }
+.keys .group { display: flex; align-items: center; gap: var(--s4); }
+.keys .sep { width: 1px; height: 14px; background: var(--line-strong); flex: none; }
+.keys .spacer { flex: 1; }
+
+/* The rating keys wear the colours the candidate rail uses for the same
+ * ratings, so the footer teaches the list's colour code instead of being a
+ * second thing to learn. */
+.keys .rate-0 kbd { border-color: var(--skip); color: var(--skip); }
+.keys .rate-1 kbd { border-color: var(--maybe); color: var(--maybe); }
+.keys .rate-2 kbd { border-color: var(--clip); color: var(--clip); }
+
 
 /* --------------------------------------------------------------- summary */
 
@@ -868,14 +949,7 @@ video { width: 100%; height: 100%; object-fit: contain; }
   padding: var(--s4) var(--s5);
 }
 .stat .v { font-family: var(--mono); font-size: var(--txl); line-height: 1.2; }
-.stat .k {
-  display: block;
-  margin-top: var(--s1);
-  font-size: var(--txs);
-  color: var(--faint);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
+.stat .k { display: block; margin-top: var(--s1); }
 .target-hit { color: var(--clip); }
 .target-miss { color: var(--maybe); }
 
@@ -921,10 +995,4 @@ video { width: 100%; height: 100%; object-fit: contain; }
 /* Wraps rather than truncating: the matched line IS the result, and a search
  * that hides the thing it found makes the operator click to find out. */
 .result-text { display: block; line-height: 1.45; }
-.result-meta {
-  flex: none;
-  font-size: var(--t2xs);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding-top: 2px;
-}
+.result-meta { flex: none; padding-top: 3px; }
