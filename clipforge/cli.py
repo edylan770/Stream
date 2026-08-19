@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "backup": ("clipforge.db.cmd_backup", "back up the database, and verify one (§13.2)"),
     "config": ("clipforge.config", "show the merged configuration and its version hash"),
     "db": ("clipforge.db.commands", "init, inspect, or relink the database"),
+    "digest": ("clipforge.digest.cmd_digest", "chapter summaries for a digest (§9.4)"),
     "doctor": ("clipforge.doctor", "check external tools and the Python environment"),
     "export": ("clipforge.render.cmd_export", "approved moments as an FCPXML timeline (§10.5)"),
     "hook": ("clipforge.render.cmd_hook", "hook text options for rendered clips (§8.5)"),

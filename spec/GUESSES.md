@@ -545,6 +545,19 @@ Phase 2 ships off. So a real digest is currently segmented on silence gaps alone
 `sources` / `absent` are what record that. A digest built from silence is a legitimate
 artifact; one that did not say so would not be.
 
+**The prompts themselves are the biggest guess in this section, and they are not
+numbers.** `config/digest_prompts.yaml` was written without ever having seen a digest.
+Whether a summary describes the *session* or merely paraphrases the transcript is not
+something any test can tell you — it needs digests of streams you remember. That file is
+the single highest-value edit in this phase, and it is config precisely so that making
+it is not a code change.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `digest.prompts_file` | `digest_prompts.yaml` | **grounded** | Prose belongs in its own file; same pattern as `extract.phrases.file` | — |
+| the `intro`/`rules`/`fields` text | placeholder | **arbitrary** | Written blind. §9.4 asks for "a 3–4 sentence summary, notable segment IDs, observed themes, and open loops" and this asks for exactly that, in that order | Reading a digest of a stream you remember and finding the summary generic, or the open loops invented to fill the field |
+| §9.4's map step is ONE round trip | — | **grounded** | Map-reduce structurally — each chapter summarised from its own transcript, ids scoped to itself — but one paste, because there is no API key and C8 budgets ~35 min hands-on per stream. `render/hooks.py` made the identical call for §8.5 | Chapter summaries bleeding into each other, which would argue for genuinely separate calls |
+
 **Worth watching once real digests exist:**
 
 - `digest_chapter_count`, whose `meta` carries the full length distribution. This is the
@@ -801,6 +814,13 @@ The mechanism is deterministic and tested; the taste question needs footage.
 `tool_metrics`. §14 calls it hallucination monitoring, and it is now being
 written on every `--apply`. A rate that climbs means the prompt has stopped
 being clear, not that the model got worse.
+
+**The rate is a fraction of IDS, not of entries** (§12.2: "every returned ID is
+checked for existence"). For §8.5 the two coincide — one hook entry carries one
+`export_id` — so nothing here changed when §9.4 arrived. For a digest chapter,
+which carries an index plus notable ids plus an id per open loop, they do not,
+and the entry-based version reported 1.00 for a reply whose only invented handle
+was a single chapter index.
 
 **Not a guess, but recorded because it looks like one:** the ASS file is
 referenced from the filter graph by bare filename with ffmpeg run from its

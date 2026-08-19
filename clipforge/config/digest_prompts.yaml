@@ -1,0 +1,66 @@
+# §9.4's map-reduce prompt text.
+#
+# In its own file rather than in clipforge.yaml for the same reason phrases.yaml
+# is: this is prose under active revision, and prose inside a settings file makes
+# both harder to read. Pointed at by `digest.prompts_file`.
+#
+# THESE ARE PLACEHOLDERS WRITTEN WITHOUT EVER HAVING SEEN A DIGEST. Rewrite them
+# once you have digests of streams you actually remember — that is the only way
+# to tell whether the summaries are describing the session or paraphrasing the
+# transcript, and it is the single highest-value edit in this file.
+#
+# Substitutions available in `intro`: {stream_id}, {date}, {games}, {duration},
+# {chapter_count}, {sentences}. Everything else is literal.
+
+# Opens the prompt. Says what the job is and what the material is.
+intro: |
+  # Digest for {stream_id}
+
+  You are summarising one {duration} gaming stream ({date}{games}) that has been
+  split into {chapter_count} chapter(s) by an automatic segmenter.
+
+  Summarise EACH chapter independently, from its own transcript only. Do not
+  carry a claim from one chapter into another, and do not describe the stream as
+  a whole — a later pass does that from your chapter summaries.
+
+# The §12 rules, restated for whoever is reading. Kept separate from `intro` so
+# the rules can be tightened without touching the description of the job.
+rules: |
+  ## Rules for your reply
+
+  - Reply with ONE JSON object and nothing else outside it.
+  - Use the `segment_id` values exactly as given. They are database ids, not
+    positions — do not renumber them, and do not invent any.
+  - Only cite segment ids from WITHIN the chapter you are describing. An id from
+    another chapter is discarded exactly like one that does not exist.
+  - `quote` must be a VERBATIM span copied from that chapter's transcript. It is
+    checked automatically and a chapter whose quote does not appear is discarded.
+  - Never write a timestamp. Cite segment ids; times are resolved from the
+    database.
+
+# What each chapter's object must contain. §9.2's chapter fields plus §9.5's
+# open loops, which are "a field in the digest prompt, not a separate pass".
+fields: |
+  For each chapter give:
+
+  - `title`: 3-8 words. What happened, not a genre label.
+  - `summary`: {sentences} sentences, describing what actually took place.
+  - `themes`: 0-4 short phrases naming what this chapter was ABOUT.
+  - `notable_segment_ids`: up to 5 ids of the lines most worth revisiting.
+  - `quote`: one verbatim line from this chapter.
+  - `open_loops`: things the speaker said he would try, questions he asked
+    aloud, and problems he ran into but did not solve. Each is
+    `{{"text": ..., "kind": ..., "segment_id": ...}}` where `kind` is one of
+    `promise`, `question`, `unsolved`. Give an empty list if there are none —
+    do not invent one to fill the field.
+
+# Introduces the per-chapter sections.
+chapters_header: |
+  ## The chapters
+
+# Shown in place of a transcript when a chapter has no transcribed speech, which
+# is every chapter on a stream processed with Phase 2 off.
+no_transcript: |
+  (no transcript for this chapter — the stream was processed without
+  extract.whisperx.enabled, so there is nothing to summarise here. Give a title
+  of null and an empty summary rather than guessing.)

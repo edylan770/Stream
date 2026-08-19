@@ -31,6 +31,19 @@ no API key, no Ollama and no transcript. §9.4's summaries are added afterwards
 by `clipforge digest`, as a **new digest version**; §9.1 keeps every version
 forever, so nothing is ever updated in place.
 
+**§12's rules now live in `clipforge/llm.py`**, not in `render/hooks.py`. Two
+callers means two implementations of "is this quote verbatim" would drift
+quietly, both still passing their own tests. `hooks.py` re-exports the names it
+documented, so nothing that reached for them there had to change.
+
+**`clipforge digest <id>` writes the prompt; `--apply <file>` validates a reply.**
+Same paste round trip as `clipforge hook`, for the same reason. Verified end to
+end against a constructed two-chapter stream with a reply carrying four §12
+violations — an invented chapter index, a real segment id from the wrong
+chapter, an open loop citing another chapter, and a quote that paraphrased
+rather than quoted. All four were caught with specific reasons, v1 survived
+untouched, and `llm_invalid_id_rate` came out 0.375 over 8 returned ids.
+
 One caveat on that "complete": **`scene_events` is built but its OBS log parser
 has never seen a real log** and fails silently when wrong. See "Still missing"
 below for the one command that settles it.

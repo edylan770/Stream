@@ -37,6 +37,13 @@ prose wrapped around the JSON, and asking the operator to trim it by hand is
 the kind of friction that makes a tool go unused. The last JSON object wins --
 the same tactic `loudness.parse` already needed against ffmpeg's diagnostics.
 
+**The §12 machinery itself now lives in `clipforge/llm.py`.** It was written
+here because §8.5 was the only caller; §9.4's digest is the second, and two
+implementations of "is this quote verbatim" would drift quietly, both still
+passing their own tests. Nothing about the behaviour below changed when it
+moved -- `normalise` is re-exported so existing callers and tests still find
+it here.
+
 **Nothing is chosen automatically.** `--apply` validates and reports; `--pick`
 writes. §8.5 calls the hook the highest-leverage decision in short-form and
 says it stays manual, so a mode that quietly stored the model's first option
@@ -46,24 +53,20 @@ would be the model deciding.
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
-import subprocess
-import sys
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from clipforge import db
+from clipforge import llm
 from clipforge.render import RenderError
 from clipforge.render.words import role_for, track_roles
 
-#: §14's name for it. Written to `tool_metrics` on every `--apply`.
-INVALID_ID_METRIC = "llm_invalid_id_rate"
+#: §14's name for it. Written to `tool_metrics` on every `--apply`. Re-exported
+#: from `clipforge.llm`, which owns §12's rules for every caller.
+INVALID_ID_METRIC = llm.INVALID_ID_METRIC
 
 #: §8.5: "propose 5 hook variants".
 WANTED_OPTIONS = 5
-
-_SPACE = re.compile(r"\s+")
 
 
 class HookError(RenderError):
@@ -96,23 +99,14 @@ class Proposal:
 
 
 @dataclass
-class Validated:
-    """What came back, and what was thrown away."""
+class Validated(llm.Validation):
+    """What came back, and what was thrown away.
+
+    `dropped`, `returned` and `invalid_id_rate` are §12.2's bookkeeping and come
+    from `llm.Validation`; only the proposals are §8.5's.
+    """
 
     proposals: list[Proposal] = field(default_factory=list)
-    #: (reason, detail) for everything dropped. §12.2 says drops are silent to
-    #: the caller of the model, not to the operator watching the tool.
-    dropped: list[tuple[str, str]] = field(default_factory=list)
-    #: How many ids the model returned in total, valid or not.
-    returned: int = 0
-
-    @property
-    def invalid_id_rate(self) -> float:
-        """§14's `llm_invalid_id_rate`. 0.0 when the model returned nothing."""
-        if not self.returned:
-            return 0.0
-        bad = sum(1 for reason, _ in self.dropped if reason == "unknown-id")
-        return round(bad / self.returned, 4)
 
 
 # --------------------------------------------------------------------------
@@ -243,14 +237,9 @@ def _transcript(conn, stream_id: str, t_start: float, t_end: float,
     return "\n".join(lines)
 
 
-def normalise(text: str) -> str:
-    """For the §12.3 quote check: whitespace and case, nothing else.
-
-    Deliberately not punctuation-insensitive. "Verbatim" is the requirement,
-    and a model that rewrote the words has not quoted the clip -- but one that
-    re-wrapped a line has, and that should not be a rejection.
-    """
-    return _SPACE.sub(" ", str(text or "")).strip().lower()
+#: §12.3's quote check. Re-exported: this module documented the rule before
+#: `clipforge/llm.py` existed, and callers still reach for it here.
+normalise = llm.normalise
 
 
 # --------------------------------------------------------------------------
@@ -319,14 +308,7 @@ def build_prompt(cfg, clips: list[Clip], stream_id: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def to_clipboard(text: str) -> bool:
-    """Best effort. Returns whether it worked, and never raises."""
-    command = ["clip"] if sys.platform == "win32" else ["pbcopy"]
-    try:
-        subprocess.run(command, input=text.encode("utf-8"), check=True)
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
+to_clipboard = llm.to_clipboard
 
 
 # --------------------------------------------------------------------------
@@ -334,29 +316,7 @@ def to_clipboard(text: str) -> bool:
 # --------------------------------------------------------------------------
 
 
-def parse_reply(text: str) -> dict | None:
-    """The last JSON object in whatever came back, or None.
-
-    A chat window wraps its answer in prose. Asking the operator to trim that
-    by hand is the friction that stops a tool being used, so the parser scans
-    backwards for a balanced object instead.
-    """
-    depth = 0
-    end = -1
-    for index in range(len(text) - 1, -1, -1):
-        char = text[index]
-        if char == "}":
-            if depth == 0:
-                end = index
-            depth += 1
-        elif char == "{":
-            depth -= 1
-            if depth == 0 and end != -1:
-                try:
-                    return json.loads(text[index:end + 1])
-                except json.JSONDecodeError:
-                    depth, end = 0, -1
-    return None
+parse_reply = llm.parse_reply
 
 
 def validate(reply: dict | None, clips: list[Clip]) -> Validated:
@@ -383,7 +343,10 @@ def validate(reply: dict | None, clips: list[Clip]) -> Validated:
             result.dropped.append(("malformed", f"not an object: {entry!r:.60}"))
             continue
 
-        result.returned += 1
+        # One entry, one export_id — so ids and entries coincide here. Stated
+        # via `saw_id` anyway, because §12.2 counts ids and §9.4's digest, where
+        # they do NOT coincide, shares this bookkeeping.
+        result.saw_id()
         raw_id = entry.get("export_id")
         try:
             export_id = int(raw_id)
@@ -423,16 +386,7 @@ def validate(reply: dict | None, clips: list[Clip]) -> Validated:
 
 def record(conn: sqlite3.Connection, stream_id: str, result: Validated) -> None:
     """§12.2's "logged to tool_metrics for monitoring hallucination rate"."""
-    with db.transaction(conn):
-        conn.execute(
-            "INSERT INTO tool_metrics (stream_id, metric, value, meta) "
-            "VALUES (?, ?, ?, ?)",
-            (stream_id, INVALID_ID_METRIC, result.invalid_id_rate, json.dumps({
-                "returned": result.returned,
-                "accepted": len(result.proposals),
-                "dropped": [reason for reason, _detail in result.dropped],
-            })),
-        )
+    llm.record(conn, stream_id, result, accepted=len(result.proposals))
 
 
 def store(conn: sqlite3.Connection, export_id: int, text: str) -> None:
