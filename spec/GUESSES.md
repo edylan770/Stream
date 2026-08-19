@@ -828,6 +828,27 @@ directory. MEASURED — no escaping of an absolute Windows path survives ffmpeg'
 filter parser once a parent directory contains an apostrophe. See
 `ffmpeg.filter_file`.
 
+## Weight tuning (§14, §17)
+
+Two parameters, both **arbitrary**, and both deliberately not load-bearing: they decide
+how an analysis is *presented*, never what is extracted or scored. Changing either
+re-reads rows that already exist.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `metrics.firing_threshold_z` | `1.0` | **arbitrary** | §14 asks for a firing *rate*, so a fired/not-fired line is needed. One sigma is the conventional "notable" mark and there is no evidence for it here. This is why `separation` — needing no threshold — is the headline instead | A signal whose firing rate is ~100% or ~0% on **both** sides: the line is then on the wrong side of that signal's distribution and the rate carries no information, whatever the separation says |
+| `metrics.min_samples_for_rate` | `30` | **arbitrary** | Below this many approved AND this many rejected, no rate is printed. §6.7 puts 80–150 candidates in a 3 h stream, so 30 of each is roughly one or two streams' worth of each verdict — about where a fraction stops swinging on a single rating | Rates that still move sharply between the tenth and eleventh stream (too low), or a corpus that never reaches it because the approval rate is far under §6.7's assumption (too high) |
+
+**Gated on the smaller side of the contrast, not the total.** 200 rejections and 2
+approvals is not a sample that can say which signals predict approval, however large the
+total looks.
+
+**These three metrics are computed on demand and never written to `tool_metrics`**,
+which is a deviation from §14's "log to" wording. They are derivations over `candidates`
+and `ratings`, so a stored copy is stale the moment one more candidate is rated —
+`score/derived.py` declines to store derived signals for exactly this reason. See
+HANDOFF.
+
 ## Backup (§13.2)
 
 Unusually, almost nothing here is a guess: §13.2 states the retention numbers and
@@ -912,12 +933,38 @@ observation that would falsify it is not being recorded.
    window outside their range would make the measurement circular — the operator could
    never record "I wanted this shorter than 8 seconds". VERIFIED in a browser: a window
    nudges down to 0.6 s against a `min_window_s` of 8.
-2. **Marker precision and recall.** §14 defines `marker_precision` and
-   `marker_recall_proxy` and they are the direct test of `retro_offset_s`. Neither is
-   computed yet; both are pure SQL over `ratings` and `events` once ten streams exist.
-3. **`signal_firing_rate_by_rating`.** §14 calls this "the primary weight-tuning input"
-   and §17's whole procedure depends on it. The data is being logged — full feature
-   vectors per candidate, per A9 — but nothing aggregates it. Needed before any weight
-   is changed on evidence.
+2. ~~**Marker precision and recall.**~~ **INSTRUMENTED in commit 43.** §14's
+   `marker_precision` and `marker_recall_proxy` are computed by
+   `clipforge/review/tuning.py` and printed by `clipforge metrics`. Precision is the
+   direct test of `retro_offset_s`; the recall proxy is §14's "how many good clips the
+   operator misses live", which is the number that says whether automatic detection is
+   earning its keep at all. **The gap now is footage, not instrumentation** — §17 wants
+   ~10 streams, and the report refuses to print either rate below
+   `metrics.min_samples_for_rate`.
+
+   "Marker-anchored" is ONE predicate (`queries.is_marker_anchored`), shared with §7.4's
+   rail section. A metric that scored it differently from the screen the operator rated
+   on would be measuring something nobody saw. It counts a `marker_definite` /
+   `marker_maybe` contribution as well as a press inside the window, because §4.3's
+   press lands ~20 s *after* the moment — so a window covering the moment frequently does
+   not contain the press that found it, and counting only presses inside would make
+   `marker_precision` measure the very offset it exists to check.
+3. ~~**`signal_firing_rate_by_rating`.**~~ **INSTRUMENTED in commit 43.** The data was
+   always being logged — full feature vectors per candidate, per A9 — and nothing
+   aggregated it. `clipforge metrics` now reports, per signal, the difference between its
+   mean value on approved and on rejected moments, with the firing rate beside it.
+   **Still needs ~10 streams before any weight moves on it.**
+
+   The headline is `separation`, not the firing rate. §14 asks for a *rate*, which needs
+   a fired/not-fired line and therefore an invented constant; a difference of means needs
+   none and answers the same question more directly. `metrics.firing_threshold_z` exists
+   because §14 names the rate, not because it is the better number.
+
+   **A null is not a zero**, and this is the whole reason the aggregation is not two
+   lines of SQL. Each signal keeps its own denominator — the candidates where it was
+   actually observed. MEASURED on a synthetic library where `mic_f0` was observed on a
+   third of candidates and strongly predictive: it comes out with the *largest*
+   separation of any signal (+3.08 at n=16/24). Counting its nulls as zero would have
+   diluted it to roughly a third and buried the strongest finding in the set.
 4. **Profanity list.** Assembled from general English, not from the operator's speech.
    The first ten streams' transcripts would settle it in minutes.

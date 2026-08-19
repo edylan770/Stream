@@ -1460,6 +1460,34 @@ export:
   handles_s: 0.0
 
 # ---------------------------------------------------------------------------
+# METRICS — §14's tuning inputs.
+#
+# Read only by `clipforge metrics`. Nothing in the pipeline depends on these:
+# they decide how an ANALYSIS is presented, not what gets extracted or scored,
+# so changing one re-reads existing rows and costs nothing.
+# ---------------------------------------------------------------------------
+metrics:
+  # What counts as a signal "firing", for §14's signal_firing_rate_by_rating.
+  # Feature-vector values are rolling z-scores at t_peak, so this is "how many
+  # standard deviations above its own baseline before we call it notable".
+  #
+  # ARBITRARY. One sigma is the conventional line and there is no evidence for
+  # it here. It is also why `separation` — a difference of means, needing no
+  # threshold at all — is the headline in the report and this is the number
+  # printed beside it.
+  firing_threshold_z: 1.0
+
+  # Below this many APPROVED and this many REJECTED candidates, `clipforge
+  # metrics` prints the counts and refuses to print a rate.
+  #
+  # ARBITRARY, and deliberately cautious. A fraction over n=1 reads exactly like
+  # a fraction over n=1000 and invites a decision it cannot support -- which is
+  # the false confidence spec/GUESSES.md exists to prevent. §17 wants ~10
+  # streams before any weight moves on evidence; at §6.7's 80-150 candidates per
+  # 3 h stream, 30 of each is roughly where a rate stops swinging on one rating.
+  min_samples_for_rate: 30
+
+# ---------------------------------------------------------------------------
 # DIGEST — §9. Chapter segmentation and the ~3,000-word artifact.
 #
 # EVERY NUMBER IN THIS BLOCK IS A GUESS. Zero streams exist, so not one of them

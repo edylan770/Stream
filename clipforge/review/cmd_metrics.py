@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 
 from clipforge import config, db
-from clipforge.review import queries
+from clipforge.review import queries, tuning
 
 
 def add_arguments(parser) -> None:
@@ -42,7 +42,10 @@ def main(args) -> int:
         report = {sid: queries.review_metrics(conn, sid) for sid in ids}
 
         if args.json:
-            print(json.dumps(report, indent=2))
+            print(json.dumps({
+                "streams": report,
+                "tuning": tuning.tuning_metrics(conn, cfg, ids).to_json(),
+            }, indent=2))
             return 0
 
         for stream_id, m in report.items():
@@ -50,6 +53,7 @@ def main(args) -> int:
             print()
 
         _stage_durations(conn, ids)
+        _tuning(conn, cfg, ids)
         return 0
     finally:
         conn.close()
@@ -128,6 +132,96 @@ def _nudges(m: dict) -> None:
     if n["dropped_peak"]:
         print(f"  peak dropped    {n['dropped_peak']} window(s) no longer contain "
               f"the peak they were detected from")
+
+
+#: How many signals to print. The full schema is 33 and most of them are null
+#: on a Phase 1 stream; the ones that separate the verdicts are what §17 acts on.
+TOP_SIGNALS = 12
+
+
+def _tuning(conn, cfg, ids: list[str]) -> None:
+    """§14's three weight-tuning metrics (GUESSES gaps 2 and 3).
+
+    THE SAMPLE SIZE IS PRINTED BEFORE ANY RATE, and below
+    `metrics.min_samples_for_rate` no rate is printed at all. A fraction over
+    n=1 looks exactly like a fraction over n=1000, and §17's whole procedure is
+    someone changing a weight because of a number on this screen.
+    """
+    result = tuning.tuning_metrics(conn, cfg, ids)
+
+    print()
+    print("weight tuning (§14, §17)")
+    print(f"  rated           {result.rated} operator rating(s) across "
+          f"{result.streams} stream(s)"
+          f"  ·  {result.approved} approved, {result.rejected} rejected")
+
+    if not result.rated:
+        print("  nothing to tune on yet — rate some candidates in the review UI")
+        return
+
+    if not result.enough:
+        # Deliberately blunt. This is the screen someone would change a weight
+        # from, and the honest answer today is "you cannot yet".
+        print(f"  NOT ENOUGH YET  §17 wants ~10 streams; rates need "
+              f"{result.min_samples} approved and {result.min_samples} rejected "
+              f"(have {result.approved}/{result.rejected}).")
+        print("                  counts below are real; the fractions they imply "
+              "are not, and are withheld.")
+
+    _markers(result)
+    _signals(result)
+
+
+def _markers(result: tuning.Tuning) -> None:
+    m = result.markers
+    print(f"  markers         {m['anchored']} marker-anchored candidate(s), "
+          f"{m['anchored_approved']} of them approved")
+
+    if not result.enough:
+        return
+    precision = m[tuning.MARKER_PRECISION]
+    recall = m[tuning.MARKER_RECALL]
+    if precision is not None:
+        print(f"  marker precision {precision:.1%} — of what you marked live, "
+              f"how much survived review (§17's retro_offset_s)")
+    if recall is not None:
+        # §14 calls this the valuable one, and it is the number that says
+        # whether automatic detection is earning its keep at all.
+        print(f"  missed live      {recall:.1%} of approved moments had no marker "
+              f"— what the detector caught and you did not")
+
+
+def _signals(result: tuning.Tuning) -> None:
+    """§14's signal_firing_rate_by_rating, strongest separation first.
+
+    `separation` leads because it needs no threshold: it is the difference of a
+    signal's mean value on approved versus rejected moments. A positive number
+    means the signal is higher on the moments you kept, which is the definition
+    of a signal worth more weight.
+
+    Ranked by |separation| rather than by separation, because a signal that is
+    reliably LOWER on approved moments is just as informative — it wants a
+    negative weight, or it is a §6.4 gate.
+    """
+    rows = [r for r in result.signals if r["separation"] is not None]
+    if not rows:
+        print("  signals         no signal was observed on both an approved and "
+              "a rejected candidate yet")
+        return
+
+    print(f"  signals         separation = mean(approved) - mean(rejected); "
+          f"fired at z >= {result.threshold}")
+    width = max(len(r["signal"]) for r in rows[:TOP_SIGNALS])
+    for row in rows[:TOP_SIGNALS]:
+        line = (f"    {row['signal'].ljust(width)}  {row['separation']:+7.3f}"
+                f"   n={row['n_approved']}/{row['n_rejected']}")
+        if result.enough and row["lift"] is not None:
+            line += (f"   fired {row['fired_rate_approved']:.0%} vs "
+                     f"{row['fired_rate_rejected']:.0%}")
+        print(line)
+
+    if len(rows) > TOP_SIGNALS:
+        print(f"    … {len(rows) - TOP_SIGNALS} more; --json for all of them")
 
 
 def _stage_durations(conn, ids: list[str]) -> None:

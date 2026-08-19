@@ -31,6 +31,14 @@ no API key, no Ollama and no transcript. §9.4's summaries are added afterwards
 by `clipforge digest`, as a **new digest version**; §9.1 keeps every version
 forever, so nothing is ever updated in place.
 
+**§14's three weight-tuning metrics are computed** (commit 43), closing GUESSES
+gaps 2 and 3. `signal_firing_rate_by_rating`, `marker_precision` and
+`marker_recall_proxy` were named, referenced and protected by four separate
+comments, and never once calculated. `clipforge metrics` reports them now.
+**The gap left is footage, not instrumentation** — the report refuses to print
+any rate below `metrics.min_samples_for_rate`, so today it prints counts and
+says why.
+
 **§12's rules now live in `clipforge/llm.py`**, not in `render/hooks.py`. Two
 callers means two implementations of "is this quote verbatim" would drift
 quietly, both still passing their own tests. `hooks.py` re-exports the names it
@@ -202,6 +210,27 @@ Still greyed in the review footer, and still genuinely unbuilt: §7.3's `t` (tag
 These were each agreed explicitly. Do not revert one without reading its reason —
 several fix silent-failure bugs where the spec's literal text produces code that
 looks correct and is not.
+
+**Instrumentation (§14)**
+
+- **`signal_firing_rate_by_rating`, `marker_precision` and `marker_recall_proxy` are
+  computed on demand and never written to `tool_metrics`**, which departs from §14's
+  "log to `tool_metrics`" wording. They are derivations over `candidates` and `ratings`:
+  a stored copy is stale the moment one more candidate is rated, and a stale tuning
+  input is worse than none. `score/derived.py` declines to store derived signals for
+  exactly this reason. Recomputing is one indexed scan.
+- **The headline is `separation`, not the firing rate.** §14 asks for a rate, which
+  needs an invented threshold; the difference between a signal's mean on approved and on
+  rejected moments needs none and answers the same question. The rate is printed beside
+  it because §14 names it.
+- **A null in a feature vector is not a zero.** Each signal's denominator is the
+  candidates where it was actually observed. Measured: on a synthetic library `mic_f0`,
+  observed on a third of candidates, comes out with the largest separation of any
+  signal — counting its nulls as zero would have buried the strongest finding.
+- **`clipforge metrics` withholds every rate below `metrics.min_samples_for_rate`**,
+  gated on the smaller side of the contrast. A fraction over n=1 reads exactly like one
+  over n=1000, and §17's procedure is someone changing a weight because of a number on
+  that screen.
 
 **Digest (§9)**
 

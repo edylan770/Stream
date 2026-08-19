@@ -389,12 +389,7 @@ def load_candidates(
     if not rows:
         return []
 
-    markers = [
-        float(r["t"]) for r in conn.execute(
-            "SELECT t FROM events WHERE stream_id = ? AND source = 'marker' ORDER BY t",
-            (stream_id,),
-        )
-    ]
+    markers = load_markers(conn, stream_id)
     series = _sparkline_series(conn, stream_id)
     # ONE query for the whole stream, sliced per window below.
     transcript = load_transcript(conn, stream_id)
@@ -419,8 +414,7 @@ def load_candidates(
             contributions=contributions, context=context,
             # §7.4's fourth section: the operator marked these deliberately, so
             # they are the safety net when the weights rank them low.
-            marker_anchored=bool(inside) or contributions.get("marker_definite", 0) > 0
-                            or contributions.get("marker_maybe", 0) > 0,
+            marker_anchored=is_marker_anchored(inside, contributions),
             markers=inside,
             sparklines=tracks, sparkline_range=low_high,
             # §7.2's assets, when `previews` has run. Served by path rather
@@ -727,6 +721,36 @@ def nudge_summary(conn: sqlite3.Connection, stream_id: str) -> dict:
         "was_at_max": sum(1 for r in rows if r.get("at_max")),
         "dropped_peak": sum(1 for r in rows if r.get("keeps_peak") is False),
     }
+
+
+def load_markers(conn: sqlite3.Connection, stream_id: str) -> list[float]:
+    """Every marker press for a stream, in order. §4.3's `events.source`."""
+    return [
+        float(r["t"]) for r in conn.execute(
+            "SELECT t FROM events WHERE stream_id = ? AND source = 'marker' ORDER BY t",
+            (stream_id,),
+        )
+    ]
+
+
+def is_marker_anchored(markers_inside: list[float], contributions: dict) -> bool:
+    """Did the operator mark this moment live?
+
+    ONE definition, because there are two callers who must not disagree: §7.4's
+    fourth rail section, and §14's `marker_precision` / `marker_recall_proxy`.
+    A metric that scored "marker-anchored" differently from the screen the
+    operator rated on would be measuring something nobody saw.
+
+    Two ways to qualify, and the second is not redundant. A press inside the
+    window is the direct case. A `marker_definite` / `marker_maybe`
+    contribution above zero catches the one §4.3 actually cares about: the
+    press lands ~20 s AFTER the moment (`score.markers.retro_offset_s`), so a
+    window covering the moment frequently does not contain the press that
+    found it.
+    """
+    return (bool(markers_inside)
+            or float(contributions.get("marker_definite", 0) or 0) > 0
+            or float(contributions.get("marker_maybe", 0) or 0) > 0)
 
 
 def review_metrics(
