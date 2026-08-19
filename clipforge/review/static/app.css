@@ -92,6 +92,28 @@
 
 * { box-sizing: border-box; }
 
+/* THE `hidden` ATTRIBUTE HAS TO WIN.
+ *
+ * The UA stylesheet says `[hidden] { display: none }`, but that is a UA-origin
+ * declaration and every `display` below it here is an AUTHOR-origin one — so
+ * author wins, and any class that sets `display` silently cancelled the
+ * attribute. Six things were on screen permanently as a result:
+ *
+ *   .bar          five topbar blocks at once, so FOUR back arrows, and the
+ *                 library's buttons overlapping the review screen's title
+ *   .topbar       chrome that could not hide, including on the error view
+ *   .transcript   a transcript column on streams that have no transcript
+ *   .asset-slot   "no preview assets" beside a thumb strip that had loaded
+ *   .btn          #run-review offering Review before `score` had ever run
+ *   #review-main  `q` drawing the summary on top of a live review screen
+ *
+ * Every one of those elements is toggled correctly in JS. Nothing was wrong
+ * except this rule being absent. `!important` is what a reset needs here: the
+ * point is to outrank whatever a component declares, and showing an element is
+ * always done by removing the attribute, never by out-specifying it.
+ */
+[hidden] { display: none !important; }
+
 html, body {
   height: 100%;
   margin: 0;

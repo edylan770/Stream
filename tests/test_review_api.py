@@ -106,6 +106,60 @@ def test_every_module_is_served_and_local(client):
             "/static/review.js"} <= seen
 
 
+def test_the_hidden_attribute_is_not_overridden_by_a_class(client):
+    """Every view toggles `element.hidden`, and the stylesheet has to let it win.
+
+    `[hidden] { display: none }` lives in the UA stylesheet, which loses to any
+    AUTHOR declaration of `display` — so `.bar { display: flex }` quietly
+    cancelled the attribute on all five topbar blocks and the app rendered FOUR
+    back arrows on every screen. The transcript column, the "no preview assets"
+    slot, the Review button and the review screen under the summary went the
+    same way.
+
+    This is checked from the source rather than in a browser because there is no
+    node on the machine this project is built on, and a check that always skips
+    is not a check: it reads the classes off the elements that carry `hidden` in
+    the page and looks for a `display` declaration on any of them.
+    """
+    page = client.get("/static/index.html").text
+    css = client.get("/static/app.css").text
+
+    # Comments name the very classes this guards, so they cannot be scanned.
+    code = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+    reset = re.search(r"\[hidden\][^{]*\{[^}]*display\s*:\s*none\s*!important", code)
+
+    risky: dict[str, list[str]] = {}
+    for tag in re.findall(r"<[a-z]+\b[^>]*\bhidden\b[^>]*>", page):
+        classes = re.search(r'class="([^"]*)"', tag)
+        element_id = re.search(r'id="([^"]*)"', tag)
+        names = (classes.group(1).split() if classes else [])
+        if element_id:
+            names.append(element_id.group(1))
+        for name in names:
+            # `.foo {` or `#foo {`, alone or in a selector list, with a display.
+            for rule in re.finditer(
+                r"([^{}]+)\{([^}]*)\}", code
+            ):
+                selector, body = rule.group(1), rule.group(2)
+                # `(?![\w-])` so `.pane` does not match `.pane-head`, which is
+                # a different class and would be reported as a false offender.
+                if not re.search(rf"[.#]{re.escape(name)}(?![\w-])", selector):
+                    continue
+                if re.search(r"(^|;)\s*display\s*:", body):
+                    risky.setdefault(
+                        element_id.group(1) if element_id else tag[:40], []
+                    ).append(f"{selector.strip()} sets display")
+
+    assert reset, (
+        "app.css must reset [hidden] to `display: none !important`, because "
+        f"these hidden elements have a class that sets display: {risky}"
+    )
+    # Guarding the guard: if the scan stopped finding anything, the assert above
+    # would pass on an empty stylesheet.
+    assert risky, "the scan found no display-setting classes at all — it is broken"
+
+
 MODULES = ("main.js", "api.js", "router.js", "shell.js", "library.js",
            "add.js", "run.js", "review.js")
 
