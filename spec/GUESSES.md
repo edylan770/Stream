@@ -509,6 +509,54 @@ transcript, which needs footage.
   candidate covers this" rather than focusing an unrelated moment and presenting
   it as the match.
 
+## Digest and chapters (Phase 5, §9)
+
+**Nothing in this section has been checked against footage, and unlike most of this
+file, most of it is not in the spec either.** §9.3 states three numbers — 60 s silence,
+120 s merge, 10–30 minute chapters — and everything else below was picked. The metrics
+that would falsify them are new in this commit and listed under each row.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `digest.silence_gap_s` | `60` | **grounded** | §9.3 states it | Chapters opening in the middle of a thought (too low), or a genuine twenty-minute break not opening one (too high) |
+| `digest.merge_within_s` | `120` | **grounded** | §9.3 states it | Two distinct transitions collapsing into one boundary (too high), or one transition producing three chapters (too low). `digest_chapter_count`'s `lengths_s` shows both |
+| `digest.min_chapter_s` / `max_chapter_s` | `600` / `1800` | **grounded** | §9.3's "target chapter length: 10–30 minutes" | The length distribution in `digest_chapter_count` sitting hard against either bound on every stream |
+| `digest.embedding_window_s` | `120` | **arbitrary** | §9.3 says "rolling-window" and states no width. One sentence is far too short a unit for a topic; two minutes is a guess at how long a topic lasts | Boundaries landing mid-topic (too short) or topics being missed entirely (too long). Nothing can show this until a stream has a transcript |
+| `digest.embedding_min_distance` | `0.25` | **arbitrary** | A cosine distance below which a local maximum is normal paragraph-to-paragraph wobble rather than a topic change. **No evidence whatsoever** — picked so that something would fire | The share of boundaries from `embedding_shift` in `digest_boundary_sources`: zero on a talkative stream means too high, one per minute means too low |
+| `digest.silence_floor_db` | `-50` | **plausible** | Only used when a stream has no transcript, to find silence in `mic_rms`. Consistent with `extract.rms.db_floor`'s intent | A stream with a noisy mic producing no silence boundaries at all — visible as `silence_gap` absent with "no quiet stretch" while the recording plainly had breaks |
+| `digest.arc_bin_s` | `60` | **plausible** | 180 points over a 3-hour stream: a readable shape, and a trivial share of §9.1's ~3,000 words | An arc too coarse to show a moment you remember, or so fine it dominates the digest's word count |
+| `digest.energy_roles` | `[mic, game, party]` | **plausible** | "How loud was it" across every track there is. Summed in **linear power** — a test asserts this, because averaging dB has caused two real bugs here | A game-audio-heavy stream reading as high energy throughout, which would argue for mic-only |
+| `digest.laughter_threshold` | `0.60` | **grounded** | The same value as `score.signals.laughter.threshold`, which was measured. Paired: they answer the same question and must move together | Whatever falsifies the scoring one |
+| `digest.phrase_min_count` | `3` | **plausible** | §5.4.2 uses three occurrences for the in-window version of the same idea | A running gag said twice being missed, or a list full of coincidences |
+| `digest.phrase_min_words` / `max_words` | `2` / `6` | **plausible** | §11.2's range for the cross-stream version, so the three phrase counters agree about what a phrase is | One-word catchphrases missed (min too high) |
+| `digest.phrase_limit` / `top_candidates` | `25` / `12` | **arbitrary** | Both are "enough to be useful, few enough to read". No evidence | Reading the digest and wanting more, or skimming past the tail |
+| `digest.source` | `manual` | **grounded** | The only one built, and for the same reason as `render.hooks.source`: there is no API key anywhere in this project. §12.4 prices one at roughly $0.10–0.30 per stream | — |
+
+**§9.3's boundary source 2 (game changes) is NOT IMPLEMENTED, and has no producer.**
+`streams.games` is a single untimed JSON array for the whole stream, and the OCR §9.3
+points at is Phase 7 — unbuilt, and the one thing §15 says to cut if it proves
+difficult. There is no key for it in config, because a key would imply it fires. If a
+timed game source ever exists (a manual marker, or Phase 7), this is where it plugs in:
+`chapters.py` takes boundary lists and does not care where they came from.
+
+**The digest's most important field is `content.segmentation`.** On every stream that
+exists today, boundary source 1 is unavailable — it needs `whisperx` → `embeddings`, and
+Phase 2 ships off. So a real digest is currently segmented on silence gaps alone, and
+`sources` / `absent` are what record that. A digest built from silence is a legitimate
+artifact; one that did not say so would not be.
+
+**Worth watching once real digests exist:**
+
+- `digest_chapter_count`, whose `meta` carries the full length distribution. This is the
+  single observation that would falsify `merge_within_s`, `min_chapter_s` and
+  `max_chapter_s` at once.
+- `digest_boundary_sources`, whose `meta` names which sources fired and why each absent
+  one was absent. §9.3 asserts a priority order between four sources; this is the only
+  thing that would ever show that order to be wrong.
+- `digest_word_count` against §9.1's "~3,000 structured words". The deterministic half
+  alone comes to roughly 100 words on a 10-minute fixture with no transcript, which says
+  nothing yet — the number only becomes meaningful once chapters have summaries.
+
 ## Scene events (Phase 3, §5.1 stage 11 / §4.2)
 
 **Everything in this section is unvalidated in a way nothing else in this file

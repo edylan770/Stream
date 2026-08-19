@@ -1460,6 +1460,78 @@ export:
   handles_s: 0.0
 
 # ---------------------------------------------------------------------------
+# DIGEST — §9. Chapter segmentation and the ~3,000-word artifact.
+#
+# EVERY NUMBER IN THIS BLOCK IS A GUESS. Zero streams exist, so not one of them
+# has been checked against footage; §9.3's own values are used where it states
+# any, and the rest were picked. See spec/GUESSES.md for what would falsify
+# each, and `clipforge metrics` for the observations that would do it.
+# ---------------------------------------------------------------------------
+digest:
+  # -- §9.3 chapter segmentation ---------------------------------------------
+  #
+  # Boundary source 2 of §9.3 (game changes) HAS NO PRODUCER and is not listed
+  # here. `streams.games` is one untimed array for the whole stream and the OCR
+  # §9.3 points at is unbuilt Phase 7. A key here would imply it fires.
+
+  # §9.3's "cosine distance between consecutive rolling-window embeddings". The
+  # window is the unit of "a topic" -- one sentence is far too short.
+  embedding_window_s: 120.0
+  # Below this cosine distance a local maximum is not a topic change, just the
+  # normal wobble between two adjacent paragraphs about the same thing.
+  embedding_min_distance: 0.25
+
+  # §9.3's "long silence gaps (> 60 s)".
+  silence_gap_s: 60.0
+  # Only used when a stream has no transcript, to find silence in `mic_rms`
+  # instead. Matches extract.rms.db_floor's intent: below this is not speech.
+  silence_floor_db: -50.0
+
+  # §9.3's source 4, "weak signal, tie-breaker only". `scene_events` writes this
+  # kind; see extract/scene_events.py, whose parser is UNVALIDATED.
+  scene_event_kinds: [scene_change]
+
+  # §9.3: "Merge boundaries within 120 s."
+  merge_within_s: 120.0
+  # §9.3: "Target chapter length: 10-30 minutes."
+  min_chapter_s: 600.0
+  max_chapter_s: 1800.0
+
+  # -- §9.2 the artifact -----------------------------------------------------
+
+  # Resolution of `emotional_arc`. 60 s over a 3-hour stream is 180 points,
+  # which is a readable shape and a trivial share of the ~3k words.
+  arc_bin_s: 60.0
+  # Which tracks make up "energy". Summed in LINEAR POWER, never in dB.
+  energy_roles: [mic, game, party]
+  laughter_kinds: [mic_laughter, party_laughter]
+  # The share of a bin above this counts as laughter. Paired with
+  # score.signals.laughter.threshold -- they answer the same question and
+  # should move together.
+  laughter_threshold: 0.60
+
+  # §9.2's `recurring_phrases`. The n-gram range matches
+  # extract.phrases.repeat, so the two counters agree about what a phrase is.
+  phrase_min_count: 3
+  phrase_min_words: 2
+  phrase_max_words: 6
+  phrase_limit: 25
+
+  # §9.2's `top_candidates`.
+  top_candidates: 12
+
+  # -- §9.4 the map-reduce prompt --------------------------------------------
+  #
+  # Prompt TEXT lives in its own file, the way extract.phrases.file works: it is
+  # prose under revision, and prose in a settings file makes both harder to
+  # read. Rewrite it there once you have digests of streams you remember.
+  prompts_file: digest_prompts.yaml
+  # Only `manual` is built: there is no API key anywhere in this project, and
+  # §12.4 prices one at roughly $0.10-0.30 per stream if you want one. See
+  # render/hooks.py, which made the same call for §8.5.
+  source: manual
+
+# ---------------------------------------------------------------------------
 # DEFERRED — parameters for phases that are not built.
 #
 # Present so that §17 is fully represented in config from day one and nobody
