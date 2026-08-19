@@ -786,11 +786,17 @@ code {
   min-height: 0;
   min-width: 0;
 }
+/* The moment stays on screen while its signals are being read.
+ *
+ * `?` used to push the video off the top entirely — the detail strip is
+ * `flex: none` and the signals table is tall — so the one screen C4 cares
+ * about answered "why did this score 1.88" by hiding the thing being scored.
+ * A floor here and a scroll on the strip below keeps both. */
 .video-wrap {
   position: relative;
   background: #000;
-  flex: 1;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 200px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -818,7 +824,9 @@ video { width: 100%; height: 100%; object-fit: contain; }
 }
 
 .detail {
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   border-top: 1px solid var(--line);
   background: var(--panel);
   padding: var(--s4) var(--s5) var(--s5);
@@ -870,7 +878,7 @@ video { width: 100%; height: 100%; object-fit: contain; }
   font-family: var(--mono);
   font-size: var(--tmd);
 }
-.sig-row { display: grid; grid-template-columns: 150px 1fr 70px; align-items: center; gap: var(--s4); padding: var(--s1) 0; }
+.sig-row { display: grid; grid-template-columns: 172px 1fr 70px; align-items: center; gap: var(--s4); padding: var(--s1) 0; }
 .sig-bar { height: 8px; background: var(--panel-2); border-radius: var(--r-pill); overflow: hidden; position: relative; }
 .sig-bar i { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: var(--r-pill); }
 .sig-bar i.neg { background: var(--skip); }

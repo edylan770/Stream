@@ -81,14 +81,14 @@ function renderUnsearchable() {
       "search-state", "Nothing is indexed yet",
       `${info.segments} transcript segment(s) exist but none has an embedding. ` +
       "Run the pipeline again to fill them in — the <code>embeddings</code> " +
-      "stage is what §11.6 searches.");
+      "stage is what this searches.");
   } else {
     shell.empty(
       "search-state", "No transcripts to search",
-      "§5.7's transcription ships <b>off</b> because it costs a multi-GB " +
-      "model download. Turn on <code>extract.whisperx.enabled</code> and " +
-      "re-run a stream; this search and the review screen's transcript panel " +
-      "are what it buys.");
+      "Transcription ships <b>off</b> because it costs a multi-GB model " +
+      "download. Turn on <code>extract.whisperx.enabled</code> and re-run a " +
+      "stream; this search and the review screen's transcript panel are what " +
+      "it buys.");
   }
 }
 
