@@ -129,6 +129,28 @@ def _check_ollama(cfg) -> Check:
                  detail=f"{wanted} (§5.10 embeddings)")
 
 
+def _check_llm_source(cfg) -> Check:
+    """§12's transport. Never required — the paste path needs no credential.
+
+    Reported because "unavailable" has two different causes with two different
+    fixes, and a digest that quietly did nothing is worse than one that said
+    which half was missing before it started.
+    """
+    from clipforge import llm
+
+    try:
+        source = llm.source_for(cfg)
+    except llm.LLMError as exc:
+        return Check(label="llm", ok=False, required=False, detail=str(exc))
+
+    usable, why = source.available(cfg)
+    if not usable:
+        return Check(label="llm", ok=False, required=False,
+                     detail=f"{source.name}: {why}")
+    return Check(label="llm", ok=True, required=False,
+                 detail=f"{source.name} (§12 prompts and validation)")
+
+
 def _check_data_root(root) -> Check:
     """The data root must exist or be creatable, and be writable.
 
@@ -224,6 +246,7 @@ def run_checks(
 
     if cfg is not None:
         checks.append(_check_ollama(cfg))
+        checks.append(_check_llm_source(cfg))
         checks.append(_check_data_root(cfg.data_root))
         checks.append(_check_backups(cfg))
         if checks[1].ok:  # ffmpeg present

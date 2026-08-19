@@ -1,0 +1,60 @@
+# Prompt text for every call that reaches a model.
+#
+# Named from `llm.prompts.file` in clipforge.yaml and resolved against this
+# directory -- the same arrangement as phrases.yaml and crop_templates.yaml.
+# Loaded by clipforge/llm/prompts.py.
+#
+# WHY THIS FILE EXISTS AT ALL. Prompt quality is the one thing in this project
+# that cannot be measured yet: zero real streams exist, so nothing here has
+# been judged against a transcript. It is therefore the part most certain to be
+# rewritten, and rewriting it must not mean editing Python or reading a diff
+# through string escaping.
+#
+# `llm:` is a TOP-LEVEL config subtree, deliberately outside VERSIONED_SUBTREES
+# (config.py versions only `extract` and `score`). Editing a prompt must never
+# invalidate a candidate or force a re-score. Same reasoning that put `render:`,
+# `previews:`, `search:` and `digest:` outside it.
+#
+# SUBSTITUTION IS `$name`, NOT `{name}`. Prompts carry JSON examples and JSON is
+# made of braces, so brace formatting would break the first prompt that inlines
+# a schema. An unknown `$name` is an error rather than text a model then reads.
+#
+# §12 APPLIES TO EVERY PROMPT HERE, and every one of its rules has to be
+# *stated in the prompt* as well as enforced on the way back in:
+#   §12.1  ask for ids, never timestamps -- times are resolved from the database
+#   §12.2  say the ids are real handles and must not be invented
+#   §12.3  demand a verbatim quote per selection, and say it is checked
+#   §12.3  show the JSON shape, and ask for one object and nothing else
+# The checks in clipforge/llm/validate.py run regardless of what a prompt says.
+# Saying it too is what makes a well-behaved model comply rather than be caught.
+
+prompts:
+
+  # §8.5's hook options. Everything up to "## The clips"; the per-clip blocks
+  # are assembled in render/hooks.py because the JSON example has to carry a
+  # REAL export_id -- §12.2's whole argument for real handles over 1..5 is that
+  # a fabricated id has somewhere to fail, and an example numbered 1 would give
+  # a hallucination in that range nowhere to fail.
+  #
+  # $stream_id     the stream being asked about
+  # $clip_count    how many clips are in the prompt
+  # $option_count  variants wanted per clip (render.hooks.options)
+  # $schema        the JSON example, built in code around a real export_id
+  hook: |
+    # Hook options for $stream_id
+
+    You are helping choose the on-screen hook text for $clip_count short-form clip(s) cut from a gaming stream.
+
+    For EACH clip below, propose $option_count hook variants. A hook is the on-screen text over the first 1-2 seconds: short, specific, and written to make someone stop scrolling. Use what is actually said in the clip -- do not invent events.
+
+    ## Rules for your reply
+
+    - Reply with ONE JSON object and nothing else outside it.
+    - Use the `export_id` values exactly as given below. Do not invent ids.
+    - For each clip include `quote`: a VERBATIM span copied from that clip's transcript. It is checked automatically against the transcript, and an entry whose quote does not appear is discarded.
+
+    ```json
+    $schema
+    ```
+
+    ## The clips

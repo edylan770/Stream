@@ -1112,6 +1112,60 @@ search:
   # of EVERYTHING, related or not, while reading like a relevance filter. These
   # scores support rank and nothing else, so rank is all the search returns.
 
+# §12 -- how a model is talked to, and how its answer is checked.
+#
+# TOP-LEVEL and outside VERSIONED_SUBTREES (config.py versions only `extract`
+# and `score`). Editing a prompt or switching transport must never invalidate a
+# candidate or force a re-score -- the same reasoning that put `render:`,
+# `previews:`, `search:` and `digest:` outside it.
+#
+# NOTHING HERE HAS EVER CALLED A MODEL. There is no key on this machine and the
+# `anthropic` package is not installed, so `source: anthropic` reports itself
+# unavailable and names which of the two is missing. `clipforge doctor` shows
+# it. The §12 checks in clipforge/llm/validate.py are tested; the request shape
+# below is not, and cannot be until a key exists.
+llm:
+
+  # Where an answer comes from. `manual` is the paste round trip: a prompt out,
+  # a reply back, every §12 check run on the way in. It needs a person and a
+  # browser rather than a credential, so it is always available -- which is why
+  # it is the default rather than a fallback.
+  #
+  # §8.5's hooks read `render.hooks.source` instead: that key predates this
+  # subtree and is already in local configs. Both accept the same names.
+  source: manual
+
+  prompts:
+    # Resolved against clipforge/config/ when relative, like phrases.yaml and
+    # crop_templates.yaml. Point it at your own file to iterate on prompt text
+    # without touching the packaged one.
+    file: prompts.yaml
+
+  anthropic:
+    # UNVALIDATED, all of it. Every value is config rather than inline so that
+    # correcting a wrong one is an edit and not a code change.
+    model: claude-opus-5
+
+    # WHICH environment variable holds the key. The key itself is never config:
+    # this file is in the repository and a local.yaml is one `git add -A` away
+    # from being in it too.
+    api_key_env: ANTHROPIC_API_KEY
+
+    # Thinking depth and overall token spend. §12.4 budgets a whole stream at
+    # cents, so `high` is affordable; lower it for a cheaper, shallower pass.
+    effort: high
+
+    # A digest map is long in and long out. Requests always stream, so this is
+    # a ceiling on the answer rather than a timeout risk.
+    max_tokens: 16000
+
+    # A safety classifier can decline a request outright and return nothing at
+    # all. A stopped digest is worse than one answered by a slightly smaller
+    # model, so the server-side fallback is on. Set to "" to turn it off in one
+    # edit if the beta moves.
+    fallbacks: default
+    fallback_beta: server-side-fallback-2026-07-01
+
 review:
   host: 127.0.0.1
   port: 8765

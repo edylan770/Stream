@@ -20,7 +20,9 @@ worth skimming before changing anything in `score/`, `render/` or `pipeline/`.
 **Phases 0, 1, 2, 3 and 4 of §15 are complete.** Phase 3 was originally skipped
 by choice — §8's renderer is what turns an approved moment into something
 postable, where Phase 3 only changes *which* moments surface — and was then
-built out across commits 31–39. Phases 5, 6 and 7 are not started.
+built out across commits 31–39. **Phase 5 is in progress** — §11.6's search
+(40), §9.3's chapters (41) and §12's shared LLM plumbing (42) are in; §9.4's
+digest and §10's three passes are not. Phases 6 and 7 are not started.
 
 One caveat on that "complete": **`scene_events` is built but its OBS log parser
 has never seen a real log** and fails silently when wrong. See "Still missing"
@@ -86,14 +88,17 @@ Phase 2.
 | 38 | `3188777` | §7.2's preview assets — **§7.3's autoplay is real**; §7.2's own preset is 9.5× too slow |
 | 39 | `4a6f5a3` | `scene_events` — **Phase 3 complete**, and the one unvalidated parser in the project |
 | 40 | `3243b85` | §11.6's pull search — and the config value that was changing its results |
-| 41 | *this* | §9.3's chapters — three of four inputs dead, and a merge rule the fixture corrected |
+| 41 | `6b0e01d` | §9.3's chapters — three of four inputs dead, and a merge rule the fixture corrected |
+| 42 | *this* | `clipforge/llm/` — §12's four rules in one place, before three call sites each grew their own |
 
-1547 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1650 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
-**What is not built, by design:** no chapters or digests (the rest of Phase 5); no
-trends (Phase 6); no vision (Phase 7). §11.6's pull search is built (commit 40) —
-it was the one Phase 5 item testable against ground truth with no footage.
+**What is not built, by design:** no digest and no §10 passes (the rest of Phase 5);
+no trends (Phase 6); no vision (Phase 7). Of Phase 5, §11.6's pull search (40),
+§9.3's chapters (41) and §12's validation and transports (42) are in — the three
+items testable with no footage. **Nothing has ever called a model**: `llm.source`
+is the paste round trip, and the API source reports itself unavailable.
 
 ---
 
@@ -779,7 +784,49 @@ looks correct and is not.
 - **`HookSource` has `available(cfg)`** so an API-backed source drops in beside
   `ManualHookSource` without changing anything else — the `StageSpec.available`
   and Ollama pattern. `ManualHookSource` is always available: it needs a person
-  and a browser, not a credential.
+  and a browser, not a credential. That source did drop in, in commit 42.
+
+**§12's rules, in one place (Phase 5, §12) — `clipforge/llm/`**
+
+- **The move happened before the third copy, not after.** §12's four rules were
+  written once inside `render/hooks.py`, against `exports.id`. §9.4's digest
+  map, §10.3's ground pass and §11.1's cluster labels need the identical four
+  against different ids, and the cheapest moment to have one validator is
+  before the second caller exists.
+- **`validate_selections` differs per caller in exactly two arguments**: the id
+  field, and a `text_for` that says which text a quote about that id has to
+  appear in. Hooks pass `export_id` and the clip's transcript; the digest will
+  pass §12.1's `segments.seq` and the segment's own text.
+- **The refactor's evidence is that `tests/test_hooks.py` passes unmodified**,
+  and separately that the prompt is **byte-identical** to what commit 41
+  produced — checked by rebuilding the old string from that commit's literals
+  and diffing, not by substring assertions.
+- **Prompt text moved to `config/prompts.yaml`.** §17 wants tunables in config,
+  and prompt quality is the one thing here that cannot be measured at all
+  without footage — so it is the part most certain to be rewritten, and
+  rewriting it must not mean editing Python. `llm:` is top-level and **outside
+  `VERSIONED_SUBTREES`**: a prompt edit must never invalidate a candidate.
+- **The JSON example stays in code**, because it has to carry a real
+  `export_id`. §12.2's argument for real handles is that an invented id has
+  somewhere to fail, and an example numbered 1 gives a hallucination in that
+  range nowhere to fail.
+- **Substitution is `$name`, not `{name}`.** Prompts contain JSON examples and
+  JSON is made of braces. An unknown `$name` raises rather than being left in
+  text a model then reads.
+- **`prompts.digest_of` exists for §9.1.** Digests are kept forever and never
+  regenerated, so two digests of one stream made by two prompts have to be
+  distinguishable in origin. Commit 43 stores the hash beside the output.
+- **NOTHING HAS CALLED A MODEL.** `AnthropicSource` is written and reports
+  itself unavailable for two reasons separately — the package is not installed
+  and there is no key — because those need different fixes and one generic
+  "not configured" would hide which. `clipforge doctor` shows the row.
+- **An unavailable source is refused, not downgraded.** Configuring the API
+  path and silently getting a paste prompt would look like the key working.
+- **The one thing about the request that could be checked blind** is that it
+  carries no `temperature`/`top_p`/`top_k` and no `budget_tokens`: those are a
+  documented rejection on the configured model rather than a matter of taste,
+  and a test asserts their absence. Everything else about it is a guess until
+  a key exists, so every value is config.
 
 **Capture (Phase 0, §4)**
 

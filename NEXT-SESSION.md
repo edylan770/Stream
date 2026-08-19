@@ -13,8 +13,9 @@ show it wrong). Then the spec sections you are touching.
 
 ## Where the build actually is
 
-**Phases 0, 1, 2, 3 and 4 of §15 are complete. 1547 tests pass**
-(`.venv\Scripts\python.exe -m pytest -q`, 25-30 minutes), plus 3 that need `--asr`.
+**Phases 0, 1, 2, 3 and 4 of §15 are complete, and Phase 5 is in progress.
+1652 tests pass** (`.venv\Scripts\python.exe -m pytest -q`, 25-30 minutes),
+plus 3 that need `--asr`.
 
 One caveat: `scene_events` is built but its OBS log parser has never seen a real
 log, and it fails silently when wrong. `clipforge scene-events --check "<log>"`
@@ -33,9 +34,12 @@ normalised to −14 LUFS, and a hook line you chose.
 *which* moments surface, and §8's renderer was worth more — then built out in
 commits 31–39: pitch, laughter, derived signals, §4.4's input log, §6.4's gated
 negatives, §6.5's two profiles with the combined ranking, §7.2's preview assets
-and `scene_events`. **Phase 5 has started**: commit 40 built §11.6's pull
-search, the one item in it testable against ground truth with no footage.
-Phases 6 and 7 are unbuilt.
+and `scene_events`. **Phase 5 is under way**: commit 40 built §11.6's pull
+search, 41 §9.3's chapter segmentation, and 42 the shared §12 validation and
+transports in `clipforge/llm/` — the three items testable with no footage.
+§9.4's digest and §10's three passes are next. **Nothing has ever called a
+model**: the paste round trip is still the transport, and the API source
+reports itself unavailable without a key. Phases 6 and 7 are unbuilt.
 
 `git log --format='%s%n%n%b'` is the real archive; every deviation is argued
 there. Three worth knowing before touching anything:
@@ -185,8 +189,8 @@ In rough order of value:
 | What | Why now | Cost |
 |---|---|---|
 | **`signal_firing_rate_by_rating`** | §14 calls it "the primary weight-tuning input" and §17's whole procedure needs it. The data is being logged per A9; nothing aggregates it. Needs ~10 streams to mean anything. | Half a day |
-| **Phase 3 proper** | Pitch, laughter, silence, overlap, input signals, dual profiles, preview assets. Four of them need `input_logger` to have run on a real stream. | A week |
-| **Phase 5** (digests) | Needs an API key, or the same paste round trip `hook` already uses. | Days |
+| ~~**Phase 3 proper**~~ | Done, commits 31–39. Four of its signals still need `input_logger` to have run on a real stream before they mean anything. | — |
+| **Phase 5** (digests) | Search (40), chapters (41) and §12's validation and transports (42) are in. §9.4's digest is next; it needs an API key or the paste round trip `hook` already uses — `clipforge/llm/` now serves both. | Days |
 | **Phase 6** (trends) | The n-gram half works sooner; clustering needs 60+ streams. | Days |
 | **Phase 7** (vision) | §5.9 says build last and cut if hard. | Days |
 

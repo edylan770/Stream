@@ -585,6 +585,40 @@ transcript, which needs footage.
   candidate covers this" rather than focusing an unrelated moment and presenting
   it as the match.
 
+## LLM transport and §12 validation (Phase 5, §12)
+
+Everything about the API path here is unvalidated in the way that matters most:
+**no request has ever been sent.** MEASURED on this machine — the `anthropic`
+package is not installed and `ANTHROPIC_API_KEY` is unset — so
+`llm.source: anthropic` reports itself unavailable and names which of the two
+is missing. What the suite proves is that §12's checks refuse bad replies and
+that the request is assembled from config; it proves nothing about whether the
+API accepts that request.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `llm.source` | `manual` | **grounded** | The paste round trip needs a person and a browser, not a credential, so it is always available. It is the default because it works, not as a fallback | — |
+| `llm.prompts.file` | `prompts.yaml` | **grounded** | Same arrangement as `phrases.yaml` and `crop_templates.yaml`: named from config, resolved against the config directory | — |
+| `llm.anthropic.model` | `claude-opus-5` | **plausible** | §12.4 budgets a whole stream at cents and a digest is one call, so the capable model is affordable. Never run | A real digest costing more than §12.4's estimate, or a smaller model reading as well |
+| `llm.anthropic.effort` | `high` | **arbitrary** | Depth control in place of a token budget. There is no basis for choosing between `medium` and `high` without a reply to judge | A `medium` digest reading as well for fewer tokens |
+| `llm.anthropic.max_tokens` | `16000` | **arbitrary** | Enough for a chapter map on a stream that does not exist | A reply that stops with `stop_reason: max_tokens` |
+| `llm.anthropic.fallbacks` | `default` | **plausible** | A safety classifier can decline a request and return nothing at all; a stopped digest is worse than one answered by a slightly smaller model | The beta being rejected — one config edit (`fallbacks: ""`) to disable |
+| `anthropic>=0.116` in `pyproject.toml` | floor | **arbitrary** | The release the request shape was written against. Nothing here has installed it | A 400 on the first real call |
+
+**Deliberately NOT config: the key itself.** `llm.anthropic.api_key_env` names
+the environment variable to read and never holds a value. This repository is a
+git repository and a `local.yaml` is one `git add -A` away from being in it.
+
+**Not a guess, and the one thing about the request that could be checked
+blind:** it carries no `temperature`, `top_p`, `top_k` or `budget_tokens`.
+Those are a documented rejection on the configured model rather than a matter
+of taste, so a test asserts their absence rather than trusting the author.
+
+**Worth watching once real replies exist:** `llm_invalid_id_rate` in
+`tool_metrics` — see the hook-text section, which already writes it. It is now
+computed by shared code, so a digest and a hook reply produce a comparable
+number rather than two metrics that happen to share a name.
+
 ## Scene events (Phase 3, §5.1 stage 11 / §4.2)
 
 **Everything in this section is unvalidated in a way nothing else in this file
@@ -822,7 +856,7 @@ The mechanism is deterministic and tested; the taste question needs footage.
 
 | Parameter | Value | Confidence | Rationale | Falsified by |
 |---|---|---|---|---|
-| `render.hooks.source` | `manual` | **grounded** | The only one built. An API-backed source needs a key the operator does not want yet; §12.4 prices one at roughly $0.10–0.30 per stream | — |
+| `render.hooks.source` | `manual` | **grounded** | The one that can run. Since commit 42 this key also accepts `anthropic`, which reports itself unavailable without a key; §12.4 prices one at roughly $0.10–0.30 per stream. See "LLM transport" below | — |
 | `render.hooks.options` | `5` | **grounded** | §8.5 says "propose 5 hook variants" | Five being more than you ever read, or fewer than you need to find a good one |
 
 **Worth watching once real replies exist:** `llm_invalid_id_rate` in

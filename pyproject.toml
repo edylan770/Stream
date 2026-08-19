@@ -58,6 +58,18 @@ fixtures = ["piper-tts>=1.6"]
 # it, and a fresh clone must not have to download torch to run the tests.
 asr = ["whisperx>=3.8"]
 
+# §12's API transport. Its own extra because the paste round trip is the
+# default and always available: a fresh clone must not need an SDK to run the
+# suite, and nothing in clipforge/llm/ imports this at module scope -- the
+# import is inside the method, the same rule librosa follows above.
+#
+# NOTHING HAS EVER RUN THROUGH IT. There is no key on this machine, so the
+# version floor is a GUESS: it is the release the request shape in
+# clipforge/llm/sources.py was written against (adaptive thinking,
+# output_config, server-side fallbacks). If the first real call 400s, the
+# floor and that request are the two things to look at.
+llm = ["anthropic>=0.116"]
+
 [project.scripts]
 clipforge = "clipforge.cli:main"
 

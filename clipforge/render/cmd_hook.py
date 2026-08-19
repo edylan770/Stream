@@ -6,10 +6,14 @@ Three modes of one command, because they are three steps of one job:
     clipforge hook <id> --apply reply.json    validate what came back
     clipforge hook <id> --pick <export> 2     store the one you want
 
-Nothing here reaches the network. §2.2 puts reasoning through a frontier model
-and §12.4 prices it at cents per stream, but until there is a key the operator
-is the transport -- and every §12 rule is enforced on the reply regardless of
-how it arrived. See `render/hooks.py`.
+Nothing reaches the network on the default source. §2.2 puts reasoning through
+a frontier model and §12.4 prices it at cents per stream, but until there is a
+key the operator is the transport -- and every §12 rule is enforced on the
+reply regardless of how it arrived. See `render/hooks.py` and `clipforge/llm/`.
+
+An API source exists and reports itself unavailable without a key. Configuring
+it and getting a paste prompt anyway would be the tool doing a different job
+than the one asked for, so that combination is refused rather than downgraded.
 """
 
 from __future__ import annotations
@@ -72,7 +76,11 @@ def _prompt(cfg, conn: sqlite3.Connection, args) -> int:
     source = hooks.source_for(cfg)
     usable, why = source.available(cfg)
     if not usable:
-        print(f"  {source.name}: {why}")
+        # Refuse rather than fall back to the paste path. An operator who
+        # configured the API source and silently got a prompt file would think
+        # the key was working, and §12.4's whole point is knowing what a stream
+        # cost -- including when it cost nothing because nothing ran.
+        raise hooks.HookError(f"{source.name}: {why}")
 
     text = hooks.build_prompt(cfg, clips, args.stream_id)
 
