@@ -963,6 +963,14 @@ video { width: 100%; height: 100%; object-fit: contain; }
 
 /* ----------------------------------------------------------- responsive */
 
+@media (max-width: 1240px) {
+  /* The one thing on this screen that is not a control the operator can use
+   * costs a whole row of the footer once the keys wrap — and that row comes
+   * out of the video, which C4 says is the height that matters. It is a
+   * reminder, so it is the first thing to go. */
+  .keys .not-built, .keys .spacer { display: none; }
+}
+
 @media (max-width: 1000px) {
   .layout { grid-template-columns: 1fr; grid-template-rows: 170px 1fr; }
   .rail { border-right: none; border-bottom: 1px solid var(--line); }
