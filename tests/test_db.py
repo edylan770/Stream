@@ -8,7 +8,9 @@ import pytest
 
 from clipforge import db, paths
 
-# Every table §3.2 defines, plus export_items (the documented addition).
+# Every table §3.2 defines, plus the two documented additions: export_items
+# (§3.2's single candidate_id cannot describe a 40-clip timeline) and rubrics
+# (the learning layer, which the spec has no section for at all).
 EXPECTED_TABLES = {
     "streams", "pipeline_stages", "signal_series", "events",
     "segments", "segment_embeddings",
@@ -17,6 +19,7 @@ EXPECTED_TABLES = {
     "digests", "ideas", "idea_evidence",
     "clusters", "cluster_members", "ngrams", "open_loops",
     "tool_metrics",
+    "rubrics",
 }
 
 

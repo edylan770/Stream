@@ -97,9 +97,10 @@ Phase 2.
 | 42 | `aa3dfda` | `clipforge/llm/` — §12's four rules in one place, before three call sites each grew their own |
 | 43 | `8d0d409` | a re-score over rated candidates no longer deletes the ratings — `config_version` covers the config, not the data |
 | 44a | `48e6778` | `clipforge/moments.py` — one opinion per moment, and the two readings of "was this marked?" |
-| 44b | *this* | §14's three missing tuning metrics — ranked on a statistic that needs no threshold |
+| 44b | `ba55fb3` | §14's three missing tuning metrics — ranked on a statistic that needs no threshold |
+| 45a | *this* | the written rubric: storage, versioning, the `$rubric` seam — and migration `0003` |
 
-1692 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1721 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
 **What is not built, by design:** no digest and no §10 passes (the rest of Phase 5);
@@ -1338,6 +1339,72 @@ looks correct and is not.
 - **`score/combined.py`'s `_ranks` is now `ranks`.** §14's separation needs the
   identical ties-averaged helper, and reaching into another module's underscore
   name is how two copies of a helper come to exist.
+
+**The written rubric (`clipforge/rubric.py`) — the learning layer's other half**
+
+- **This has NO § REFERENCE, and that omission is the point.** §17 tunes weights
+  from `signal_firing_rate_by_rating` and §14 calls that the primary tuning
+  input — but a firing rate cannot carry "the bit only works when she doesn't
+  see it coming", and no feature vector ever will. The rubric is a versioned
+  plain-language document the operator writes after a review batch, fed into the
+  LLM ranking and ideation prompts. It works at n=1 where fitted weights need
+  dozens of streams, and it is still interpretable six months later.
+- **IT MUST NEVER REACH SCORING, and that is enforced structurally.** Scoring is
+  deterministic (C1) and §6.1 promises re-scoring is free and infinitely
+  repeatable; a rubric on that path would make every re-score depend on prose
+  `config_version` cannot even describe, since the text lives in a table rather
+  than in config. A test AST-walks every module under `clipforge/score/` and
+  asserts none imports it — the shape `test_capture.py` uses for §2.1.
+- **Append-only. Never UPDATE.** §9.1 keeps digests forever and never
+  regenerates them, so a digest made under v3 is a different artifact from one
+  made under v4 and v3 has to stay readable. `digests.rubric_version` records
+  which was in force. A test asserts the module has no `update`/`delete`/
+  `replace` at all: the absence of the verb is the guarantee.
+- **No `rubric_of()` hash**, deliberately, despite `prompts.digest_of()` sitting
+  right beside it. That one exists because a prompt template lives in a config
+  file editable in place, so its identity is its content. A rubric row is
+  immutable by construction, so the version integer IS its identity.
+- **One free-text column, not named sections.** `what_worked`/`what_didnt`/
+  `watch_for` would decide the shape of the operator's thinking before a single
+  rubric had been written. Markdown headings inside `text` cost nothing later.
+- **Oversized is WARNED about, never truncated** (`rubric.warn_chars`, 6000,
+  arbitrary). Every downstream prompt carries the whole text; silently dropping
+  the end of the operator's judgement is the exact failure this prevents.
+- **`ABSENT` is a sentence, not an empty string.** `prompts.render` uses
+  `Template.substitute`, which raises on anything unsupplied — so `$rubric`
+  always needs a value, and a blank section under a heading reads as though
+  something went missing and invites a model to invent guidance that is not
+  there.
+- **Nothing consumes it yet.** The seam is proved against a temp prompts file,
+  and a test asserts no shipped prompt contains `$rubric` — adding one to the
+  hook prompt would break `render/hooks.py`, whose caller supplies exactly four
+  named values.
+
+**Migration 0003, and three gaps closed while the tables were still empty**
+
+- **RUN `clipforge db init` BEFORE THE REVIEW SERVER.** `review/app.py`'s
+  `connect()` opens with `migrate_to_latest=False`, so every route fails loudly
+  until the schema is migrated. That is correct — a server reading a schema it
+  does not understand is worse — but this is the first migration since `0002`.
+- **`open_loops.segment_id`** (for §9.4's digest). §9.2's JSON gives every loop
+  one and the table had nowhere to put it, so §12.3's verbatim-quote check ran
+  at ingest and then discarded its own evidence.
+- **`digests.prompt_hash` and `digests.rubric_version`** (for §9.4 and the
+  rubric). `llm.prompts.digest_of` has existed since commit 42 with nowhere to
+  store its result.
+- **`performance` re-keyed to `(export_id, platform)`.** §3.2 keyed it on
+  `export_id` alone, so one export could carry one performance row — but the
+  unit of an export here is a rendered clip and the three presets differ only by
+  `max_duration_s`, so the same file posted to Shorts and TikTok is one export
+  with two performances and the schema refused the second. A rebuild, since
+  SQLite cannot alter a primary key; safe because the table is empty and nothing
+  references it. `platform` became NOT NULL, because SQLite permits NULLs in a
+  non-INTEGER primary key column and two null-platform rows would have defeated
+  the change.
+- **All four in ONE migration**, because every affected table is empty today and
+  a column is far cheaper to add before that stops being true — `0001_init.sql`
+  already argues this for whole tables ("an empty table costs nothing;
+  retrofitting one costs a migration and a backfill").
 
 **Export (§10.5)**
 

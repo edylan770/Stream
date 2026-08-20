@@ -958,6 +958,33 @@ there is exactly one arbitrary number below rather than three.
 the real database today the corpus is 3 ratings, and the command correctly
 refuses to rank.
 
+## The rubric (the learning layer — no § reference)
+
+The spec never gave the learning layer a section, so unlike everything else in
+this file there is no spec default to compare against. There is also almost
+nothing to tune: the rubric is prose, and prose has no parameters.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `rubric.warn_chars` | `6000` | **arbitrary** | Every downstream prompt carries the rubric's full text, so its size is worth a warning — but it is **never truncated**, because silently dropping the end of the operator's own judgement is the exact failure the rubric exists to prevent. §12.4 budgets a theme call at ~4k tokens and an assembly at ~5k, so 6000 characters is roughly 1.5k — about a third of the smaller budget, which felt like where guidance starts crowding out the material it is guidance about. **No rubric has ever been written** | The warning firing on a rubric that reads as concise (raise it), or a rubric visibly dominating a prompt without ever firing (lower it) |
+
+**Three things that are not parameters:**
+
+- **The rubric is a table, not a config file.** `prompts.yaml`, `phrases.yaml`
+  and `crop_templates.yaml` are git-tracked, hand-edited and read-only at
+  runtime. This is operator-authored through the review UI, versioned, and
+  appended per review batch — and a server writing into its own installed
+  package directory would be wrong.
+- **Append-only, and the version integer is the identity.** There is
+  deliberately no `rubric_of()` hash beside `prompts.digest_of()`: that one
+  exists because a prompt template lives in a file that can be edited in place,
+  so its identity is its content. A rubric row is immutable, so a hash would be
+  a second name for the same thing.
+- **One free-text column, not named sections.** `what_worked` / `what_didnt` /
+  `watch_for` would decide the shape of the operator's thinking before a single
+  rubric had been written, and markdown headings inside `text` cost nothing if a
+  shape turns out to want one. C5, applied to a table.
+
 ## Review and export
 
 | Parameter | Value | Confidence | Rationale | Falsified by |

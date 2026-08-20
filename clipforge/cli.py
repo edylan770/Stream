@@ -31,6 +31,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "register": ("clipforge.ingest.register", "register a recording as a stream"),
     "render": ("clipforge.render.cmd_render", "approved moments as postable clips (§8)"),
     "review": ("clipforge.review.cmd_review", "open the review UI"),
+    "rubric": ("clipforge.cmd_rubric",
+               "the written rubric: what worked, what did not (learning layer)"),
     "run": ("clipforge.pipeline.cmd_run", "run the extraction pipeline for a stream"),
     "scene-events": (
         "clipforge.extract.cmd_scene_events",

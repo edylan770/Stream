@@ -1586,6 +1586,44 @@ tuning:
   # already defaults to the same value for the same reason.
   approved_rating: 2
 
+# ---------------------------------------------------------------------------
+# RUBRIC -- the learning layer's written half. NO § REFERENCE: the spec never
+# gave this a section, and that omission is what `clipforge/rubric.py` exists
+# to fix.
+#
+# TOP-LEVEL and outside VERSIONED_SUBTREES, and here that is not a convention
+# but a correctness requirement. Scoring is deterministic (C1) and §6.1 promises
+# re-scoring is free and infinitely repeatable; a rubric reaching the scoring
+# path would make every re-score depend on prose that `config_version` cannot
+# even describe, because the text lives in a table rather than in config. A test
+# asserts nothing under clipforge/score/ imports the module.
+#
+# The rubric TEXT is not here. It is operator-authored through the review UI,
+# versioned, and appended per review batch -- unlike prompts.yaml, phrases.yaml
+# and crop_templates.yaml, which are git-tracked, hand-edited and read-only at
+# runtime. A server writing into its own installed package directory would also
+# be wrong.
+rubric:
+
+  # Where `clipforge rubric --export` writes the plain-markdown mirror.
+  #
+  # §13.2's tier 2: "digests + ideas as plain markdown ... survives any schema
+  # change or full application rewrite. Cheap insurance against the app itself
+  # becoming the failure point." The database is the source of truth; this is
+  # the copy that outlives it.
+  export_dir: ./data/rubrics
+
+  # Warn past this many characters. A WARNING, never a truncation -- every
+  # downstream prompt carries this text, so an enormous rubric is worth knowing
+  # about, but silently dropping the end of the operator's own judgement is the
+  # exact failure this feature exists to prevent.
+  #
+  # ARBITRARY. §12.4 budgets a theme call at ~4k tokens and an assembly at ~5k,
+  # so 6000 characters is roughly 1.5k tokens -- a third of the smaller budget,
+  # which felt like the point at which the guidance has started crowding out the
+  # material it is guidance about. No rubric has ever been written.
+  warn_chars: 6000
+
 backup:
   # Resolved against the project root like every other path. Under data_root by
   # default so one directory holds everything the app owns -- but see
