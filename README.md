@@ -376,7 +376,7 @@ deleted, whatever the settings say.
 .venv\Scripts\python -m pytest -q
 ```
 
-1654 tests, plus 3 that load a real Whisper model and need `--asr`. The test
+1666 tests, plus 3 that load a real Whisper model and need `--asr`. The test
 fixtures are **synthetic** — ffmpeg `testsrc2` video with
 numerically authored audio, colour bars and static, deliberately. Real footage
 cannot validate a detector: nobody can say what the correct mic RMS at t=412 of

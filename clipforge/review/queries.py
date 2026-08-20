@@ -16,7 +16,7 @@ from pathlib import PurePosixPath
 
 import numpy as np
 
-from clipforge import signals
+from clipforge import moments, signals
 from clipforge.render import words
 from clipforge.score import combined as combined_score
 
@@ -389,12 +389,7 @@ def load_candidates(
     if not rows:
         return []
 
-    markers = [
-        float(r["t"]) for r in conn.execute(
-            "SELECT t FROM events WHERE stream_id = ? AND source = 'marker' ORDER BY t",
-            (stream_id,),
-        )
-    ]
+    markers = moments.marker_times(conn, stream_id)
     series = _sparkline_series(conn, stream_id)
     # ONE query for the whole stream, sliced per window below.
     transcript = load_transcript(conn, stream_id)
@@ -405,7 +400,8 @@ def load_candidates(
         contributions = {k: v for k, v in payload.items() if not k.startswith("_")}
         context = {k.lstrip("_"): v for k, v in payload.items() if k.startswith("_")}
 
-        inside = [t for t in markers if row["t_start"] <= t <= row["t_end"]]
+        anchoring = moments.marker_anchoring(
+            row["t_start"], row["t_end"], markers, contributions)
         tracks, low_high = _sparklines_for(series, row["t_start"], row["t_end"])
 
         out.append(CandidateView(
@@ -418,10 +414,12 @@ def load_candidates(
             profile=row["profile"], config_version=row["config_version"],
             contributions=contributions, context=context,
             # §7.4's fourth section: the operator marked these deliberately, so
-            # they are the safety net when the weights rank them low.
-            marker_anchored=bool(inside) or contributions.get("marker_definite", 0) > 0
-                            or contributions.get("marker_maybe", 0) > 0,
-            markers=inside,
+            # they are the safety net when the weights rank them low. `.any` is
+            # the LOOSE reading — near a press, or scored by one. §14's
+            # `marker_precision` deliberately takes `.press_inside` instead; see
+            # `moments.MarkerAnchoring` for why they must not be the same test.
+            marker_anchored=anchoring.any,
+            markers=list(anchoring.press_inside),
             sparklines=tracks, sparkline_range=low_high,
             # §7.2's assets, when `previews` has run. Served by path rather
             # than embedded: a 2 s webm is ~250 KB and 120 of them inlined

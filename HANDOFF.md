@@ -95,9 +95,10 @@ Phase 2.
 | 40 | `3243b85` | §11.6's pull search — and the config value that was changing its results |
 | 41 | `6b0e01d` | §9.3's chapters — three of four inputs dead, and a merge rule the fixture corrected |
 | 42 | `aa3dfda` | `clipforge/llm/` — §12's four rules in one place, before three call sites each grew their own |
-| 43 | *this* | a re-score over rated candidates no longer deletes the ratings — `config_version` covers the config, not the data |
+| 43 | `8d0d409` | a re-score over rated candidates no longer deletes the ratings — `config_version` covers the config, not the data |
+| 44a | *this* | `clipforge/moments.py` — one opinion per moment, and the two readings of "was this marked?" |
 
-1654 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1666 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
 **What is not built, by design:** no digest and no §10 passes (the rest of Phase 5);
@@ -1233,6 +1234,41 @@ looks correct and is not.
   blank while every Python test passed — none of them execute the JS. The check is in
   Python rather than shelling out to node, because there is no node on this machine and a
   test that always skips is not a test.
+
+**One opinion per moment, in one module (`clipforge/moments.py`)**
+
+- **The move happened as the second caller arrived, not after.** `Moment`,
+  `rated_candidates`, `cluster` and `verdict` were written inside
+  `render/selection.py` against what goes on a timeline. §14's
+  `signal_firing_rate_by_rating` needs the identical rule — one opinion per
+  moment, across generations, latest wins — against feature vectors, and §14's
+  stated hazard is counting one judgment twice, which is the exact thing the
+  rule prevents. Same argument commit 42 made for `clipforge/llm/`.
+- **`render/selection.py` re-exports them and keeps `approved_moments`.**
+  Deciding what goes on a timeline IS a render concern, and its two extra rules
+  — union the cluster's windows, unless a hand-set boundary suppresses the
+  unadjusted ones — are about frames rather than about ratings.
+- **The evidence is `tests/test_selection.py` passing UNMODIFIED**, plus a test
+  asserting `selection.verdict is moments.verdict` rather than `==`. A copied
+  function passes every behavioural test today and drifts the first time one of
+  the two is edited; `is` is the only assertion a second implementation cannot
+  satisfy.
+- **`marker_anchored` was one expression serving two incompatible questions.**
+  It lived inline in `review/queries.py` as `press inside the window OR a
+  non-zero marker contribution`. §7.4's safety net wants that union — §4.3's
+  plateau runs 25 s either side of a press, so a window merely *near* one should
+  not be buried by the weights. §14's `marker_precision` must not: it reads
+  `contributing_signals`, which `features.breakdown` builds from **weighted**
+  tracks only, so **the loose answer changes when a weight changes** — and a
+  weight-tuning input that moves when the weights move cannot tune them.
+  `moments.marker_anchoring` now returns both facts named separately
+  (`press_inside`, `contributed`) and each caller states which it means. One
+  derivation, two readings, no drift — the hazard HANDOFF already records for
+  `gates.speech_activity`, one layer up. The review UI's behaviour is unchanged.
+- **`marker_times` selects by `source`, not by `kind`.** §3.2's rationale for the
+  `events` shape is "new sensor = new `source` value"; a third marker hotkey
+  would arrive as a new kind under the same source, and a kind filter would
+  ignore it silently.
 
 **Export (§10.5)**
 
