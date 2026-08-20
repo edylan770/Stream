@@ -153,7 +153,7 @@ def test_rankings_must_cover_the_same_candidates():
 def test_ranks_average_their_ties():
     """Spearman is Pearson over ranks, and ties have to share a rank or the
     correlation is computed against an ordering nobody chose."""
-    ranks = combined_score._ranks(np.array([5.0, 1.0, 5.0, 3.0]))
+    ranks = combined_score.ranks(np.array([5.0, 1.0, 5.0, 3.0]))
     assert ranks[0] == ranks[2] == pytest.approx(2.5)
     assert ranks[1] == pytest.approx(0.0)
 

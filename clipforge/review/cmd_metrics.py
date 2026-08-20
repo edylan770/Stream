@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from clipforge import config, db
+from clipforge import config, db, tuning
 from clipforge.review import queries
 
 
@@ -18,6 +18,12 @@ def add_arguments(parser) -> None:
     parser.add_argument("stream_id", nargs="?", help="omit for every stream")
     config.add_config_arguments(parser)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--tuning", action="store_true",
+        help="§14's weight-tuning table: which signals discriminate (§17)")
+    parser.add_argument(
+        "--record", action="store_true",
+        help="with --tuning, write the figures to tool_metrics (§17 reads them there)")
 
 
 def main(args) -> int:
@@ -40,9 +46,16 @@ def main(args) -> int:
             ids = [r["id"] for r in conn.execute("SELECT id FROM streams ORDER BY date, id")]
 
         report = {sid: queries.review_metrics(conn, sid) for sid in ids}
+        study = tuning.collect(conn, cfg, ids) if args.tuning else None
 
         if args.json:
-            print(json.dumps(report, indent=2))
+            # Shape UNCHANGED without --tuning: a flat {stream_id: metrics}, so
+            # anything already parsing this keeps working. Asking for the tuning
+            # table is asking for a second section, and only then does the
+            # payload need somewhere to put it.
+            payload: dict = report if study is None else {
+                "streams": report, "tuning": _tuning_json(cfg, *study)}
+            print(json.dumps(payload, indent=2))
             return 0
 
         for stream_id, m in report.items():
@@ -50,6 +63,15 @@ def main(args) -> int:
             print()
 
         _stage_durations(conn, ids)
+
+        if study is not None:
+            print()
+            _tuning(cfg, *study)
+            if args.record:
+                with db.transaction(conn):
+                    written = tuning.record(conn, *study)
+                print()
+                print(f"  recorded        {written} row(s) into tool_metrics")
         return 0
     finally:
         conn.close()
@@ -70,6 +92,13 @@ def _print(stream_id: str, m: dict, target_ms: float) -> None:
         # §14: "approval_rate — approved / total. Is the threshold correct?"
         if m["approval_rate"] is not None:
             print(f"  approval rate   {m['approval_rate']:.1%}")
+        # An inherited row is the operator's opinion carried onto this
+        # generation's candidate by a re-score, not one made about it. Counted
+        # (the review screen shows it as rated) but never silently.
+        carried = (m.get("by_source") or {}).get("inherited", 0)
+        if carried:
+            print(f"  carried over    {carried} of them came from an earlier "
+                  f"generation via a re-score")
 
     median = m["median_review_ms"]
     if median is None:
@@ -129,6 +158,108 @@ def _nudges(m: dict) -> None:
         print(f"  peak dropped    {n['dropped_peak']} window(s) no longer contain "
               f"the peak they were detected from")
 
+
+def _tuning(cfg, corpus, stats, markers) -> None:
+    """§14's `signal_firing_rate_by_rating`, and the two marker figures.
+
+    THE CORPUS LINE COMES FIRST AND ALWAYS PRINTS. §17's procedure ("adjust
+    weights toward signals that discriminate") is only sound over enough
+    ratings to tell discrimination from luck, and the failure mode this guards
+    against is a table of four-decimal numbers built from three opinions, which
+    reads as evidence and is not.
+    """
+    print("tuning — §14's weight-tuning input")
+    labels = {2: "clip it", 1: "maybe", 0: "skip"}
+    spread = "  ".join(f"{labels[k]}={corpus.by_rating.get(k, 0)}" for k in (2, 1, 0))
+    print(f"  corpus          {corpus.streams} stream(s), {corpus.rated_streams} rated"
+          f"  ·  {corpus.moments} moment(s) ({spread})")
+    if corpus.schema_versions and corpus.schema_versions != [cfg.feature_schema.version]:
+        print(f"  schema          vectors from feature_schema_version "
+              f"{corpus.schema_versions}; the table reads today's declared keys, so a "
+              f"signal absent from an older vector simply has fewer observations")
+    if corpus.without_vector:
+        print(f"  no vector       {corpus.without_vector} moment(s) had no feature "
+              f"vector to read")
+
+    _markers(markers)
+
+    ok, why = tuning.rankable(corpus, cfg)
+    if not ok:
+        print(f"  not enough      {why}")
+        return
+
+    print()
+    width = max(len(s.name) for s in stats)
+    group_width = max(len(s.group) for s in stats)
+    print(f"  {'signal'.ljust(width)}  {'group'.ljust(group_width)}   sep"
+          f"  n(skip)  n(clip)   fired   fired")
+    for stat in stats:
+        head = f"  {stat.name.ljust(width)}  {stat.group.ljust(group_width)}"
+        if stat.separation is None:
+            print(f"{head}     —  {stat.reason}")
+            continue
+        arrow = "   ← discriminates the WRONG way" if stat.separation < 0.5 else ""
+        print(f"{head}  {stat.separation:.2f}  {stat.n_skip:>7}  {stat.n_clip:>7}"
+              f"  {stat.rate_skip:>5.0%}  {stat.rate_clip:>5.0%}{arrow}")
+
+    print()
+    print("  sep is P(a `clip it` moment outscores a `skip` one): 0.5 "
+          "discriminates nothing, 1.0 perfectly.")
+    print(f"  Ranked on it rather than on the two rate columns because those depend on "
+          f"tuning.firing_threshold_z ({cfg.get('tuning.firing_threshold_z')}), which is "
+          f"a guess; sep depends on no threshold at all.")
+
+
+def _markers(markers) -> None:
+    """§14's `marker_precision` and `marker_recall_proxy`, corpus-wide.
+
+    `marker_recall_proxy` is the one §14 singles out: it "directly measures how
+    many good clips the operator misses live, which is the exact worry that
+    motivated automatic detection in the first place".
+    """
+    anchored = sum(m.anchored for m in markers)
+    anchored_approved = sum(m.anchored_approved for m in markers)
+    approved = sum(m.approved for m in markers)
+    unmarked = sum(m.approved_unmarked for m in markers)
+    if not anchored and not approved:
+        return
+
+    if anchored:
+        print(f"  marker prec.    {anchored_approved / anchored:.0%}  "
+              f"({anchored_approved} of {anchored} marker-anchored moment(s) approved)")
+    if approved:
+        print(f"  marker recall   {unmarked / approved:.0%}  "
+              f"({unmarked} of {approved} approved moment(s) had no press inside them)")
+    print("                  press_inside only — not §7.4's looser reading, which moves "
+          "when a marker weight moves. See clipforge/moments.py")
+
+
+def _tuning_json(cfg, corpus, stats, markers) -> dict:
+    ok, why = tuning.rankable(corpus, cfg)
+    return {
+        "corpus": {
+            "streams": corpus.streams, "rated_streams": corpus.rated_streams,
+            "moments": corpus.moments, "by_rating": corpus.by_rating,
+            "without_vector": corpus.without_vector,
+            "schema_versions": corpus.schema_versions,
+        },
+        "rankable": ok,
+        "reason": why,
+        "signals": [
+            {"signal": s.name, "group": s.group, "separation": s.separation,
+             "reason": s.reason, "n_skip": s.n_skip, "n_clip": s.n_clip,
+             "rate_skip": s.rate_skip, "rate_clip": s.rate_clip}
+            for s in stats
+        ],
+        "markers": [
+            {"stream_id": m.stream_id, "anchored": m.anchored,
+             "anchored_approved": m.anchored_approved, "approved": m.approved,
+             "approved_unmarked": m.approved_unmarked,
+             "precision": m.precision, "recall_proxy": m.recall_proxy,
+             "anchoring": "press_inside"}
+            for m in markers
+        ],
+    }
 
 def _stage_durations(conn, ids: list[str]) -> None:
     """§14's stage_duration_s — where unattended processing actually goes."""

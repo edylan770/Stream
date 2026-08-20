@@ -14,7 +14,7 @@ show it wrong). Then the spec sections you are touching.
 ## Where the build actually is
 
 **Phases 0, 1, 2, 3 and 4 of §15 are complete, and Phase 5 is in progress.
-1666 tests pass** (`.venv\Scripts\python.exe -m pytest -q`, 25-30 minutes),
+1692 tests pass** (`.venv\Scripts\python.exe -m pytest -q`, 25-30 minutes),
 plus 3 that need `--asr`.
 
 One caveat: `scene_events` is built but its OBS log parser has never seen a real

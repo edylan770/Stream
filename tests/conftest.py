@@ -9,9 +9,11 @@ otherwise.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from clipforge import config, ffmpeg
+from clipforge import config, db, ffmpeg
 from tests.fixtures.make_fixture import (
     LAUGHTER_DURATION_S,
     SPEECH_DURATION_S,
@@ -182,3 +184,44 @@ def laughter_manifest(laughter_fixture_dir) -> dict:
     a test — move the band and the expectations move with it.
     """
     return load_manifest(laughter_fixture_dir)
+
+
+def hand_rows(conn, stream_id, entries, *, feature_vector=None, contributions=None):
+    """Insert candidate/rating pairs directly, for the edge cases.
+
+    Shared rather than duplicated: `test_selection.py` needs generations and
+    verdicts, `test_tuning.py` needs the same rows carrying feature vectors, and
+    two builders drifting apart is how one of them quietly stops exercising the
+    shape the other tests.
+
+    `entries` is `(generation, is_current, t_start, t_end, rating, rated_at,
+    rating_source)`. `feature_vector` and `contributions` may be a single dict
+    applied to every row, or a list parallel to `entries`. Passing `None` for a
+    row leaves it `{}`, which is what a candidate with nothing computed looks
+    like.
+    """
+    def _at(source, index):
+        if source is None:
+            return {}
+        return (source[index] or {}) if isinstance(source, list) else source
+
+    made = []
+    with db.transaction(conn):
+        for index, (gen, current, t0, t1, rating, when, source) in enumerate(entries):
+            cursor = conn.execute(
+                "INSERT INTO candidates (stream_id, generation, is_current, profile, "
+                "t_start, t_end, t_peak, score_entertainment, score_gameplay, "
+                "score_combined, feature_vector, contributing_signals, "
+                "feature_schema_version, config_version) "
+                "VALUES (?, ?, ?, 'naive', ?, ?, ?, 1, 0, 1, ?, ?, 1, 'test@0')",
+                (stream_id, gen, current, t0, t1, (t0 + t1) / 2,
+                 json.dumps(_at(feature_vector, index)),
+                 json.dumps(_at(contributions, index))),
+            )
+            conn.execute(
+                "INSERT INTO ratings (candidate_id, rating, rated_at, rating_source) "
+                "VALUES (?, ?, ?, ?)",
+                (cursor.lastrowid, rating, when, source),
+            )
+            made.append(cursor.lastrowid)
+    return made

@@ -110,7 +110,7 @@ def rank_agreement(primary: np.ndarray, other: np.ndarray, top_n: int = 20) -> d
         out["top_n_overlap"] = None
         return out
 
-    ra, rb = _ranks(a), _ranks(b)
+    ra, rb = ranks(a), ranks(b)
     sa, sb = float(ra.std()), float(rb.std())
     if sa <= _EPS or sb <= _EPS:
         # Every candidate tied in one of the rankings: correlation is undefined
@@ -126,8 +126,13 @@ def rank_agreement(primary: np.ndarray, other: np.ndarray, top_n: int = 20) -> d
     return out
 
 
-def _ranks(values: np.ndarray) -> np.ndarray:
-    """Ascending ranks with ties averaged, which is what Spearman requires."""
+def ranks(values: np.ndarray) -> np.ndarray:
+    """Ascending ranks with ties averaged, which is what Spearman requires.
+
+    Public because §14's `signal_firing_rate_by_rating` needs the identical
+    tie handling for its Mann-Whitney separation, and reaching into another
+    module's underscore name is how two copies of a helper come to exist.
+    """
     order = np.argsort(values, kind="stable")
     ranks = np.empty(values.size, dtype=np.float64)
     ranks[order] = np.arange(values.size, dtype=np.float64)

@@ -14,6 +14,7 @@ from clipforge.ingest import register
 from clipforge.pipeline import runner
 from clipforge.render import selection
 from clipforge.score import runner as score_runner
+from tests.conftest import hand_rows
 
 
 def make_stream(root, fixture_dir, manifest, overrides=()):
@@ -110,27 +111,6 @@ def test_an_is_current_read_would_have_lost_them(scored):
 # --------------------------------------------------------------------------
 # the opposite bug: a change of mind must still win
 # --------------------------------------------------------------------------
-
-
-def hand_rows(conn, stream_id, entries):
-    """Insert candidate/rating pairs directly, for the edge cases."""
-    made = []
-    with db.transaction(conn):
-        for gen, current, t0, t1, rating, when, source in entries:
-            cursor = conn.execute(
-                "INSERT INTO candidates (stream_id, generation, is_current, profile, "
-                "t_start, t_end, t_peak, score_entertainment, score_gameplay, "
-                "score_combined, feature_vector, feature_schema_version, config_version) "
-                "VALUES (?, ?, ?, 'naive', ?, ?, ?, 1, 0, 1, '{}', 1, 'test@0')",
-                (stream_id, gen, current, t0, t1, (t0 + t1) / 2),
-            )
-            conn.execute(
-                "INSERT INTO ratings (candidate_id, rating, rated_at, rating_source) "
-                "VALUES (?, ?, ?, ?)",
-                (cursor.lastrowid, rating, when, source),
-            )
-            made.append(cursor.lastrowid)
-    return made
 
 
 @pytest.fixture

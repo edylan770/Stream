@@ -762,16 +762,32 @@ def review_metrics(
         )
     ]
 
+    # NO `rating_source` FILTER, and that is a fix rather than an oversight.
+    # `load_candidates` LEFT JOINs ratings without one, so the review screen
+    # shows an INHERITED rating as rated. Filtering to 'operator' here meant
+    # that after any re-score the screen showed every moment rated while the
+    # summary beside it said `rated 0` and `approval rate 0.0%` — a summary
+    # disagreeing with the screen it summarises.
+    #
+    # Nothing can be double-counted at this scope: `is_current = 1` is one
+    # generation, and a candidate has at most one `ratings` row. §14's
+    # count-one-judgment-once hazard lives in `clipforge/tuning.py`, which spans
+    # generations and reads through `moments` for exactly that reason.
     counts = conn.execute(
         """
-        SELECT r.rating, COUNT(*) AS n
+        SELECT r.rating, r.rating_source, COUNT(*) AS n
           FROM candidates c JOIN ratings r ON r.candidate_id = c.id
-         WHERE c.stream_id = ? AND c.is_current = 1 AND r.rating_source = 'operator'
-         GROUP BY r.rating
+         WHERE c.stream_id = ? AND c.is_current = 1
+         GROUP BY r.rating, r.rating_source
         """,
         (stream_id,),
     ).fetchall()
-    by_rating = {int(r["rating"]): int(r["n"]) for r in counts}
+    by_rating: dict[int, int] = {}
+    by_source: dict[str, int] = {}
+    for row in counts:
+        rating, source, n = int(row["rating"]), row["rating_source"], int(row["n"])
+        by_rating[rating] = by_rating.get(rating, 0) + n
+        by_source[source] = by_source.get(source, 0) + n
     total_rated = sum(by_rating.values())
     total = conn.execute(
         "SELECT COUNT(*) FROM candidates WHERE stream_id = ? AND is_current = 1",
@@ -782,6 +798,9 @@ def review_metrics(
         "candidates": total,
         "rated": total_rated,
         "by_rating": by_rating,
+        # An inherited rating is the operator's opinion CARRIED onto this
+        # candidate rather than one made about it. Counted, and visible.
+        "by_source": by_source,
         # §14: approved / total, "is the threshold correct?"
         "approval_rate": round(by_rating.get(2, 0) / total, 4) if total else None,
         "median_review_ms": int(statistics.median(times)) if times else None,

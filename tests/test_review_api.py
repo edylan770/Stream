@@ -13,6 +13,7 @@ from clipforge import config, db, paths
 from clipforge.pipeline import runner
 from clipforge.review import app as review_app
 from clipforge.review import queries
+from tests.conftest import hand_rows
 from tests.fixtures.make_fixture import FixtureSpec, generate, load_manifest
 
 
@@ -827,6 +828,40 @@ def test_metrics_report_the_median_not_the_mean(conn):
     metrics = queries.review_metrics(conn, "fx")
     assert metrics["median_review_ms"] < 5_000
     assert metrics["mean_review_ms"] > 500_000      # the outlier is still recorded
+
+
+def test_an_inherited_rating_counts_the_way_the_screen_shows_it(tmp_path):
+    """THE FIX. `load_candidates` LEFT JOINs ratings with no `rating_source`
+    filter, so the review screen shows an inherited rating as rated. The summary
+    beside it used to filter to 'operator', so after any re-score the screen
+    said "rated" on every moment while the summary said `rated 0` and
+    `approval rate 0.0%` — a summary disagreeing with the screen it summarises.
+
+    Nothing can be double-counted at this scope: `is_current = 1` is one
+    generation and a candidate has at most one `ratings` row. §14's
+    count-one-judgment-once hazard is `clipforge/tuning.py`'s, because that
+    spans generations.
+    """
+    cfg = config.load(overrides=[f"paths.data_root={(tmp_path / 'data').as_posix()}"])
+    conn = db.open_db(cfg.db_path)
+    try:
+        conn.execute(
+            "INSERT INTO streams (id, date, master_path, marker_time_base) "
+            "VALUES ('s', '2026-08-14', 'D:/m.mkv', 'vod')"
+        )
+        hand_rows(conn, "s", [
+            (2, 1, 0.0, 10.0, 2, "2026-08-14 10:00:00", "inherited"),
+            (2, 1, 100.0, 110.0, 0, "2026-08-14 10:01:00", "operator"),
+        ])
+
+        m = queries.review_metrics(conn, "s")
+        assert m["rated"] == 2
+        assert m["by_rating"] == {2: 1, 0: 1}
+        assert m["approval_rate"] == 0.5
+        # ...and the mix stays visible rather than being quietly merged.
+        assert m["by_source"] == {"inherited": 1, "operator": 1}
+    finally:
+        conn.close()
 
 
 def test_metrics_include_the_approval_rate(conn):

@@ -96,9 +96,10 @@ Phase 2.
 | 41 | `6b0e01d` | §9.3's chapters — three of four inputs dead, and a merge rule the fixture corrected |
 | 42 | `aa3dfda` | `clipforge/llm/` — §12's four rules in one place, before three call sites each grew their own |
 | 43 | `8d0d409` | a re-score over rated candidates no longer deletes the ratings — `config_version` covers the config, not the data |
-| 44a | *this* | `clipforge/moments.py` — one opinion per moment, and the two readings of "was this marked?" |
+| 44a | `48e6778` | `clipforge/moments.py` — one opinion per moment, and the two readings of "was this marked?" |
+| 44b | *this* | §14's three missing tuning metrics — ranked on a statistic that needs no threshold |
 
-1666 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1692 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
 **What is not built, by design:** no digest and no §10 passes (the rest of Phase 5);
@@ -1269,6 +1270,74 @@ looks correct and is not.
   `events` shape is "new sensor = new `source` value"; a third marker hotkey
   would arrive as a new kind under the same source, and a kind filter would
   ignore it silently.
+
+**§14's weight-tuning metrics (`clipforge/tuning.py`, `metrics --tuning`)**
+
+- **§14 names four metrics that bear on tuning and three of them did not exist.**
+  `approval_rate` did. `signal_firing_rate_by_rating` — which §14 calls the
+  primary weight-tuning input and §17 builds its whole procedure on — did not,
+  nor did `marker_precision` or `marker_recall_proxy`. **Nothing in the codebase
+  had ever read `candidates.feature_vector`**; A9 has been filling that column
+  since Phase 1 for exactly this.
+- **THE RANKING COLUMN IS THRESHOLD-FREE, and that is the load-bearing choice.**
+  §14 says "which signals fired", but `feature_vector` holds three different
+  kinds of number: a z-score for `continuous`, a kernel level 0..1 for `events`
+  and `composite`, and §6.4's gate ramp 0..1 for `afk`/`menu_screen`. One firing
+  threshold across those cannot mean one thing. Signals are ranked on
+  **separation** instead — P(a *clip it* moment outscores a *skip* one), the
+  normalised Mann-Whitney U over `combined.ranks`. Rank-based, so it reads the
+  same on all three scales; and **below 0.5 means a signal discriminates the
+  wrong way**, which a firing rate cannot show as such.
+- **§14's literal firing rate is reported beside it**, because §14 names it and
+  §17 says to pull that name out of `tool_metrics`. Events, composites and gates
+  fire at `> 0` — grounded, since that is what a zero kernel level means — so
+  `tuning.firing_threshold_z` is the ONE arbitrary number here rather than three,
+  and a test asserts it cannot change the ranking.
+- **It reads through `clipforge/moments.py`, and the obvious query would have
+  returned zero.** `review_metrics`' `is_current = 1 AND rating_source =
+  'operator'` finds nothing on a re-scored stream: after commit 43 the operator's
+  row is on the superseded generation and the current one carries an
+  `'inherited'` copy the filter excludes. The primary tuning input would have
+  read zero on exactly the corpus it exists to measure.
+- **It REFUSES rather than printing a table that looks like evidence.** Below
+  `tuning.min_rated_moments` there is no ranking at all, and below
+  `tuning.min_moments_per_class` an individual signal prints its reason instead
+  of a number. VERIFIED against a scratch copy of the real database: 6 streams, 3
+  ratings, and it declines — which is the correct answer.
+- **Only the schema's DECLARED keys are scored.** MEASURED: every candidate in
+  the real database predates `feature_schema` version 2, and its vectors carry
+  context keys the current writer no longer emits. Iterating the stored JSON
+  rather than `feature_schema.keys` would have ranked `mic_rms_db` — an absolute
+  dB level — as a signal.
+- **`marker_precision` takes `press_inside`, never the looser reading.** See the
+  `moments.py` section above: the loose half reads `contributing_signals`, which
+  is built from weighted tracks, so it moves when a weight moves. A test zeroes
+  the marker weight and asserts the precision is unmoved.
+- **`--record` is opt-in, not every run.** §17 says to pull the metric from
+  `tool_metrics`, so it must be writable — but this is a pure function of ratings
+  and feature vectors, both kept forever, so nothing is lost by not recording and
+  C6 does not compel it. A report command that wrote on every invocation would
+  fill the table with duplicates of a number it can always recompute.
+- **`metrics --json` keeps its shape unless `--tuning` is passed.** Nesting the
+  old flat `{stream_id: metrics}` unconditionally would break anything already
+  parsing it, for the convenience of a section that caller did not ask for.
+
+**§14's `approval_rate` was wrong on any re-scored stream (fixed in 44b)**
+
+- `review_metrics`' `by_rating` filtered `rating_source = 'operator'` while
+  `load_candidates` LEFT JOINs ratings with **no such filter**. So the review
+  screen showed an inherited rating as rated, and the summary beside it said
+  `rated 0` and `approval rate 0.0%`: **a summary disagreeing with the screen it
+  summarises.** The filter is gone; `is_current = 1` is one generation and a
+  candidate has at most one `ratings` row, so nothing can be counted twice at
+  this scope. §14's count-one-judgment-once hazard belongs to `tuning.py`, which
+  spans generations and reads through `moments` for that reason.
+- **`by_source` is now in the payload** and `clipforge metrics` prints how many
+  ratings were carried over by a re-score rather than made about this generation.
+  Counted, because the screen counts them — but never silently.
+- **`score/combined.py`'s `_ranks` is now `ranks`.** §14's separation needs the
+  identical ties-averaged helper, and reaching into another module's underscore
+  name is how two copies of a helper come to exist.
 
 **Export (§10.5)**
 

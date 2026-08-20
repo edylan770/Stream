@@ -905,6 +905,59 @@ them the hard way:
 curve of §13.1's metadata tier, which is currently an estimate ("~5 MB/stream")
 that nothing has checked.
 
+## Weight tuning (§14, §17)
+
+§14 names `signal_firing_rate_by_rating` **the primary weight-tuning input** and
+§17 builds its whole procedure on it. Nothing computed it until commit 44b, and
+nothing had ever read `candidates.feature_vector` at all — A9 has been filling
+that column since Phase 1 for exactly this.
+
+**The ranking column is threshold-free, and that is the load-bearing decision.**
+`feature_vector` holds three different kinds of number under one roof: a rolling
+z-score for `continuous`, a decayed kernel level 0..1 for `events` and
+`composite`, and §6.4's gate ramp 0..1 for `afk`/`menu_screen`. A single firing
+threshold across those cannot mean one thing. So signals are ranked on
+**separation** — the probability that a randomly chosen *clip it* moment
+outscores a randomly chosen *skip* one, i.e. the normalised Mann-Whitney U. It
+is a rank statistic, so it reads the same over all three scales, and **below 0.5
+means a signal discriminates the wrong way**, which no firing rate shows as such.
+
+§14's literal firing rate is reported beside it because §14 names it. Events,
+composites and gates fire at `> 0`, which is grounded rather than chosen: that is
+what a kernel level of zero means. Only `continuous` needs a cut, which is why
+there is exactly one arbitrary number below rather than three.
+
+| Parameter | Value | Confidence | Rationale | Falsified by |
+|---|---|---|---|---|
+| `tuning.firing_threshold_z` | `1.0` | **arbitrary** | One standard deviation above the rolling baseline is a conventional reading of "notable" and nothing more; no real distribution of these values has been looked at. It moves the two rate columns and **cannot** move the ranking — a test asserts that | The rate columns reading as all-or-nothing (too low or too high). Nothing about the ranking, by construction |
+| `tuning.min_rated_moments` | `40` | **arbitrary** | Below this no ranking prints at all. The honest number is unknowable in advance — it is however many ratings make a per-signal comparison mean something, which depends on how often each signal fires. §17 tunes "after every ~5 streams" and §6.7 targets 80–150 candidates per 3 h, so five streams is a few dozen ratings. **A deliberately low bar**: it exists to stop a table built from three ratings reading as evidence, not to certify that 40 is enough | Ranking that still looks like noise above the threshold (raise it), or a real signal being withheld well past five streams (lower it) |
+| `tuning.min_moments_per_class` | `10` | **arbitrary** | Per signal, per class. Two observations each give a separation of 1.0 or 0.0 almost by chance, and printed beside signals with two hundred it would sort to the top. 10 is "a perfect separation is not a coin flip" (2⁻¹⁰ ≈ 0.1%) and nothing more principled | Signals with a suspiciously perfect separation and a small `n` reaching the top of the table |
+| `tuning.approved_rating` | `2` | **grounded** | §7.3's "clip it", and what `export --min-rating` already defaults to for the same reason | — |
+
+**Three things that are not parameters:**
+
+- **Ratings are read through `clipforge/moments.py`, never `is_current`.** The
+  obvious query is `review_metrics`' own, and it returns NOTHING on a re-scored
+  stream: after commit 43 the operator's row stays on the superseded generation
+  while the current one carries an `'inherited'` copy the `'operator'` filter
+  excludes. The primary tuning input would have read zero on exactly the corpus
+  it exists to measure. One opinion per moment, across generations, latest wins.
+- **Only the schema's DECLARED keys are scored.** MEASURED on the real database:
+  every candidate in it predates `feature_schema` version 2 and its vectors carry
+  context keys the current writer no longer emits — `mic_rms_db` is an absolute
+  dB level, and iterating the stored JSON rather than `feature_schema.keys` would
+  have ranked it as a signal.
+- **`marker_precision` uses `press_inside` only.** The looser §7.4 reading also
+  counts a non-zero marker *contribution*, which comes from
+  `contributing_signals`, which `features.breakdown` builds from **weighted**
+  tracks — so it moves when a marker weight moves, and a weight-tuning input that
+  does that cannot tune anything. A test zeroes the weight and asserts the
+  precision is unmoved.
+
+**Gaps 2 and 3 below are closed by this.** What is still missing is footage: on
+the real database today the corpus is 3 ratings, and the command correctly
+refuses to rank.
+
 ## Review and export
 
 | Parameter | Value | Confidence | Rationale | Falsified by |
@@ -954,12 +1007,16 @@ observation that would falsify it is not being recorded.
    window outside their range would make the measurement circular — the operator could
    never record "I wanted this shorter than 8 seconds". VERIFIED in a browser: a window
    nudges down to 0.6 s against a `min_window_s` of 8.
-2. **Marker precision and recall.** §14 defines `marker_precision` and
-   `marker_recall_proxy` and they are the direct test of `retro_offset_s`. Neither is
-   computed yet; both are pure SQL over `ratings` and `events` once ten streams exist.
-3. **`signal_firing_rate_by_rating`.** §14 calls this "the primary weight-tuning input"
-   and §17's whole procedure depends on it. The data is being logged — full feature
-   vectors per candidate, per A9 — but nothing aggregates it. Needed before any weight
-   is changed on evidence.
+2. ~~**Marker precision and recall.**~~ **CLOSED in commit 44b.** Both are computed by
+   `clipforge metrics --tuning`, over `events` and the moments `clipforge/moments.py`
+   assembles, using the strict "press inside the window" reading. **Still needs ~10 real
+   streams before the numbers mean anything** — the gap now is footage, not
+   instrumentation. They are the direct test of `score.markers.retro_offset_s`.
+3. ~~**`signal_firing_rate_by_rating`.**~~ **CLOSED in commit 44b.**
+   `clipforge metrics --tuning` aggregates the A9 vectors and ranks signals by how well
+   they separate *clip it* from *skip*; `--record` writes §14's own metric name into
+   `tool_metrics` where §17 says to pull it from. **It refuses to rank below
+   `tuning.min_rated_moments`**, which on today's 3 ratings is what it does. The gap is
+   footage, not instrumentation.
 4. **Profanity list.** Assembled from general English, not from the operator's speech.
    The first ten streams' transcripts would settle it in minutes.

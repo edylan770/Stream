@@ -1533,6 +1533,59 @@ render:
 # schtasks line for the nightly run; `clipforge backup --verify` is §13.3's
 # "an untested backup is not a backup".
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# TUNING -- §14's weight-tuning metrics, read by `clipforge metrics --tuning`.
+#
+# Deliberately a TOP-LEVEL subtree, not under `score`: `score` is one of
+# config.py's VERSIONED_SUBTREES, and changing how a METRIC ABOUT the detector
+# is computed must never invalidate a candidate or force a re-score. Reading the
+# instrument cannot move the thing it measures. Same reasoning that put
+# `render:`, `previews:`, `search:`, `digest:` and `llm:` outside it.
+#
+# §17's procedure is "after every ~5 streams, pull signal_firing_rate_by_rating
+# ... and adjust weights toward signals that discriminate". Everything here is
+# about refusing to answer that question before there is enough evidence to.
+tuning:
+
+  # The ranking column is SEPARATION, which needs no threshold: the probability
+  # that a random `clip it` moment outscores a random `skip` one. This value is
+  # only for §14's LITERAL firing rate, printed beside it, and only for
+  # `continuous` signals -- events, composites and §6.4's gate ramps are zero
+  # when the thing did not happen, so `> 0` is what "fired" means for them and
+  # is not a guess.
+  #
+  # ARBITRARY. 1.0 is one standard deviation above the rolling baseline, which
+  # is a conventional reading of "notable" and nothing more. Nobody has looked
+  # at a real distribution of these values. Moving it changes the two rate
+  # columns and CANNOT change the ranking, which is the point of ranking on
+  # something else.
+  firing_threshold_z: 1.0
+
+  # Below this many moments rated `skip` or `clip it` across the whole corpus,
+  # no ranking is printed at all -- just the corpus size and what it needs.
+  #
+  # ARBITRARY, and the honest number is unknowable in advance: it is however
+  # many ratings make a per-signal comparison mean something, which depends on
+  # how often each signal fires. §17 says to tune "after every ~5 streams" and
+  # §6.7 targets 80-150 candidates per 3 h, so five streams is several hundred
+  # candidates and a few dozen ratings. 40 is a deliberately low bar to clear
+  # -- it exists to stop a table built from three ratings reading as evidence,
+  # not to certify that 40 is enough.
+  min_rated_moments: 40
+
+  # Per signal, per class. A signal observed twice in each class gets a
+  # separation of 1.0 or 0.0 almost by chance, and printed in a column beside
+  # signals with two hundred observations it would sort to the top.
+  #
+  # ARBITRARY. 10 is "enough that a perfect separation is not a coin flip"
+  # (2^-10 ~ 0.1%) and nothing more principled than that.
+  min_moments_per_class: 10
+
+  # What §14 means by "approved" in `marker_precision` and
+  # `marker_recall_proxy`. §7.3's rating 2 is "clip it"; `export --min-rating`
+  # already defaults to the same value for the same reason.
+  approved_rating: 2
+
 backup:
   # Resolved against the project root like every other path. Under data_root by
   # default so one directory holds everything the app owns -- but see
