@@ -24,6 +24,11 @@ built out across commits 31–39. **Phase 5 is in progress** — §11.6's search
 (40), §9.3's chapters (41) and §12's shared LLM plumbing (42) are in; §9.4's
 digest and §10's three passes are not. Phases 6 and 7 are not started.
 
+**Commit 43 is not a feature.** It fixes a bug that silently destroyed operator
+ratings on a re-score — see the first two bullets of "Deviations" below. Nothing
+else in the build depends on it; it is first because §13.2 calls ratings the
+irreplaceable tier and two documented workflows walked straight into it.
+
 One caveat on that "complete": **`scene_events` is built but its OBS log parser
 has never seen a real log** and fails silently when wrong. See "Still missing"
 below for the one command that settles it.
@@ -89,9 +94,10 @@ Phase 2.
 | 39 | `4a6f5a3` | `scene_events` — **Phase 3 complete**, and the one unvalidated parser in the project |
 | 40 | `3243b85` | §11.6's pull search — and the config value that was changing its results |
 | 41 | `6b0e01d` | §9.3's chapters — three of four inputs dead, and a merge rule the fixture corrected |
-| 42 | *this* | `clipforge/llm/` — §12's four rules in one place, before three call sites each grew their own |
+| 42 | `aa3dfda` | `clipforge/llm/` — §12's four rules in one place, before three call sites each grew their own |
+| 43 | *this* | a re-score over rated candidates no longer deletes the ratings — `config_version` covers the config, not the data |
 
-1650 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1654 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
 **What is not built, by design:** no digest and no §10 passes (the rest of Phase 5);
@@ -192,9 +198,22 @@ looks correct and is not.
 - **Candidates are append-only generations.** §6.1 promises re-scoring is free and
   infinitely repeatable; §3.2 gives candidates no stable identity and cascades ratings
   off them, so a re-score would delete the operator's judgment calls — the one thing
-  §13.2 calls irreplaceable. A new generation is created only when `config_version`
-  differs; identical config replaces in place. Operator ratings carry forward by time
+  §13.2 calls irreplaceable. A new generation is created when `config_version` differs
+  **or when the current generation carries any operator rating**; only an unrated stream
+  under an unchanged config replaces in place. Operator ratings carry forward by time
   overlap, tagged `rating_source='inherited'` so §14's tuning never counts one twice.
+- **…and the rating clause above was missing until commit 43, which is a bug that
+  destroyed ratings.** `config_version` hashes `extract`, `score` and every profile's
+  weights — it does **not** hash the signals and events those weights are applied to,
+  because those are data. So an unchanged config over *changed data* took the
+  replace-in-place path, which sets `prior = []` and `DELETE`s the generation, and
+  `ratings.candidate_id ON DELETE CASCADE` did the rest. **Two workflows this file
+  documents reach it**: `register --input-log <file> --force` and
+  `register --obs-log <file> --force`, each followed by a run that cascades into `score`.
+  MEASURED: the regression test failed `assert 0 == 1` before the fix — the rating was
+  gone, with nothing reported. Replacing in place is an optimisation for tidy generation
+  numbers on an unreviewed stream; append-only is a guarantee, and the guarantee wins
+  once a human has rated anything.
 - **`config_version` is `<profile>@<sha256[:8]>`** of the canonicalized scoring config,
   not a bare profile name — two different weight sets under one name would otherwise be
   indistinguishable.
@@ -450,7 +469,7 @@ looks correct and is not.
   reopened it; a test asserts `chapters.py` calls the wrapper and never
   `derived.speech_gate(` directly.
 - **Chapters are computed, never a table.** §3.2 declares none and §9.2 nests
-  them inside the digest JSON, which is where commit 43 will put them.
+  them inside the digest JSON, which is where the digest stage will put them.
 - **What no test can show: that these are good chapters.** The speech fixture is
   one continuous conversation and `fixture_long` is band-limited noise. The
   mechanism is tested; the judgement needs a real transcript.
@@ -815,7 +834,7 @@ looks correct and is not.
   text a model then reads.
 - **`prompts.digest_of` exists for §9.1.** Digests are kept forever and never
   regenerated, so two digests of one stream made by two prompts have to be
-  distinguishable in origin. Commit 43 stores the hash beside the output.
+  distinguishable in origin. The digest stage stores the hash beside the output.
 - **NOTHING HAS CALLED A MODEL.** `AnthropicSource` is written and reports
   itself unavailable for two reasons separately — the package is not installed
   and there is no key — because those need different fixes and one generic

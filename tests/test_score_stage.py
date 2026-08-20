@@ -17,6 +17,7 @@ import pytest
 from clipforge import cli, config, db, paths
 from clipforge.pipeline import runner
 from clipforge.pipeline.context import StageContext
+from clipforge.render import selection
 from clipforge.score import features, gates, grid
 from clipforge.score import runner as score_runner
 from tests.fixtures.make_fixture import FixtureSpec, generate, load_manifest
@@ -519,6 +520,114 @@ def test_operator_ratings_survive_a_rescore_and_are_carried_forward(scored):
     # Restore the session fixture's config: `scored` is session-scoped, so a
     # test that leaves a different config_version current would break whichever
     # test happens to run next.
+    _rescore_with(cfg, conn)
+
+
+def test_a_same_config_rescore_over_operator_ratings_never_destroys_them(scored):
+    """THE REGRESSION. §13.2 calls ratings the irreplaceable tier.
+
+    `config_version` hashes `extract`, `score` and every profile's weights. It
+    does NOT hash the signals and events those weights are applied to, because
+    those are data. So a stream whose DATA changed under an unchanged
+    configuration took the replace-in-place path: `prior` was set to `[]`, the
+    generation's candidates were DELETEd, and `ratings.candidate_id ON DELETE
+    CASCADE` took every operator judgement with them. Silently.
+
+    Two workflows HANDOFF documents reach exactly that state --
+    `register --input-log <file> --force` and `register --obs-log <file>
+    --force`, each followed by a run that cascades into `score`.
+    """
+    cfg, conn, engine, manifest, _ = scored
+    target = candidates(conn)[0]
+    generation = target["generation"]
+    marker = "the rating this test is about"
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO ratings (candidate_id, rating, note) VALUES (?, 2, ?)",
+            (target["id"], marker),
+        )
+
+    # The SAME configuration -- this is the re-run that follows attaching a log
+    # to an already-reviewed stream, not a weight experiment.
+    forced = runner.Runner(cfg=cfg, conn=conn, stream_id="fx",
+                           force={"score"}, log=lambda *_: None)
+    forced.execute([d for d in forced.plan() if d.stage == "score"])
+
+    # The mechanism: a rated generation is never replaced, only superseded.
+    assert candidates(conn)[0]["generation"] == generation + 1
+
+    surviving = conn.execute(
+        """
+        SELECT r.rating, r.rating_source
+          FROM ratings r JOIN candidates c ON c.id = r.candidate_id
+         WHERE c.stream_id = 'fx' AND r.note = ? AND r.rating_source = 'operator'
+        """,
+        (marker,),
+    ).fetchall()
+    assert len(surviving) == 1, "the operator's own rating was destroyed by a re-score"
+    assert surviving[0]["rating"] == 2
+
+    # ...it is still reachable by what consumes it -- §10.5's export and §8's
+    # renderer both go through here, and both read ACROSS generations...
+    assert any(m.rating == 2 for m in selection.approved_moments(conn, "fx", min_rating=2))
+
+    # ...and the review screen, which joins ratings to the CURRENT candidates,
+    # still shows the moment as rated rather than asking for it again.
+    carried = conn.execute(
+        """
+        SELECT r.rating_source FROM ratings r JOIN candidates c ON c.id = r.candidate_id
+         WHERE c.stream_id = 'fx' AND c.is_current = 1 AND r.note = ?
+        """,
+        (marker,),
+    ).fetchall()
+    assert [row["rating_source"] for row in carried] == ["inherited"]
+
+    with conn:
+        conn.execute("DELETE FROM ratings WHERE note = ?", (marker,))
+    _rescore_with(cfg, conn)
+
+
+def test_a_rating_that_does_not_reach_the_new_generation_is_reported(scored):
+    """The other half of commit 43: nothing is destroyed, but a rating whose
+    window moved further than `score.rating_inherit_min_overlap` is invisible to
+    the review screen, which joins ratings to the CURRENT candidates.
+
+    Driven by raising the threshold above 1.0, which no IoU can reach — the
+    "too high" failure `spec/GUESSES.md` names as this parameter's falsifier.
+    Tuning the fixture until a window missed would be asserting against a number
+    nobody chose.
+    """
+    cfg, conn, engine, manifest, _ = scored
+    target = candidates(conn)[0]
+    marker = "stranded on purpose"
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO ratings (candidate_id, rating, note) VALUES (?, 2, ?)",
+            (target["id"], marker),
+        )
+
+    unreachable = config.load(overrides=[
+        f"paths.data_root={cfg.data_root.as_posix()}",
+        "score.rating_inherit_min_overlap=1.01",
+    ])
+    lines: list[str] = []
+    engine2 = runner.Runner(cfg=unreachable, conn=conn, stream_id="fx",
+                            force={"score"}, log=lines.append)
+    engine2.execute([d for d in engine2.plan() if d.stage == "score"])
+
+    assert any("did not match a new window" in line for line in lines), lines
+    assert not any("carried" in line for line in lines), lines
+
+    # Reported, not lost: the operator's own row is still there, and the thing
+    # that reads across generations still finds it.
+    still_there = conn.execute(
+        "SELECT rating_source FROM ratings WHERE note = ?", (marker,)
+    ).fetchall()
+    assert [row["rating_source"] for row in still_there] == ["operator"]
+    assert any(m.rating == 2 for m in selection.approved_moments(conn, "fx", min_rating=2))
+
+    with conn:
+        conn.execute("DELETE FROM ratings WHERE note = ?", (marker,))
     _rescore_with(cfg, conn)
 
 

@@ -11,6 +11,13 @@ is written except `candidates` rows, and a re-score costs nothing but CPU. The
 one thing that must survive a re-score is the operator's ratings, which §13.2
 calls the irreplaceable tier — so candidates are append-only generations and
 ratings are carried onto the new generation by time overlap.
+
+"Append-only" is literal, and `write_candidates` is where it is enforced: a
+re-score over a stream carrying operator ratings ALWAYS mints a new generation,
+even when `config_version` is unchanged. `config_version` covers the
+configuration and not the data, so an identical config over changed signals is
+a real re-score — and the in-place path deletes rows that `ratings` cascades
+off. See the comment there.
 """
 
 from __future__ import annotations
@@ -43,6 +50,13 @@ class ScoreResult:
     candidates: int
     calibration: windows.Calibration
     inherited_ratings: int = 0
+    #: Operator ratings that were on the superseded generation. Reported beside
+    #: `inherited_ratings` because the DIFFERENCE is the interesting number: a
+    #: rating whose window moved further than `rating_inherit_min_overlap` is
+    #: still safe on its own generation, but it is invisible to the review
+    #: screen, which joins ratings to the CURRENT candidates. Silence there is
+    #: how an operator re-rates a moment they already judged.
+    prior_ratings: int = 0
     replaced_generation: bool = False
     missing_weights: list[str] = field(default_factory=list)
     #: §6.5 runs a set. `calibration` and `missing_weights` stay the primary's,
@@ -764,7 +778,33 @@ def write_candidates(
     # A new generation only when the configuration differs. Re-running with the
     # same weights replaces in place, so generation numbers stay meaningful when
     # comparing weight experiments months later.
-    replacing = current is not None and current["config_version"] == config_version
+    #
+    # ...UNLESS THE OPERATOR HAS RATED SOMETHING ON THE CURRENT GENERATION.
+    # `config_version` hashes `extract`, `score` and every profile's weights. It
+    # does NOT hash the signals and events those weights are applied to, because
+    # those are data, not configuration. So an unchanged configuration over
+    # CHANGED data took the replace path -- and the replace path DELETEs the
+    # generation, which `ratings.candidate_id ON DELETE CASCADE` turns into the
+    # loss of every operator judgement on the stream. Silently, and §13.2 calls
+    # ratings the irreplaceable tier.
+    #
+    # Two workflows HANDOFF documents reach exactly that state:
+    #     clipforge register --input-log <file> --force   (then run)
+    #     clipforge register --obs-log   <file> --force   (then run)
+    # neither of which touches config, both of which change what `score` reads.
+    #
+    # Replacing in place is an OPTIMISATION -- it keeps generation numbers tidy
+    # on a stream nobody has reviewed yet. Append-only is a GUARANTEE. The
+    # guarantee wins the moment a human has rated anything: the superseded
+    # generation keeps its operator rows intact (`selection.py` reads across
+    # generations precisely so it can find them), and the new generation gets
+    # the usual IoU-matched copies.
+    prior = _rated_current(ctx)
+    replacing = (
+        current is not None
+        and current["config_version"] == config_version
+        and not prior
+    )
     if replacing:
         generation = int(current["generation"])
     else:
@@ -773,8 +813,6 @@ def write_candidates(
             (ctx.stream_id,),
         ).fetchone()["g"]
         generation = int(highest) + 1
-
-    prior = [] if replacing else _rated_current(ctx)
 
     with db.transaction(ctx.conn):
         if replacing:
@@ -841,7 +879,8 @@ def write_candidates(
         generation=generation, profile=profile_set, config_version=config_version,
         candidates=len(ranked), calibration=primary.calibration,
         calibrations={run.profile.name: run.calibration for run in runs},
-        inherited_ratings=inherited, replaced_generation=replacing,
+        inherited_ratings=inherited, prior_ratings=len(prior),
+        replaced_generation=replacing,
         missing_weights=primary.missing,
         missing_by_profile={run.profile.name: run.missing for run in runs},
     )
@@ -958,6 +997,14 @@ def run(ctx: StageContext) -> None:
 
     if result.inherited_ratings:
         ctx.log(f"    carried {result.inherited_ratings} operator rating(s) onto this generation")
+    stranded = result.prior_ratings - result.inherited_ratings
+    if stranded > 0:
+        ctx.log(
+            f"    note: {stranded} operator rating(s) did not match a new window within "
+            f"score.rating_inherit_min_overlap — still stored on generation "
+            f"{result.generation - 1}, and `export`/`render` read across generations, but "
+            f"the review screen will show those moments as unrated"
+        )
     for name, missing in result.missing_by_profile.items():
         if missing:
             ctx.log(
