@@ -251,6 +251,11 @@ function focusCandidate(index) {
   // Leaving a candidate is when its nudges are reported: once per candidate,
   // whatever the operator did next, including nothing.
   reportNudge(current());
+  // An open note box belongs to the candidate that was on screen. Closing it
+  // rather than carrying it over means `j` can never file a note against the
+  // wrong moment. What was typed and not committed is discarded, which is what
+  // pressing `j` mid-sentence means.
+  closeNote();
   state.cursor = Math.max(0, Math.min(index, state.view.length - 1));
   const c = current();
   if (!c) return;
@@ -620,14 +625,24 @@ function renderVerdict(c) {
   const el = $("verdict");
   if (c.rating === null) {
     el.className = "verdict";
-    el.innerHTML = `<span class="muted">unrated</span>`;
+    el.innerHTML = `<span class="muted">unrated</span>` + noteMarkup(c);
     return;
   }
   const label = ["skip", "maybe", "clip it"][c.rating];
   el.className = `verdict r${c.rating}`;
   el.innerHTML = `<b>${label}</b>` +
     (c.rating_source === "inherited"
-      ? ` <span class="muted">— carried from an earlier scoring run</span>` : "");
+      ? ` <span class="muted">— carried from an earlier scoring run</span>` : "") +
+    noteMarkup(c);
+}
+
+/* A held note is shown as held. "It will be saved when you rate this" is a
+ * promise, and a promise the operator cannot see is one they have to trust. */
+function noteMarkup(c) {
+  if (c.pendingNote) {
+    return ` <span class="muted">— note pending: ${escape(c.pendingNote)}</span>`;
+  }
+  return c.note ? ` <span class="muted">— ${escape(c.note)}</span>` : "";
 }
 
 /* --------------------------------------------------------------- actions */
@@ -653,6 +668,15 @@ function rate(value) {
   // untouched: absent means "no opinion", and the server keeps whatever an
   // earlier session recorded rather than reverting to the detector's window.
   const body = { rating: value, review_ms: elapsed };
+  // A note typed before the verdict rides along here, for the same reason the
+  // adjusted window does: ratings.rating is NOT NULL, so there is nowhere to
+  // put one until there is a rating, and inventing one to hang it on would
+  // corrupt §14's tuning input.
+  if (c.pendingNote) {
+    body.note = c.pendingNote;
+    c.note = c.pendingNote;
+    c.pendingNote = null;
+  }
   if (isAdjusted(c)) {
     body.adjusted_start = c.adjusted_start;
     body.adjusted_end = c.adjusted_end;
@@ -828,7 +852,108 @@ async function finish() {
   stopPlayback();
   $("review-main").hidden = true;
   $("summary").hidden = false;
+  // Awaited after the screen is up: the rubric is the last thing on it, and a
+  // failed fetch should leave the numbers visible rather than the whole panel.
+  await loadRubric();
 }
+
+/* ------------------------------------------------------------------ note */
+
+/* §7.3's `n`. `router.js` refuses to route a key whose target is an INPUT, so
+ * opening this box is all it takes to stop j/k firing while typing. */
+function openNote() {
+  const c = current();
+  if (!c) return;
+  const box = $("note-input");
+  box.value = c.pendingNote || c.note || "";
+  $("note-row").hidden = false;
+  box.focus();
+  box.select();
+}
+
+function closeNote() {
+  $("note-row").hidden = true;
+  $("note-input").blur();
+}
+
+function commitNote() {
+  const c = current();
+  if (!c) return;
+  const text = $("note-input").value.trim();
+  closeNote();
+
+  if (c.rating === null) {
+    // Held. `rate()` sends it with the verdict — see the comment there.
+    c.pendingNote = text || null;
+  } else {
+    // Already rated, so there is a row to update. The rating is re-sent
+    // unchanged because save_rating upserts on it; note is COALESCEd server
+    // side, so clearing the box cannot wipe a stored note by accident.
+    c.note = text;
+    c.pendingNote = null;
+    postAndForget(`/api/candidates/${c.id}/rating`, { rating: c.rating, note: text });
+  }
+  renderVerdict(c);
+}
+
+$("note-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") { event.preventDefault(); commitNote(); }
+  else if (event.key === "Escape") { event.preventDefault(); closeNote(); }
+});
+
+/* ---------------------------------------------------------------- rubric */
+
+/* The learning layer's written half, on the summary screen. Loaded when the
+ * session finishes and prefilled with the current version, because the
+ * operator amends the rubric rather than retyping it each time. */
+async function loadRubric() {
+  const box = $("rubric-text");
+  const meta = $("rubric-meta");
+  $("rubric-status").textContent = "";
+  try {
+    const r = await get("/api/rubric");
+    box.value = r.text || "";
+    box.dataset.saved = r.text || "";
+    meta.textContent = r.absent
+      ? "nothing written yet"
+      : `v${r.version} · ${r.created_at} · written against ${r.evidence}`;
+  } catch (error) {
+    meta.textContent = "could not load the rubric";
+    box.dataset.saved = "";
+  }
+}
+
+async function saveRubric() {
+  const box = $("rubric-text");
+  const status = $("rubric-status");
+  const text = box.value.trim();
+
+  if (!text) {
+    status.textContent = "nothing to save — an empty rubric is a deletion, not a version";
+    return;
+  }
+  if (text === (box.dataset.saved || "").trim()) {
+    status.textContent = "unchanged — no new version written";
+    return;
+  }
+
+  status.textContent = "saving...";
+  try {
+    const result = await post("/api/rubric", { text });
+    box.dataset.saved = text;
+    // Reload BEFORE reporting: loadRubric clears the status line (it is the
+    // right thing when the screen opens), so setting the message first meant
+    // the operator clicked Save and saw it vanish. Found by clicking it.
+    if (!result.unchanged) await loadRubric();
+    status.textContent = result.unchanged
+      ? "unchanged — no new version written"
+      : `saved as v${result.version} (${result.evidence})`;
+  } catch (error) {
+    status.textContent = `could not save: ${error.message}`;
+  }
+}
+
+$("rubric-save").onclick = saveRubric;
 
 /* -------------------------------------------------------------- keyboard */
 
@@ -852,6 +977,7 @@ export function onKey(event) {
       state.showSignals = !state.showSignals;
       renderSignals(current() || { contributions: {}, context: {} });
       break;
+    case "n": event.preventDefault(); openNote(); break;
     case "m":
       state.markersOnly = !state.markersOnly;
       applyFilter();

@@ -282,6 +282,17 @@
           <div id="signals" class="signals" hidden></div>
 
           <div id="verdict" class="verdict"></div>
+
+          <!-- §7.3's `n`. Hidden until pressed. The note rides along with the
+               rating rather than posting on its own: ratings.rating is NOT
+               NULL, so a note on an unrated candidate could only be stored by
+               inventing a rating -- and a fabricated rating corrupts §14's
+               signal_firing_rate_by_rating. Same wall commit 30 hit with
+               nudges. -->
+          <div id="note-row" class="note-row" hidden>
+            <input id="note-input" type="text" maxlength="500"
+                   placeholder="why this one — enter to keep, esc to cancel">
+          </div>
           <!-- Only when the stream has no segments. §7.3 wants the transcript
                beside the window; Phase 2 ships off, so most streams have none
                and this says what turning it on costs. -->
@@ -323,7 +334,7 @@
         <kbd>{</kbd><kbd>}</kbd> nudge end</span>
       <span class="soon" title="§7.3, not built — the ratings.tags column exists and nothing writes it">
         <kbd>t</kbd> tag</span>
-      <span class="soon" title="§7.3, not built — the server accepts a note and no client sends one">
+      <span title="§7.3 — a note on this candidate, stored with the rating">
         <kbd>n</kbd> note</span>
       <span class="soon" title="§7.3, not built — export is `clipforge export` for now">
         <kbd>e</kbd> export queue</span>
@@ -339,6 +350,28 @@
       </div>
     </div>
     <div id="summary-body"></div>
+
+    <!-- The learning layer's written half. HERE rather than on the candidate
+         screen: C4 budgets four seconds a candidate and says to fix the UI
+         before adding anything anywhere if that slips, so a textarea does not
+         belong in that loop -- and this is the moment the opinion it is made
+         of has just formed. -->
+    <section class="rubric">
+      <div class="rail-head">
+        <span>Rubric</span>
+        <span id="rubric-meta" class="faint"></span>
+      </div>
+      <p class="muted">What worked, what did not, what to watch for. Plain
+        language. It goes into the ranking and ideation prompts, never into
+        scoring.</p>
+      <textarea id="rubric-text" rows="10" spellcheck="true"
+                placeholder="The long silences before a punchline are the thing..."></textarea>
+      <div class="actions">
+        <button id="rubric-save" class="btn">Save as a new version</button>
+        <span id="rubric-status" class="hint"></span>
+      </div>
+    </section>
+
     <div class="actions">
       <button id="summary-back" class="btn btn--primary">Back to streams</button>
       <!-- Hands off to the run view rather than rendering here: that screen

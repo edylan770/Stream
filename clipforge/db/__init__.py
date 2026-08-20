@@ -116,7 +116,7 @@ def open_db(db_path: Path, *, migrate_to_latest: bool = True) -> sqlite3.Connect
             conn.close()
             raise MigrationError(
                 f"database at {db_path} is at schema version {current}, expected {expected}. "
-                f"Run `clipforge init-db`."
+                f"Run `clipforge backup` and then `clipforge db init`."
             )
     return conn
 

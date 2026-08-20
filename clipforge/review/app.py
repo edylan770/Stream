@@ -29,7 +29,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from clipforge import db, paths, search
+from clipforge import db, paths, rubric, search
 from clipforge.ingest import register
 from clipforge.pipeline import runner
 from clipforge.review import browse, guard, jobs, media, queries
@@ -166,7 +166,12 @@ def create_app(cfg) -> FastAPI:
                     adjusted_start=start,
                     adjusted_end=end,
                 )
-        except ValueError as exc:
+        # (KeyError, TypeError) as well as ValueError, matching `api_nudge`
+        # below. A body without `rating` used to raise KeyError out of
+        # `int(body["rating"])` and surface as an unhandled 500 rather than a
+        # 400 -- unreachable while the only client always sent one, and exactly
+        # what a second client trips over.
+        except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         finally:
             conn.close()
@@ -219,6 +224,61 @@ def create_app(cfg) -> FastAPI:
         return JSONResponse({"ok": True})
 
     # -- adding a recording -----------------------------------------------
+
+    # -- the rubric (the learning layer; no § reference) -------------------
+
+    @app.get("/api/rubric")
+    def api_rubric() -> JSONResponse:
+        """The current version only.
+
+        History is `clipforge rubric --list`. The summary screen exists to
+        write the NEXT version, not to browse the last ten, and a picker there
+        would be a second thing to read on a screen whose whole job is to be
+        finished with.
+        """
+        conn = connect()
+        try:
+            current = rubric.current(conn)
+        finally:
+            conn.close()
+        if current is None:
+            return JSONResponse({"absent": True, "text": "", "version": 0,
+                                 "created_at": "", "evidence": ""})
+        return JSONResponse({
+            "absent": False,
+            "version": current.version,
+            "text": current.text,
+            "created_at": current.created_at,
+            "evidence": current.evidence,
+        })
+
+    @app.post("/api/rubric")
+    async def api_write_rubric(request: Request) -> JSONResponse:
+        """Append a version. Never edits one.
+
+        `unchanged` rather than a new row when the text matches: the editor
+        prefills with the current rubric so the operator amends rather than
+        retypes, and without this, opening the summary and clicking Save would
+        mint a version that says nothing new. §9.1's reasoning makes every
+        version permanent, so a meaningless one is permanent too.
+        """
+        body = await request.json()
+        conn = connect()
+        try:
+            text = str(body.get("text", ""))
+            current = rubric.current(conn)
+            if current is not None and current.text.strip() == text.strip():
+                return JSONResponse({"ok": True, "unchanged": True,
+                                     "version": current.version})
+            with db.transaction(conn):
+                written = rubric.write(conn, text)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            conn.close()
+        return JSONResponse({"ok": True, "unchanged": False,
+                             "version": written.version,
+                             "evidence": written.evidence})
 
     @app.get("/api/browse")
     def api_browse(path: str | None = None) -> JSONResponse:

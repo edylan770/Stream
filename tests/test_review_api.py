@@ -66,6 +66,104 @@ def conn(processed):
 
 
 # --------------------------------------------------------------------------
+# the rubric (the learning layer -- no § reference)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def rubric_client(tmp_path):
+    """Its own database, deliberately not the session-scoped `processed` one.
+
+    The rubric tests write rubrics, and `processed` is shared and mutable
+    across this whole file — `test_metrics_include_the_approval_rate` already
+    asserts a range rather than a value for exactly that reason. "Nothing has
+    been written yet" is not a range, so it needs a database nothing else has
+    touched.
+    """
+    cfg = config.load(overrides=[f"paths.data_root={(tmp_path / 'data').as_posix()}"])
+    db.open_db(cfg.db_path).close()
+    with TestClient(review_app.create_app(cfg), base_url="http://127.0.0.1",
+                    headers={"X-ClipForge": "1"}) as test_client:
+        yield cfg, test_client
+
+
+def test_an_unwritten_rubric_says_so_rather_than_returning_nothing(rubric_client):
+    """Three states, not two. "Nothing written yet" is a different answer from
+    "the request failed", and the editor prefills from this."""
+    _, client = rubric_client
+    body = client.get("/api/rubric").json()
+    assert body["absent"] is True
+    assert body["text"] == "" and body["version"] == 0
+
+
+def test_writing_a_rubric_appends_a_version(rubric_client):
+    _, client = rubric_client
+    written = client.post("/api/rubric", json={"text": "her reaction over mine"}).json()
+    assert (written["ok"], written["unchanged"], written["version"]) == (True, False, 1)
+
+    current = client.get("/api/rubric").json()
+    assert current["absent"] is False
+    assert current["text"] == "her reaction over mine"
+    assert current["version"] == 1
+
+
+def test_saving_the_same_text_does_not_mint_a_version(rubric_client):
+    """The editor prefills with the current rubric so the operator amends
+    rather than retypes -- so opening the summary and clicking Save would
+    otherwise write a version that says nothing new, permanently, since §9.1's
+    reasoning makes every version permanent."""
+    _, client = rubric_client
+    client.post("/api/rubric", json={"text": "silences before a punchline"})
+    again = client.post("/api/rubric", json={"text": "  silences before a punchline  "})
+
+    assert again.json()["unchanged"] is True
+    assert again.json()["version"] == 1
+    assert client.get("/api/rubric").json()["version"] == 1
+
+
+def test_an_empty_rubric_is_refused_with_a_reason(rubric_client):
+    _, client = rubric_client
+    response = client.post("/api/rubric", json={"text": "   "})
+    assert response.status_code == 400
+    assert "deletion" in response.json()["detail"]
+
+
+def test_writing_a_rubric_needs_the_header(rubric_client):
+    """The guard covers every mutating route; asserted here because this is a
+    new one and "covered by middleware" is a claim worth checking once."""
+    cfg, _ = rubric_client
+    with TestClient(review_app.create_app(cfg), base_url="http://127.0.0.1") as bare:
+        assert bare.post("/api/rubric", json={"text": "x"}).status_code == 403
+
+
+def test_a_rating_body_without_a_rating_is_a_400_not_a_500(client, conn):
+    """`api_rate` caught only ValueError while `api_nudge` beside it caught
+    KeyError too, so `int(body["rating"])` on a body without one surfaced as an
+    unhandled 500. Unreachable while the only client always sent one."""
+    candidate_id = conn.execute(
+        "SELECT id FROM candidates WHERE is_current = 1 LIMIT 1").fetchone()["id"]
+    response = client.post(f"/api/candidates/{candidate_id}/rating", json={"note": "hi"})
+    assert response.status_code == 400
+
+
+def test_a_note_is_stored_with_the_rating_and_survives_a_bare_re_rate(client, conn):
+    """§7.3's `n`. `save_rating` COALESCEs the note, so re-rating without one
+    keeps it -- the same "absent means no opinion" rule the adjusted window
+    follows."""
+    candidate_id = conn.execute(
+        "SELECT id FROM candidates WHERE is_current = 1 LIMIT 1").fetchone()["id"]
+
+    client.post(f"/api/candidates/{candidate_id}/rating",
+                json={"rating": 2, "note": "the pause before it lands"})
+    client.post(f"/api/candidates/{candidate_id}/rating", json={"rating": 1})
+
+    row = conn.execute(
+        "SELECT rating, note FROM ratings WHERE candidate_id = ?", (candidate_id,)
+    ).fetchone()
+    assert (row["rating"], row["note"]) == (1, "the pause before it lands")
+
+
+# --------------------------------------------------------------------------
 # the page and its assets are self-contained
 # --------------------------------------------------------------------------
 
@@ -107,8 +205,12 @@ def test_every_module_is_served_and_local(client):
             "/static/review.js"} <= seen
 
 
+# search.js was missing from this list and from the one in
+# test_every_element_the_js_reaches_for_exists, so commit 40's module was
+# covered by neither check. Both are hand-maintained; there is no way to
+# discover them, since the point is to name what must be scanned.
 MODULES = ("main.js", "api.js", "router.js", "shell.js", "library.js",
-           "add.js", "run.js", "review.js")
+           "add.js", "run.js", "review.js", "search.js")
 
 
 def _strip_literals(source: str) -> str:
@@ -270,8 +372,7 @@ def test_every_element_the_js_reaches_for_exists(client):
     """
     page = client.get("/").text
     wanted: dict[str, set[str]] = {}
-    for name in ("main.js", "api.js", "router.js", "shell.js", "library.js",
-                 "add.js", "run.js", "review.js"):
+    for name in MODULES:
         source = client.get(f"/static/{name}").text
         for element_id in re.findall(r'\$\("([a-z0-9-]+)"\)', source):
             wanted.setdefault(element_id, set()).add(name)

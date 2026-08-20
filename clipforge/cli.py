@@ -85,9 +85,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 2
 
+    # Imported here rather than at module scope so `--help` -- which returns
+    # above -- still costs nothing: `config` pulls in yaml, `db` pulls in
+    # sqlite3, and the point of this dispatcher is that neither loads unless a
+    # command that needs it was named.
+    from clipforge.config import ConfigError
+    from clipforge.db import MigrationError
+
     module_path, func_name = handler.split(":")
     module = importlib.import_module(module_path)
-    return getattr(module, func_name)(args)
+    try:
+        return getattr(module, func_name)(args)
+    except (ConfigError, MigrationError) as exc:
+        # Both mean the operator has something to fix and the message already
+        # says what -- a stale schema, an unreadable config, a bad --set. A
+        # traceback buries that sentence under six frames of importlib, and
+        # `ClipForge.cmd` exists so a double-click shows the reason.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

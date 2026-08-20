@@ -98,9 +98,10 @@ Phase 2.
 | 43 | `8d0d409` | a re-score over rated candidates no longer deletes the ratings — `config_version` covers the config, not the data |
 | 44a | `48e6778` | `clipforge/moments.py` — one opinion per moment, and the two readings of "was this marked?" |
 | 44b | `ba55fb3` | §14's three missing tuning metrics — ranked on a statistic that needs no threshold |
-| 45a | *this* | the written rubric: storage, versioning, the `$rubric` seam — and migration `0003` |
+| 45a | `5d1a119` | the written rubric: storage, versioning, the `$rubric` seam — and migration `0003` |
+| 45b | *this* | the rubric editor on the summary screen, and §7.3's `n` key |
 
-1721 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1728 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
 **What is not built, by design:** no digest and no §10 passes (the rest of Phase 5);
@@ -184,9 +185,10 @@ built** (commit 30, closing GUESSES gap 1) and **§7.2's preview assets are buil
 (commit 38) — the instrumentation exists and now wants ~10 real streams to say
 anything.
 
-Still greyed in the review footer, and still genuinely unbuilt: §7.3's `t` (tag), `n`
-(note) and `e` (export queue). None of them is a measurement gap; `ratings.tags` and
-`ratings.note` exist and nothing writes them.
+Still greyed in the review footer, and still genuinely unbuilt: §7.3's `t` (tag) and
+`e` (export queue). `ratings.tags` exists and nothing writes it. **`n` is built as of
+commit 45b** — `ratings.note` had been accepted end to end by the server since commit 30
+with no client ever sending one.
 
 ---
 
@@ -342,7 +344,7 @@ looks correct and is not.
   Phase 4's render button, Phase 5's digest. The layout therefore does not jump
   the day one lands. **It worked**: commit 30 took the nudge keys out of
   `.soon` and commit 38 took the preview assets, and neither moved anything
-  around them. What is left greyed is §7.3's `t`/`n`/`e` and Phase 5's digest. The nudge keys matter most: their absence is a
+  around them. What is left greyed is §7.3's `t`/`e` and Phase 5's digest — commit 30 took the nudge keys, commit 38 the preview assets, and commit 45b `n`. The nudge keys matter most: their absence is a
   **measurement gap**, not a missing convenience — §17 tunes
   `min_window_s`/`max_window_s` against "how often the operator nudges
   boundaries during review", and with no keys that number cannot be collected
@@ -1405,6 +1407,55 @@ looks correct and is not.
   a column is far cheaper to add before that stops being true — `0001_init.sql`
   already argues this for whole tables ("an empty table costs nothing;
   retrofitting one costs a migration and a backfill").
+
+**The rubric editor and §7.3's `n` key (the review UI)**
+
+- **The editor is a panel inside `#summary`, not a new view.** `#summary` is a
+  sibling of `#review-main` inside `<main id="view-review">`, hand-toggled by
+  `review.js`; the router only ever toggles the view. So this needed no
+  `router.register`, no `BARS` entry and no new JS module — markup plus handlers
+  in the module that already owns that screen.
+- **It is on the summary rather than the candidate screen** because C4 budgets
+  four seconds a candidate and says to fix the UI before adding anything
+  anywhere if that slips. A textarea does not belong in that loop, and the
+  summary is the moment the opinion has just formed.
+- **The textarea prefills with the current version**, so the operator amends
+  rather than retypes — and `POST /api/rubric` therefore returns
+  `unchanged: true` WITHOUT writing when the text matches. Without that, opening
+  the summary and clicking Save would mint a version saying nothing new, and
+  §9.1's reasoning makes every version permanent.
+- **§7.3's `n` rides with the rating, and that is the same wall commit 30 hit.**
+  `ratings.rating` is NOT NULL, so a note on an unrated candidate could only be
+  stored by inventing a rating — and a fabricated rating corrupts §14's
+  `signal_firing_rate_by_rating`, which commit 44b just built. So: already rated
+  posts immediately against the existing rating; not yet rated holds the note
+  and `rate()` sends it with the verdict. `renderVerdict` shows a held note as
+  *pending*, because "it will be saved when you rate this" is a promise the
+  operator would otherwise have to take on trust.
+- **Moving off a candidate closes an open note box and discards it.** Carrying
+  it over would let `j` file a note against the wrong moment; pressing `j`
+  mid-sentence means abandoning the sentence.
+- **`api_rate` caught only `ValueError` where `api_nudge` beside it caught
+  `KeyError` too**, so a rating body without `rating` surfaced as an unhandled
+  500 rather than a 400. Unreachable while the only client always sent one.
+  Fixed, with a test.
+- **`search.js` was in NEITHER hardcoded module list** in `tests/test_review_api.py`
+  and in no test file at all, so commit 40's module had been covered by neither
+  the duplicate-declaration check nor the element-id check — and the first of
+  those exists because a stray `const` once blanked the whole review screen past
+  a green suite. Added to both, and the second list now reuses `MODULES` instead
+  of repeating it.
+- **The rubric route tests get their OWN database.** `test_review_api.py`'s
+  `processed` fixture is session-scoped and mutable — which is why
+  `test_metrics_include_the_approval_rate` asserts a range rather than a value.
+  "Nothing has been written yet" is not a range.
+- **VERIFIED IN A BROWSER, and it found something.** `saveRubric` set its status
+  line and then awaited `loadRubric()`, which clears that line — so the operator
+  clicked Save and watched the confirmation vanish. Reordered. No Python test
+  executes this JS, which is the whole reason the browser pass exists. Also
+  verified: `n` on an unrated candidate shows *note pending*, rating it lands
+  the note in `ratings` with `rating_source='operator'`, and a rubric written in
+  the browser reads back through `clipforge rubric --list` and `--diff`.
 
 **Export (§10.5)**
 
