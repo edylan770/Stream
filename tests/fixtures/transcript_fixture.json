@@ -1,0 +1,147 @@
+{
+  "_readme": [
+    "An authored 89-minute stream with THREE chapters, for §9.4's map-reduce.",
+    "",
+    "Ground truth by construction, like tests/fixtures/*/manifest.json. Tests read",
+    "this file; they never hardcode. Nothing here is measured from anything -- the",
+    "chapter spans, the recurring phrase counts and the open loops are decisions,",
+    "and the code under test has to rediscover them.",
+    "",
+    "MEDIA-FREE ON PURPOSE. `digest/chapters.py`'s silence input reads",
+    "`signal_series` through §6.4's speech gate and never touches audio, so this",
+    "fixture writes the arrays directly. No ffmpeg, no Ollama, no network: it runs",
+    "on a fresh clone. The speech fixture still covers §9.3 against REAL measured",
+    "audio; what it cannot have is more than one chapter, which is the whole shape",
+    "§9.4 maps over.",
+    "",
+    "WHY BURSTS AND PAUSES RATHER THAN A FLAT LEVEL. `derived.speech_gate` is",
+    "`rms > rolling_mean + vad.margin_db`, so a constant level can never exceed its",
+    "own rolling baseline and a flat 'speech' stretch would read as silence",
+    "everywhere. Real speech alternates, the baseline settles between the two, and",
+    "the gate separates them. The levels below were chosen to satisfy the gate AS",
+    "IT SHIPS -- see tests/fixtures/transcript.py, which asserts the separation",
+    "rather than trusting it."
+  ],
+
+  "stream_id": "authored",
+  "date": "2026-08-18",
+  "title": "Authored three-chapter stream",
+  "duration_s": 5340.0,
+  "signal_hz": 10.0,
+
+  "levels_dbfs": {
+    "speech": -18.0,
+    "pause": -50.0,
+    "silence": -62.0
+  },
+  "burst_s": 4.0,
+  "pause_s": 2.0,
+  "tracks": { "mic": 1, "party": 3 },
+
+  "silence_gaps": [
+    { "t_start": 1700.0, "t_end": 1790.0, "why": "between Marvel Rivals and the co-op game" },
+    { "t_start": 3470.0, "t_end": 3560.0, "why": "between the co-op game and talking" }
+  ],
+
+  "chapters": [
+    { "index": 0, "t_start": 0.0,    "t_end": 1790.0, "topic": "Marvel Rivals ranked" },
+    { "index": 1, "t_start": 1790.0, "t_end": 3560.0, "topic": "co-op horror game" },
+    { "index": 2, "t_start": 3560.0, "t_end": 5340.0, "topic": "talking, no game" }
+  ],
+
+  "expected_boundaries_s": [1790.0, 3560.0],
+
+  "utterances": [
+    { "seq": 1,  "t": 60.0,   "track": "mic",   "text": "Right, ranked. I'm on Hawkeye, obviously." },
+    { "seq": 2,  "t": 96.0,   "track": "party", "text": "You are always on Hawkeye." },
+    { "seq": 3,  "t": 132.0,  "track": "mic",   "text": "Because it works. Watch the high ground." },
+    { "seq": 4,  "t": 186.0,  "track": "mic",   "text": "Oh my god, did you see that shot?" },
+    { "seq": 5,  "t": 222.0,  "track": "party", "text": "That was across the entire map." },
+    { "seq": 6,  "t": 258.0,  "track": "mic",   "text": "Luna Snow is healing through everything." },
+    { "seq": 7,  "t": 300.0,  "track": "mic",   "text": "Let's go Hawkeye. That's the one." },
+    { "seq": 8,  "t": 340.0,  "track": "mic",   "text": "Let's go Hawkeye, again, same spot." },
+    { "seq": 9,  "t": 370.0,  "track": "party", "text": "Let's go Hawkeye. I'm saying it now too." },
+    { "seq": 10, "t": 420.0,  "track": "mic",   "text": "Iron Fist keeps diving our backline." },
+    { "seq": 11, "t": 474.0,  "track": "party", "text": "Then peel for me instead of sniping." },
+    { "seq": 12, "t": 528.0,  "track": "mic",   "text": "I am going to try Namor next game, properly." },
+    { "seq": 13, "t": 582.0,  "track": "mic",   "text": "His turrets do the work for you." },
+    { "seq": 14, "t": 648.0,  "track": "party", "text": "You said that about Jeff and never did it." },
+    { "seq": 15, "t": 702.0,  "track": "mic",   "text": "No way. That ult came out of nowhere." },
+    { "seq": 16, "t": 780.0,  "track": "mic",   "text": "Why does that keep happening at this point?" },
+    { "seq": 17, "t": 852.0,  "track": "party", "text": "Because you push too far every time." },
+    { "seq": 18, "t": 930.0,  "track": "mic",   "text": "Mantis is basically unkillable right now." },
+    { "seq": 19, "t": 1020.0, "track": "mic",   "text": "Holy shit, that was a four-piece." },
+    { "seq": 20, "t": 1104.0, "track": "party", "text": "Clip that one. Actually clip it." },
+    { "seq": 21, "t": 1200.0, "track": "mic",   "text": "Celestial by the end of the month, easily." },
+    { "seq": 22, "t": 1308.0, "track": "mic",   "text": "One more and then we swap games." },
+    { "seq": 23, "t": 1428.0, "track": "party", "text": "You have said one more four times." },
+    { "seq": 24, "t": 1560.0, "track": "mic",   "text": "Fine. Last one. Genuinely." },
+    { "seq": 25, "t": 1650.0, "track": "mic",   "text": "That's the win. Right, swapping." },
+
+    { "seq": 26, "t": 1830.0, "track": "mic",   "text": "Okay, the horror one. You install it?" },
+    { "seq": 27, "t": 1878.0, "track": "party", "text": "Installed. I am not going first." },
+    { "seq": 28, "t": 1926.0, "track": "mic",   "text": "Someone has to hold the torch." },
+    { "seq": 29, "t": 1998.0, "track": "party", "text": "Then it is you, torch man." },
+    { "seq": 30, "t": 2070.0, "track": "mic",   "text": "There is something in the vent, listen." },
+    { "seq": 31, "t": 2142.0, "track": "party", "text": "I hate this. I actually hate this." },
+    { "seq": 32, "t": 2226.0, "track": "mic",   "text": "Oh my god it moved, it definitely moved." },
+    { "seq": 33, "t": 2310.0, "track": "party", "text": "Do not open that door." },
+    { "seq": 34, "t": 2394.0, "track": "mic",   "text": "I'm opening the door." },
+    { "seq": 35, "t": 2454.0, "track": "party", "text": "What the fuck. What is that." },
+    { "seq": 36, "t": 2532.0, "track": "mic",   "text": "Run. Run to the elevator, go." },
+    { "seq": 37, "t": 2622.0, "track": "party", "text": "You left me. You genuinely left me." },
+    { "seq": 38, "t": 2712.0, "track": "mic",   "text": "I panicked. That is a real answer." },
+    { "seq": 39, "t": 2802.0, "track": "mic",   "text": "We should record a proper attempt at this." },
+    { "seq": 40, "t": 2898.0, "track": "party", "text": "With the lights off, for the bit." },
+    { "seq": 41, "t": 3000.0, "track": "mic",   "text": "I will figure out the vent thing before then." },
+    { "seq": 42, "t": 3102.0, "track": "party", "text": "You will not." },
+    { "seq": 43, "t": 3204.0, "track": "mic",   "text": "I might. That is different from will not." },
+    { "seq": 44, "t": 3330.0, "track": "mic",   "text": "Right, that is enough of that game." },
+    { "seq": 45, "t": 3420.0, "track": "party", "text": "Agreed. Never again, ideally." },
+
+    { "seq": 46, "t": 3600.0, "track": "mic",   "text": "Right, chat, just talking for a bit." },
+    { "seq": 47, "t": 3660.0, "track": "party", "text": "The good part of the stream." },
+    { "seq": 48, "t": 3732.0, "track": "mic",   "text": "Someone asked how we met. Badly." },
+    { "seq": 49, "t": 3822.0, "track": "party", "text": "That is not the story and you know it." },
+    { "seq": 50, "t": 3924.0, "track": "mic",   "text": "It is broadly the story." },
+    { "seq": 51, "t": 4026.0, "track": "party", "text": "Broadly is doing a lot of work there." },
+    { "seq": 52, "t": 4140.0, "track": "mic",   "text": "I still owe everyone a proper setup tour." },
+    { "seq": 53, "t": 4254.0, "track": "party", "text": "Nobody wants to see the cables." },
+    { "seq": 54, "t": 4380.0, "track": "mic",   "text": "The cables are the interesting bit." },
+    { "seq": 55, "t": 4506.0, "track": "party", "text": "They are absolutely not." },
+    { "seq": 56, "t": 4638.0, "track": "mic",   "text": "Next week we are doing the drinking one." },
+    { "seq": 57, "t": 4770.0, "track": "party", "text": "You will regret announcing that." },
+    { "seq": 58, "t": 4908.0, "track": "mic",   "text": "Probably. It is announced now though." },
+    { "seq": 59, "t": 5046.0, "track": "party", "text": "It is on the internet forever." },
+    { "seq": 60, "t": 5190.0, "track": "mic",   "text": "Right, that is us. Thanks for hanging about." }
+  ],
+
+  "planted": {
+    "repeat_phrase": {
+      "phrase": "lets go hawkeye",
+      "seqs": [7, 8, 9],
+      "why": "three inside extract.phrases.repeat.window_s, so phrase_repeat fires on the third"
+    },
+    "excitement_seqs": [4, 15, 19, 32, 35],
+    "open_loops": [
+      { "seq": 12, "kind": "promise",  "quote": "I am going to try Namor next game, properly." },
+      { "seq": 16, "kind": "question", "quote": "Why does that keep happening at this point?" },
+      { "seq": 39, "kind": "promise",  "quote": "We should record a proper attempt at this." },
+      { "seq": 52, "kind": "promise",  "quote": "I still owe everyone a proper setup tour." },
+      { "seq": 56, "kind": "promise",  "quote": "Next week we are doing the drinking one." }
+    ]
+  },
+
+  "notes": [
+    "Utterance times are the START of a segment; tests/fixtures/transcript.py gives",
+    "each one a duration from its word count. They are placed well inside the",
+    "chapters and never inside a silence gap -- a segment overlapping a gap would",
+    "make the authored boundary ambiguous rather than exercising it.",
+    "",
+    "Utterance spacing is DELIBERATELY irrelevant to the silence input. The signal",
+    "arrays carry the burst/pause pattern across a whole chapter and drop to the",
+    "silence level only inside the authored gaps, so the transcript samples the",
+    "conversation rather than defining it -- which is how a real transcript relates",
+    "to a real recording."
+  ]
+}

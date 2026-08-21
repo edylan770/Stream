@@ -99,9 +99,10 @@ Phase 2.
 | 44a | `48e6778` | `clipforge/moments.py` — one opinion per moment, and the two readings of "was this marked?" |
 | 44b | `ba55fb3` | §14's three missing tuning metrics — ranked on a statistic that needs no threshold |
 | 45a | `5d1a119` | the written rubric: storage, versioning, the `$rubric` seam — and migration `0003` |
-| 45b | *this* | the rubric editor on the summary screen, and §7.3's `n` key |
+| 45b | `8d6940e` | the rubric editor on the summary screen, and §7.3's `n` key |
+| 46 | *this* | an authored three-chapter stream, and a scripted LLM source — both instruments for §9.4 |
 
-1728 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
+1747 tests pass. `.venv\Scripts\python.exe -m pytest -q`, plus 3 that need `--asr`.
 The suite takes 25-30 minutes; `previews` and the fixture encodes are most of it.
 
 **What is not built, by design:** no digest and no §10 passes (the rest of Phase 5);
@@ -1456,6 +1457,64 @@ looks correct and is not.
   verified: `n` on an unrated candidate shows *note pending*, rating it lands
   the note in `ratings` with `rating_source='operator'`, and a rubric written in
   the browser reads back through `clipforge rubric --list` and `--diff`.
+
+**The authored three-chapter fixture, and a scripted LLM source (commit 46)**
+
+- **§9.4's digest is a map-reduce over CHAPTERS, and nothing here had more than
+  one.** The speech fixture is 95 s and thirteen utterances — this file already
+  called it "honestly one chapter" — and `fixture_long` is band-limited noise
+  with no transcript. The digest could have been built with its central
+  structure untested.
+- **MEDIA-FREE, and that is the design decision.** `chapters.silence_boundaries`
+  reads `signal_series` through §6.4's gate and never touches audio, so
+  `tests/fixtures/transcript.py` writes the arrays directly. No ffmpeg, no
+  Ollama, no network: **17 tests in 6.4 seconds** on a fresh clone.
+  `test_chapters.py`'s own fixture still covers §9.3 against real measured audio
+  at 95 s — the two are complementary, and both should stay.
+- **The signal is bursts and pauses, not a flat level, and that is FORCED.**
+  `derived.speech_gate` is `rms > rolling_mean + vad.margin_db`, so a constant
+  "speech" level can never exceed its own rolling baseline: a flat stretch reads
+  as silence everywhere and the whole stream comes out as one chapter. Real
+  speech alternates, the baseline settles between the two, and the gate
+  separates them. A test asserts the authored levels differ by more than the
+  margin, so the constraint is recorded rather than rediscovered.
+- **MEASURED, and it corrected the fixture rather than the gate:** the gate marks
+  exactly `vad.hangover_s` × `score_grid_hz` = **4 samples at the head of each
+  gap and none after**. That is `speech_gate` holding the flag past the last
+  burst, deliberately, so one sentence does not become nine utterances — the
+  same overrun GUESSES records on the speech fixture. The first version of the
+  precondition asserted zero speech anywhere in the gap and failed; the
+  assertion was wrong, not the levels. It now reads the hangover from config and
+  checks past it, and separately checks the gap still clears `min_silence_s`
+  with the hangover removed.
+- **The authored chapters come out exactly right**: 3 chapters at 1790.1 s and
+  3560.1 s against authored boundaries of 1790.0 and 3560.0 — one grid sample,
+  which is the tolerance the test derives from `score.score_grid_hz` rather than
+  writing down. 29.8 / 29.5 / 29.7 minutes, so this is **the first fixture where
+  `target_min_s` / `target_max_s` mean anything**; a 95-second stream cannot
+  exercise a 10–30 minute target.
+- **Phrases are run through the real detector, not planted as rows.** The
+  fixture seeds segments and the test calls `phrases.run(ctx)`, so the planted
+  repeat proves the code path instead of restating it.
+- **`tests/fakes.py`'s `ScriptedSource` is INJECTED, never registered.**
+  `sources.SOURCES` is untouched and `source_for` still refuses unknown names; a
+  stage takes `source=None` and a test passes a fake, the pattern
+  `transcript.run(ctx, transcriber=None)` set. A fake reachable from config is
+  one that can be selected by accident.
+- **It records the PROMPTS, not just the replies.** What a digest asked for is
+  as much a part of §12 as what it did with the answer — §12.1 says the model
+  never sees a timestamp, and the only way to check that is to read the prompt
+  that was sent. Retrofitting that later would mean rewriting the fake.
+- **Calling more often than scripted raises `ExhaustedError` rather than
+  returning a default.** §12.4 budgets a whole stream's reasoning; a map that
+  quietly ran twice per chapter would otherwise be invisible.
+- **The four reply shapes are all exercised**: accepted; hallucinated id dropped
+  **and counted** into `llm_invalid_id_rate`; a real quote from the WRONG
+  segment dropped as `bad-quote` with the id rate left clean; and two
+  unparseable shapes returning None rather than raising — `malformed` (no JSON
+  at all) and `truncated` (an object that never closes, which is what a
+  `max_tokens` cutoff produces and what a naive "find the first `{`" parser
+  would take).
 
 **Export (§10.5)**
 
