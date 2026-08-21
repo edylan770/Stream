@@ -232,6 +232,18 @@ def test_staleness_survives_same_second_completions(env):
     datetime('now') — is identical for the dependency and its dependent. A
     timestamp comparison reports "not stale" for a dependency that genuinely
     re-ran. The sequence counter does not.
+
+    THE SAME SECOND IS CONSTRUCTED HERE, NOT HOPED FOR. It used to be asserted
+    and left to luck: `run_all` and the forced re-run both had to land inside
+    one wall-clock second, which they do on an idle machine and occasionally do
+    not under a full suite. MEASURED: 25 isolated runs passed and a full-suite
+    run failed on `'...:53' == '...:52'`. A suite that fails at random is a
+    suite whose failures get ignored, and the flake was in the PRECONDITION —
+    the property being tested was never in doubt.
+
+    Collapsing the two timestamps by hand also makes the test strictly
+    stronger: the same-second case is now exercised on every run rather than on
+    most of them.
     """
     engine = env.make()
     engine.mark_external_done("register_stream")
@@ -239,6 +251,17 @@ def test_staleness_survives_same_second_completions(env):
 
     forced = env.make(force={"alpha"})
     forced.execute([d for d in forced.plan() if d.stage == "alpha"])
+
+    with db.transaction(env.conn):
+        env.conn.execute(
+            """
+            UPDATE pipeline_stages SET finished_at =
+                (SELECT finished_at FROM pipeline_stages
+                  WHERE stream_id = ? AND stage = 'beta')
+             WHERE stream_id = ? AND stage = 'alpha'
+            """,
+            (STREAM_ID, STREAM_ID),
+        )
 
     alpha_row = forced.row("alpha")
     beta_row = forced.row("beta")
